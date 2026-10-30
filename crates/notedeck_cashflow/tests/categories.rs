@@ -10,6 +10,7 @@ use common::{DESKTOP, MOBILE, harness, snapshot_harness, synthetic_app, syntheti
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
 use notedeck_cashflow::views::categories::model::{Breakdown, Flow, Level, RowKind, breakdown};
+use notedeck_cashflow::views::transactions::model::{RegisterFilter, matching};
 use notedeck_cashflow::{CashflowApp, Period, View};
 
 /// The breakdown of `parent` (a full account name) in `flow` over `period`
@@ -200,6 +201,68 @@ fn hovering_a_bar_shows_its_change() {
     assert!(harness.query_by_label_contains("48.95").is_some());
 }
 
+/// A payee picked from a leaf matches that payee whole, where the register's
+/// search matches any payee containing the text: "Market" finds Big Box
+/// Market and Farmers Market as a search, and no payee whole.
+#[test]
+fn a_whole_payee_matches_only_itself() {
+    let books = synthetic_books();
+    let range = Period::AllTime.resolve(today()).range;
+    let count = |payee: &str, whole_payee: bool| {
+        let filter = RegisterFilter {
+            payee: payee.to_owned(),
+            whole_payee,
+            ..RegisterFilter::default()
+        };
+        matching(&books, &Default::default(), range, &filter).len()
+    };
+    assert_eq!(count("Market", false), 3);
+    assert_eq!(count("Market", true), 0);
+    assert_eq!(count("big box market", false), 2);
+    assert_eq!(count("Big Box Market", true), 2);
+    // The "(no payee)" row's empty payee matches only payee-less entries.
+    assert_eq!(count("", true), 0);
+}
+
+/// Drill Expenses to the groceries leaf, which lists its payees.
+fn drill_to_groceries(harness: &mut egui_kittest::Harness<'static, common::CashflowTestState>) {
+    harness.get_by_role_and_label(Role::Button, "food").click();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "groceries")
+        .click();
+    harness.run();
+}
+
+/// A leaf's payee opens the register filtered to that payee's postings in
+/// that account, over the period the view had: Big Box Market's two
+/// groceries runs.
+#[test]
+fn a_payee_opens_its_transactions() {
+    let mut app = synthetic_app();
+    app.set_view(View::Categories);
+    app.set_period(Period::AllTime);
+    let mut harness = harness(app, DESKTOP);
+    drill_to_groceries(&mut harness);
+
+    harness
+        .get_by_role_and_label(Role::Button, "Big Box Market")
+        .click();
+    harness.run();
+
+    assert_eq!(harness.state().app.view(), View::Transactions);
+    assert_eq!(harness.state().app.period(), Period::AllTime);
+    assert!(harness.query_by_label("2 transactions").is_some());
+    // The account filter shows the leaf.
+    assert!(harness.query_by_label("expenses:food:groceries").is_some());
+
+    // Unpinning the exact match makes the payee a search again.
+    harness.get_by_label("Exact payee ✕").click();
+    harness.run();
+    assert!(harness.query_by_label("Exact payee ✕").is_none());
+    assert!(harness.query_by_label("2 transactions").is_some());
+}
+
 /// With no books loaded the view says so rather than drawing empty columns.
 #[test]
 fn no_books_says_so() {
@@ -239,13 +302,25 @@ fn snapshot_categories_leaf_payees() {
     let mut app = synthetic_app();
     app.set_view(View::Categories);
     let mut harness = snapshot_harness(app, DESKTOP);
-    harness.get_by_role_and_label(Role::Button, "food").click();
-    harness.run();
+    drill_to_groceries(&mut harness);
+    harness.snapshot("cashflow_categories_leaf_payees");
+}
+
+/// The register a groceries payee opens: filtered to it, the exact match
+/// pinned, the account set to the leaf.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_register_payee_filter() {
+    let mut app = synthetic_app();
+    app.set_view(View::Categories);
+    app.set_period(Period::AllTime);
+    let mut harness = snapshot_harness(app, DESKTOP);
+    drill_to_groceries(&mut harness);
     harness
-        .get_by_role_and_label(Role::Button, "groceries")
+        .get_by_role_and_label(Role::Button, "Big Box Market")
         .click();
     harness.run();
-    harness.snapshot("cashflow_categories_leaf_payees");
+    harness.snapshot("cashflow_register_payee_filter");
 }
 
 /// The tooltip over the food bar.

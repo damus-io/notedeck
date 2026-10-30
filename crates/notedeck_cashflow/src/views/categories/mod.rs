@@ -5,7 +5,8 @@
 //! ranks the accounts one level below its current parent over the shared
 //! [`Period`], with an "Other" row for the tail so the shares sum to 100%.
 //! Clicking an account drills into it; a breadcrumb walks back up. A leaf
-//! account lists its payees instead.
+//! account lists its payees instead, and clicking one opens the register
+//! filtered to that payee in that account.
 //!
 //! Each column's [`Breakdown`] is computed by [`model::breakdown`] only when
 //! the books, the period or the column's level change, and kept with its
@@ -15,8 +16,9 @@
 pub mod model;
 
 use egui::{Color32, FontId, RichText, Sense, Stroke, StrokeKind, text::LayoutJob};
-use ledgerdb::Date;
+use ledgerdb::{AccountId, Date, StrId};
 
+use super::transactions::model::RegisterFilter;
 use super::{LedgerCx, ViewCx};
 use crate::{Period, View, ui::palette::Palette};
 use model::{Breakdown, Flow, Level, Row, RowKind};
@@ -96,6 +98,15 @@ struct Crumb {
     /// What the crumb shows: the column's heading at the root, an account's
     /// last segment below it.
     label: String,
+}
+
+/// A payee row clicked this frame: its postings to open in the register.
+#[derive(Clone, Copy)]
+struct PayeeClick {
+    /// The payee as the journal has it.
+    payee: StrId,
+    /// The leaf account it was paid from or into.
+    account: AccountId,
 }
 
 /// A click this frame that changes a column's level.
@@ -223,13 +234,14 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
         }
     }
 
+    let mut clicked = None;
     egui::ScrollArea::vertical()
         .id_salt("cashflow_categories")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if narrow {
                 for column in &mut state.columns {
-                    column_ui(ui, palette, column, period);
+                    clicked = clicked.or(column_ui(ui, palette, column, period));
                     ui.add_space(24.0);
                 }
                 return;
@@ -237,15 +249,32 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing.x = COLUMN_GAP;
             let [spending, earning] = &mut state.columns;
             ui.columns_const(|[left, right]| {
-                column_ui(left, palette, spending, period);
-                column_ui(right, palette, earning, period);
+                clicked = column_ui(left, palette, spending, period);
+                clicked = clicked.or(column_ui(right, palette, earning, period));
             });
         });
+
+    if let Some(click) = clicked {
+        let journal = ledger.books.ledger().journal();
+        cx.states.transactions.show_register(RegisterFilter {
+            payee: journal.strings.get(click.payee).to_owned(),
+            whole_payee: true,
+            account: Some(journal.accounts.full_name(click.account).to_owned()),
+            ..RegisterFilter::default()
+        });
+        cx.open = Some(View::Transactions);
+    }
 }
 
 /// One column: its heading and total, its breadcrumb, and its bars. Applies
-/// a drill or a crumb click at the end of the frame it happened in.
-fn column_ui(ui: &mut egui::Ui, palette: &Palette, column: &mut ColumnState, period: Period) {
+/// a drill or a crumb click at the end of the frame it happened in, and
+/// returns a payee clicked.
+fn column_ui(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    column: &mut ColumnState,
+    period: Period,
+) -> Option<PayeeClick> {
     let flow = column.flow;
     ui.horizontal(|ui| {
         ui.label(
@@ -270,7 +299,7 @@ fn column_ui(ui: &mut egui::Ui, palette: &Palette, column: &mut ColumnState, per
 
     let Some(breakdown) = &column.breakdown else {
         muted(ui, palette, "The journal has no accounts here.");
-        return;
+        return None;
     };
     if breakdown.rows.is_empty() {
         muted(ui, palette, "Nothing in this period.");
@@ -282,13 +311,19 @@ fn column_ui(ui: &mut egui::Ui, palette: &Palette, column: &mut ColumnState, per
         .map(|r| r.amount.unsigned_abs())
         .max()
         .unwrap_or(0);
+    let mut payee = None;
     for row in &breakdown.rows {
         let resp = bar_row(ui, palette, flow, row, max);
         let resp = resp.on_hover_ui(|ui| tooltip(ui, palette, row, period));
-        if let RowKind::Account { .. } = row.kind
-            && resp.clicked()
-        {
-            nav = Some(Nav::Into(row.detail.clone()));
+        if !resp.clicked() {
+            continue;
+        }
+        match row.kind {
+            RowKind::Account { .. } => nav = Some(Nav::Into(row.detail.clone())),
+            RowKind::Payee { payee: id, account } => {
+                payee = Some(PayeeClick { payee: id, account })
+            }
+            RowKind::Direct | RowKind::Other => {}
         }
     }
 
@@ -300,6 +335,7 @@ fn column_ui(ui: &mut egui::Ui, palette: &Palette, column: &mut ColumnState, per
     if let Some(nav) = nav {
         column.navigate(nav);
     }
+    payee
 }
 
 /// The path from the column's root to its level, each step a link back up.
@@ -330,7 +366,7 @@ fn breadcrumb(ui: &mut egui::Ui, palette: &Palette, crumbs: &[Crumb]) -> Option<
 
 /// One bar: the label and its amount and share on a line, over a track
 /// filled in proportion to the column's largest row. Clickable when the row
-/// is an account to drill into.
+/// is an account to drill into or a payee to list.
 pub(crate) fn bar_row(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -338,8 +374,8 @@ pub(crate) fn bar_row(
     row: &Row,
     max: u128,
 ) -> egui::Response {
-    let drills = matches!(row.kind, RowKind::Account { .. });
-    let sense = if drills {
+    let clickable = matches!(row.kind, RowKind::Account { .. } | RowKind::Payee { .. });
+    let sense = if clickable {
         Sense::click()
     } else {
         Sense::hover()
@@ -404,7 +440,7 @@ pub(crate) fn bar_row(
         fill.set_width((track.width() * fraction).max(TRACK_HEIGHT));
         painter.rect_filled(fill, radius, row_color(palette, flow, row));
     }
-    if drills && resp.hovered() {
+    if clickable && resp.hovered() {
         painter.rect_stroke(
             track,
             radius,
@@ -431,14 +467,13 @@ pub(crate) fn tooltip(ui: &mut egui::Ui, palette: &Palette, row: &Row, period: P
             ui.label(RichText::new(versus).color(palette.text_muted));
         });
     }
-    if let RowKind::Account { leaf, .. } = row.kind {
-        let hint = if leaf {
-            "Click for its payees"
-        } else {
-            "Click to drill in"
-        };
-        ui.label(RichText::new(hint).small().color(palette.text_muted));
-    }
+    let hint = match row.kind {
+        RowKind::Account { leaf: true, .. } => "Click for its payees",
+        RowKind::Account { leaf: false, .. } => "Click to drill in",
+        RowKind::Payee { .. } => "Click for its transactions",
+        RowKind::Direct | RowKind::Other => return,
+    };
+    ui.label(RichText::new(hint).small().color(palette.text_muted));
 }
 
 /// A column's color: money out or money in.
@@ -453,7 +488,7 @@ fn flow_color(palette: &Palette, flow: Flow) -> Color32 {
 /// parent's own postings, muted for "Other".
 fn row_color(palette: &Palette, flow: Flow, row: &Row) -> Color32 {
     match row.kind {
-        RowKind::Account { .. } | RowKind::Payee => flow_color(palette, flow),
+        RowKind::Account { .. } | RowKind::Payee { .. } => flow_color(palette, flow),
         RowKind::Direct => flow_color(palette, flow).gamma_multiply(0.6),
         RowKind::Other => palette.text_muted,
     }

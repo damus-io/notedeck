@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use cashflow::chart::Labels;
+use cashflow::projects::Projects;
 use egui::{Align2, FontId, Galley, RichText, Sense};
 use ledgerdb::{DateRange, TxnId};
 
@@ -102,9 +103,18 @@ impl Row {
 }
 
 impl RegisterState {
-    /// Match again if the books, the period or the filters moved.
+    /// Show every transaction `filter` matches, as a link from another view
+    /// does: the person's own filters are replaced, and an open account
+    /// picker closes.
+    pub(crate) fn show(&mut self, filter: RegisterFilter) {
+        self.filter = filter;
+        self.picker = None;
+    }
+
+    /// Match again if the books, the period or the filters moved. A change
+    /// to `projects` bumps the generation too.
     #[profiling::function]
-    fn refresh(&mut self, ledger: LedgerCx<'_>, range: DateRange) {
+    fn refresh(&mut self, ledger: LedgerCx<'_>, projects: &Projects, range: DateRange) {
         let fresh = self.matched.as_ref().is_some_and(|m| {
             m.generation == ledger.generation && m.range == range && m.filter == self.filter
         });
@@ -118,7 +128,7 @@ impl RegisterState {
         {
             self.sources = model::sources(ledger.books);
         }
-        self.ids = model::matching(ledger.books, range, &self.filter);
+        self.ids = model::matching(ledger.books, projects, range, &self.filter);
         let n = self.ids.len();
         self.count_text = format!("{n} transaction{}", if n == 1 { "" } else { "s" });
         self.window = Window::default();
@@ -156,21 +166,38 @@ impl RegisterState {
     }
 }
 
+/// What the register reads besides its own state.
+#[derive(Clone, Copy)]
+pub(crate) struct RegisterCx<'a> {
+    /// The books and their triage.
+    pub(crate) ledger: LedgerCx<'a>,
+    /// The chart's display names and icons for accounts.
+    pub(crate) labels: &'a Labels,
+    /// Which project each account is in, for the "No project" filter.
+    pub(crate) projects: &'a Projects,
+    /// The days the shared period covers.
+    pub(crate) range: DateRange,
+}
+
 /// Draw the register.
 #[profiling::function]
 pub(crate) fn ui(
     ui: &mut egui::Ui,
     palette: &Palette,
-    ledger: LedgerCx<'_>,
-    labels: &Labels,
-    range: DateRange,
+    cx: RegisterCx<'_>,
     state: &mut TransactionsState,
 ) {
+    let RegisterCx {
+        ledger,
+        labels,
+        projects,
+        range,
+    } = cx;
     let TransactionsState {
         register, accounts, ..
     } = state;
-    filters_ui(ui, palette, register, accounts);
-    register.refresh(ledger, range);
+    filters_ui(ui, palette, register, accounts, !projects.is_empty());
+    register.refresh(ledger, projects, range);
     ui.add_space(4.0);
     ui.label(RichText::new(&register.count_text).color(palette.text_muted));
     ui.add_space(4.0);
@@ -190,20 +217,38 @@ pub(crate) fn ui(
         });
 }
 
-/// The filter bar: payee search, account subtree, source, unknown-only.
+/// The filter bar: payee search, account subtree, source, unknown-only,
+/// and no-project when any account is in a project (`attributed`) or the
+/// filter is already on.
 fn filters_ui(
     ui: &mut egui::Ui,
     palette: &Palette,
     register: &mut RegisterState,
     accounts: &mut Accounts,
+    attributed: bool,
 ) {
     let filter = &mut register.filter;
     ui.horizontal_wrapped(|ui| {
-        ui.add(
+        let search = ui.add(
             egui::TextEdit::singleline(&mut filter.payee)
                 .hint_text("Payee")
                 .desired_width(180.0),
         );
+        // Typing makes it a search again.
+        if search.changed() {
+            filter.whole_payee = false;
+        }
+        if filter.whole_payee
+            && ui
+                .add(egui::Button::selectable(
+                    true,
+                    RichText::new("Exact payee ✕").color(palette.text),
+                ))
+                .on_hover_text("Only this payee, not every payee containing it.")
+                .clicked()
+        {
+            filter.whole_payee = false;
+        }
         let account = filter.account.as_deref().unwrap_or("Any account");
         let open = register.picker.is_some();
         if ui
@@ -235,16 +280,22 @@ fn filters_ui(
                 selected,
                 RichText::new(label).color(color),
             ))
-            .clicked()
         };
-        if chip(ui, filter.source.is_none(), "Any source") {
+        if chip(ui, filter.source.is_none(), "Any source").clicked() {
             filter.source = None;
         }
         for s in &register.sources {
             let selected = filter.source.as_deref() == Some(s.as_str());
-            if chip(ui, selected, s) && !selected {
+            if chip(ui, selected, s).clicked() && !selected {
                 filter.source = Some(s.clone());
             }
+        }
+        if (attributed || filter.unattributed)
+            && chip(ui, filter.unattributed, "No project")
+                .on_hover_text("Only income and routing no project claims.")
+                .clicked()
+        {
+            filter.unattributed = !filter.unattributed;
         }
         ui.checkbox(&mut filter.unknown_only, "Unknown only");
     });

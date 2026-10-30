@@ -19,6 +19,7 @@ use notedeck_cashflow::boards::ProjectLink;
 use notedeck_cashflow::views::projects::model::{
     BoardInputs, BoardRow, Inputs, Report, boards, projects,
 };
+use notedeck_cashflow::views::transactions::model::{RegisterFilter, matching};
 use notedeck_cashflow::{CashflowApp, Period, View};
 
 /// A window tall enough for the list or a detail.
@@ -297,15 +298,39 @@ fn a_source_opens_categories() {
     assert_eq!(harness.state().app.view(), View::Categories);
 }
 
-/// The unattributed tile links to the triage inbox.
+/// The unattributed tile opens the register filtered to income no project
+/// claims: October's salary and interest, not the node's routing.
 #[test]
-fn unattributed_links_to_triage() {
+fn unattributed_opens_its_transactions() {
     let mut harness = harness(app(), TALL);
-    harness
-        .get_by_label("Give it a project in the triage inbox →")
-        .click();
+    harness.get_by_label("See its transactions →").click();
     harness.run();
     assert_eq!(harness.state().app.view(), View::Transactions);
+    assert!(harness.query_by_label("2 transactions").is_some());
+
+    // The chip turns the filter off again.
+    harness.get_by_label("No project").click();
+    harness.run();
+    assert!(harness.query_by_label("2 transactions").is_none());
+}
+
+/// The no-project filter matches every transaction with a leg under
+/// `income` or `routed` that no project claims, and nothing else.
+#[test]
+fn unattributed_filter_matches_the_unattributed_row() {
+    let books = books();
+    let range = Period::AllTime.resolve(today()).range;
+    let filter = RegisterFilter {
+        unattributed: true,
+        ..RegisterFilter::default()
+    };
+    // June through October: salary and interest each month.
+    assert_eq!(matching(&books, &attribution(), range, &filter).len(), 10);
+    // With no project at all, every revenue leg is unattributed: the five
+    // salary, interest, zaps, notedeck zaps, app store and routing pairs a
+    // month, plus three purple and one merch.
+    let none = Projects::default();
+    assert_eq!(matching(&books, &none, range, &filter).len(), 5 * 7 + 3 + 1);
 }
 
 /// Replacing the attribution recomputes the view.

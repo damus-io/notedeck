@@ -203,7 +203,7 @@ fn a_top_category_opens_categories_drilled_in() {
     assert!(harness.query_by_label("Top income").is_none());
 }
 
-/// The unknown badge opens the triage inbox, and the missing-segments
+/// The unknown badge opens the Transactions view on its inbox tab, and the missing-segments
 /// badge opens Settings.
 #[test]
 fn badges_link_to_their_views() {
@@ -211,6 +211,8 @@ fn badges_link_to_their_views() {
     harness.get_by_label("2 unknown transactions").click();
     harness.run();
     assert_eq!(harness.state().app.view(), View::Transactions);
+    // The inbox tab, not the register with its filters.
+    assert!(harness.query_by_label("Unknown only").is_none());
 
     let mut harness = overview_harness(layered_app());
     harness.get_by_label("2 missing segments").click();

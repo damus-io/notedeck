@@ -97,11 +97,14 @@ impl OverviewState {
 }
 
 /// A click this frame that changes something outside the figures.
+#[derive(Clone, Copy)]
 enum Action {
     /// Switch the layer at this index of [`Overview::layers`].
     ToggleLayer(usize),
     /// Show this view.
     Open(View),
+    /// Show the Transactions view's triage inbox.
+    Inbox,
     /// Show the Categories view drilled into the row at this index of a
     /// top list.
     Category(Flow, usize),
@@ -166,6 +169,10 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
             }
         }
         Some(Action::Open(view)) => cx.open = Some(view),
+        Some(Action::Inbox) => {
+            states.transactions.show_inbox();
+            cx.open = Some(View::Transactions);
+        }
         Some(Action::Category(flow, at)) => {
             let rows = match flow {
                 Flow::Spending => &overview.top_expenses,
@@ -215,7 +222,7 @@ fn status_ui(
         let badges = [
             (
                 overview.unknown.as_deref(),
-                Some(View::Transactions),
+                Some(Action::Inbox),
                 "Nothing has categorized these yet. Open the triage inbox.",
             ),
             (
@@ -225,14 +232,14 @@ fn status_ui(
             ),
             (
                 missing,
-                Some(View::Settings),
+                Some(Action::Open(View::Settings)),
                 "The vault lists segments this journal does not have, so every figure is partial until they sync.",
             ),
         ];
         for (text, link, hint) in badges {
             let Some(text) = text else { continue };
             if badge(ui, palette, text, link.is_some()).on_hover_text(hint).clicked() {
-                action = link.map(Action::Open);
+                action = link;
             }
         }
     });

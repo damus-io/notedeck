@@ -9,6 +9,8 @@
 
 use cashflow::Books;
 use cashflow::chart::Labels;
+use cashflow::net::{INCOME, ROUTED};
+use cashflow::projects::Projects;
 use cashflow::transfers::OWN_ROOTS;
 use cashflow::triage::{Decided, Triage};
 use ledgerdb::{AccountId, DateRange, Filter, Journal, TxnId, Why};
@@ -26,20 +28,42 @@ pub struct RegisterFilter {
     pub source: Option<String>,
     /// Only what nothing has categorized yet.
     pub unknown_only: bool,
+    /// The payee is exactly [`Self::payee`] (an empty one too) rather than
+    /// containing it, as for a payee picked from the Categories view.
+    pub whole_payee: bool,
+    /// Only transactions with a posting under `income` or `routed` that no
+    /// project claims ([`Projects::project_of`]): the Projects view's
+    /// unattributed row.
+    pub unattributed: bool,
 }
 
+/// The roots whose accounts earn revenue for a project, as the Projects
+/// view counts it.
+const REVENUE_ROOTS: [&str; 2] = [INCOME, ROUTED];
+
 /// The transactions in `range` that `filter` matches, newest first.
+/// `projects` says which accounts are in a project, for
+/// [`RegisterFilter::unattributed`].
 #[profiling::function]
-pub fn matching(books: &Books, range: DateRange, filter: &RegisterFilter) -> Vec<TxnId> {
+pub fn matching(
+    books: &Books,
+    projects: &Projects,
+    range: DateRange,
+    filter: &RegisterFilter,
+) -> Vec<TxnId> {
     let ledger = books.ledger();
+    let journal = ledger.journal();
     let account = match &filter.account {
-        Some(name) => match ledger.journal().accounts.lookup(name) {
+        Some(name) => match journal.accounts.lookup(name) {
             Some(account) => Some(account),
             None => return Vec::new(),
         },
         None => None,
     };
     let payee = (!filter.payee.is_empty()).then_some(filter.payee.as_str());
+    let unattributed = filter
+        .unattributed
+        .then(|| unattributed_accounts(journal, projects));
     let query = books.query();
     let mut found: Vec<TxnId> = query
         .register(Filter {
@@ -47,6 +71,15 @@ pub fn matching(books: &Books, range: DateRange, filter: &RegisterFilter) -> Vec
             range: Some(range),
             payee,
             ..Filter::default()
+        })
+        .filter(|found| !filter.whole_payee || journal.strings.get(found.txn.payee) == filter.payee)
+        .filter(|found| {
+            unattributed.as_ref().is_none_or(|accounts| {
+                journal
+                    .postings_of(found.txn)
+                    .iter()
+                    .any(|p| accounts[p.account.index()])
+            })
         })
         .map(|found| found.id)
         .filter(|&id| {
@@ -59,6 +92,24 @@ pub fn matching(books: &Books, range: DateRange, filter: &RegisterFilter) -> Vec
         .collect();
     found.reverse();
     found
+}
+
+/// Which accounts no project claims under [`REVENUE_ROOTS`], indexed by
+/// account id.
+fn unattributed_accounts(journal: &Journal, projects: &Projects) -> Vec<bool> {
+    let accounts = &journal.accounts;
+    let mut unclaimed = vec![false; accounts.len()];
+    for root in REVENUE_ROOTS {
+        let Some(top) = accounts.lookup(root) else {
+            continue;
+        };
+        let mut stack = vec![top];
+        while let Some(account) = stack.pop() {
+            stack.extend_from_slice(accounts.children(account));
+            unclaimed[account.index()] = projects.project_of(accounts.full_name(account)).is_none();
+        }
+    }
+    unclaimed
 }
 
 /// One register row's text.

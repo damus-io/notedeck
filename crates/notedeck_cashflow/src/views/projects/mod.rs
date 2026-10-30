@@ -28,6 +28,7 @@ use notedeck_ui::charts::{
 };
 
 use super::categories::{self, model::Flow};
+use super::transactions::model::RegisterFilter;
 use super::{LedgerCx, ViewCx};
 use crate::{Period, View, boards::Boards, money::compact, ui::palette::Palette};
 use model::{BoardInputs, BoardRow, Inputs, ProjectRow, Report};
@@ -141,8 +142,8 @@ enum Action {
     Open(usize),
     /// Back from a detail to the list.
     Back,
-    /// Show the triage inbox.
-    Triage,
+    /// Show the register filtered to income no project claims.
+    Unattributed,
     /// Show the Categories view drilled into the source at this index of
     /// the open project's [`ProjectRow::sources`].
     Source(usize),
@@ -200,7 +201,13 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
             });
         }
         Some(Action::Back) => state.open = None,
-        Some(Action::Triage) => cx.open = Some(View::Transactions),
+        Some(Action::Unattributed) => {
+            states.transactions.show_register(RegisterFilter {
+                unattributed: true,
+                ..RegisterFilter::default()
+            });
+            cx.open = Some(View::Transactions);
+        }
         Some(Action::Source(at)) => {
             if let Some(source) = open.and_then(|row| row.sources.get(at)) {
                 states.categories.open(Flow::Earning, &source.detail);
@@ -253,8 +260,8 @@ fn list_ui(
         if tile(ui, palette, Shown { row, board }, period).clicked() {
             action = Some(Action::Open(at));
         }
-        if row.project.is_none() && triage_link(ui, palette).clicked() {
-            action = Some(Action::Triage);
+        if row.project.is_none() && unattributed_link(ui, palette).clicked() {
+            action = Some(Action::Unattributed);
         }
         ui.add_space(GAP);
     }
@@ -439,9 +446,9 @@ fn mix_color(palette: &Palette, at: usize) -> Color32 {
     palette.series[at % palette.series.len()]
 }
 
-/// The unattributed income's link into the triage inbox.
-fn triage_link(ui: &mut egui::Ui, palette: &Palette) -> egui::Response {
-    let text = RichText::new("Give it a project in the triage inbox →")
+/// The unattributed income's link into the register, filtered to it.
+fn unattributed_link(ui: &mut egui::Ui, palette: &Palette) -> egui::Response {
+    let text = RichText::new("See its transactions →")
         .small()
         .color(palette.accent);
     let response = ui.add(egui::Button::new(text).frame(false));
@@ -489,8 +496,8 @@ fn detail_ui(
         ui.add_space(8.0);
         changes_ui(ui, palette, row, period);
     });
-    if row.project.is_none() && triage_link(ui, palette).clicked() {
-        action = Some(Action::Triage);
+    if row.project.is_none() && unattributed_link(ui, palette).clicked() {
+        action = Some(Action::Unattributed);
     }
     ui.add_space(16.0);
 

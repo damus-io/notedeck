@@ -58,6 +58,18 @@ pub(crate) struct Accounts {
 }
 
 impl TransactionsState {
+    /// Show the register filtered to `filter`, as a link from another view
+    /// does.
+    pub(crate) fn show_register(&mut self, filter: model::RegisterFilter) {
+        self.tab = Tab::Register;
+        self.register.show(filter);
+    }
+
+    /// Show the triage inbox, as a link from another view does.
+    pub(crate) fn show_inbox(&mut self) {
+        self.tab = Tab::Inbox;
+    }
+
     /// A vault write failed: tell the inbox, which shows it.
     pub(crate) fn write_failed(&mut self, err: String) {
         self.inbox.write_failed(err);
@@ -113,8 +125,13 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
 
     match state.tab {
         Tab::Register => {
-            let range = cx.period.resolve(cx.today).range;
-            register::ui(ui, palette, ledger, cx.labels, range, state);
+            let register = register::RegisterCx {
+                ledger,
+                labels: cx.labels,
+                projects: cx.projects,
+                range: cx.period.resolve(cx.today).range,
+            };
+            register::ui(ui, palette, register, state);
         }
         Tab::Inbox => {
             let xp = cx.xp_feedback.then_some(cx.tuning);

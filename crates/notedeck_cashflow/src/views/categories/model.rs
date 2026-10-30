@@ -65,8 +65,14 @@ pub enum RowKind {
         /// Whether it has no sub-accounts, so drilling in lists its payees.
         leaf: bool,
     },
-    /// A payee of a leaf account's postings.
-    Payee,
+    /// A payee of a leaf account's postings. Clicking it lists them in the
+    /// register.
+    Payee {
+        /// The payee as the journal has it, empty for none.
+        payee: StrId,
+        /// The leaf account the postings are to.
+        account: AccountId,
+    },
     /// Postings to the parent account itself rather than to any account
     /// below it.
     Direct,
@@ -312,7 +318,10 @@ fn payees(level: Level<'_>) -> Breakdown {
             payee => payee.to_owned(),
         };
         rows.push(cx.row(
-            RowKind::Payee,
+            RowKind::Payee {
+                payee,
+                account: parent,
+            },
             label,
             leaf.to_owned(),
             Sums {
