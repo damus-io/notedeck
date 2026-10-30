@@ -139,8 +139,12 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
             }
         }
         Tab::Inbox => {
-            let xp = cx.xp_feedback.then_some(cx.tuning);
-            if let Some(record) = inbox::ui(ui, palette, cx.outbox, xp, state) {
+            let writes = inbox::Writes {
+                outbox: cx.outbox,
+                plans: cx.plans,
+                xp: cx.xp_feedback.then_some(cx.tuning),
+            };
+            if let Some(record) = inbox::ui(ui, palette, writes, state) {
                 cx.open_txn = Some(record);
             }
         }

@@ -14,7 +14,7 @@ use std::time::Duration;
 use cashflow::adventure::seen::Seen;
 use cashflow::kinds;
 use common::{
-    CashflowTestState, DESKTOP, JournalFixture, harness, loaded_harness, step_until,
+    CashflowTestState, DESKTOP, JournalFixture, apply_plan, harness, loaded_harness, step_until,
     synthetic_years_app, triage_app, wait_vault, watch_vault,
 };
 use egui::accesskit::Role;
@@ -175,6 +175,7 @@ fn categorize_the_coffees(harness: &mut Harness<'static, CashflowTestState>) {
         .get_by_label("+ New account expenses:food:coffee")
         .click();
     harness.run();
+    apply_plan(harness);
 }
 
 /// Categorizing a group floats the Bookkeeping XP its rule earns, on the

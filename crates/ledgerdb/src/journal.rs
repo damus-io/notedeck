@@ -123,7 +123,7 @@ pub struct FileComment {
 /// commodities by interned id, so the whole journal is a handful of
 /// contiguous arrays. A [`Txn`]'s spans index `postings`, `meta` and
 /// `comments`; a [`Posting`]'s `txn` indexes `txns`.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Journal {
     /// The account tree every [`crate::AccountId`] refers to.
     pub accounts: Accounts,

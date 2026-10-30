@@ -50,6 +50,7 @@ pub mod journal;
 pub mod kinds;
 pub mod manifest;
 pub mod net;
+pub mod plan;
 pub mod prices;
 pub mod projects;
 pub mod rank;

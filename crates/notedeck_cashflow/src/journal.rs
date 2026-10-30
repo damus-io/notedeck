@@ -55,8 +55,11 @@ pub const RESCAN_EVERY: Duration = Duration::from_secs(3);
 
 /// The raw ledger, and the retired set it was loaded without.
 pub struct RawLedger {
-    /// Every segment the filter includes, merged, before any edit.
-    ledger: Ledger,
+    /// Every segment the filter includes, merged, before any edit. Shared,
+    /// so a [`crate::plan_job::PlanJob`] can derive from it while it is
+    /// here between jobs; a job that finds a new segment while a plan
+    /// still holds it merges into a copy.
+    ledger: Arc<Ledger>,
     /// The segments it leaves out because the vault retires them. A change
     /// to this set means reloading: `refresh` only ever adds segments.
     retired: HashSet<SegmentHash>,
@@ -129,11 +132,11 @@ impl LoadJob {
             raw.ledger.filter() == &self.filter && raw.retired == self.inputs.retired
         };
         let refreshed = match self.raw.filter(fits) {
-            Some(mut raw) => raw.ledger.refresh(&self.store).map(|report| (raw, report)),
+            Some(mut raw) => raw.refresh(&self.store, &local).map(|report| (raw, report)),
             None => Ledger::load_without(&self.store, self.filter, self.inputs.retired.clone())
                 .map(|loaded| {
                     let raw = RawLedger {
-                        ledger: loaded.ledger,
+                        ledger: Arc::new(loaded.ledger),
                         retired: self.inputs.retired.clone(),
                     };
                     (raw, loaded.report)
@@ -162,6 +165,34 @@ impl LoadJob {
             error: None,
             elapsed: started.elapsed(),
         }
+    }
+}
+
+impl RawLedger {
+    /// Merge in the segments of `local`, the store's listing, that the
+    /// ledger hasn't seen, as [`Ledger::refresh`] does. While a plan holds
+    /// the ledger it is copied only when one of them is new: a rescan that
+    /// finds nothing, or a re-derive, reports what `refresh` would without
+    /// touching it.
+    fn refresh(
+        &mut self,
+        store: &JournalStore,
+        local: &[SegmentHash],
+    ) -> Result<LoadReport, ledgerdb::StoreError> {
+        if let Some(ledger) = Arc::get_mut(&mut self.ledger) {
+            return ledger.refresh(store);
+        }
+        let retired = |hash: &SegmentHash| self.retired.contains(hash);
+        let new = local
+            .iter()
+            .any(|&hash| !self.ledger.has_seen(hash) && !retired(&hash));
+        if new {
+            return Arc::make_mut(&mut self.ledger).refresh(store);
+        }
+        Ok(LoadReport {
+            skipped: local.iter().filter(|h| retired(h)).copied().collect(),
+            ..LoadReport::default()
+        })
     }
 }
 
@@ -580,6 +611,13 @@ impl JournalSource {
         }));
     }
 
+    /// The raw ledger the books in hand were derived from, for a plan to
+    /// derive from too; `None` while a job has it, or before the first
+    /// load.
+    pub fn raw(&self) -> Option<&Arc<Ledger>> {
+        self.raw.as_ref().map(|raw| &raw.ledger)
+    }
+
     /// Where the journal stands, given whether the app has books.
     pub fn state(&self, has_books: bool) -> JournalState {
         if self.error.is_some() {
@@ -862,6 +900,29 @@ mod tests {
         let mut both = vec![first, second];
         both.sort_unstable();
         assert_eq!(done.local, both);
+    }
+
+    /// While a plan holds the raw ledger, a rescan with nothing new
+    /// leaves it shared, and one that finds a segment merges it into a
+    /// copy, leaving the plan's as it was.
+    #[test]
+    fn a_rescan_under_a_plan_copies_only_to_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path());
+        write(&store, 1, "t:1", "expenses:food");
+        let done = job(&store, None, true).run();
+        let held = done.raw.as_ref().unwrap().ledger.clone();
+
+        let done = job(&store, done.raw, true).run();
+        assert!(done.loaded.is_some(), "a re-derive still derives");
+        assert!(Arc::ptr_eq(&held, &done.raw.as_ref().unwrap().ledger));
+
+        let second = write(&store, 2, "t:2", "expenses:fun");
+        let done = job(&store, done.raw, false).run();
+        let books = done.loaded.expect("a new segment derives").books;
+        assert_eq!(books.report.loaded, [second]);
+        assert_eq!(books.ledger().txns().len(), 2);
+        assert_eq!(held.txns().len(), 1, "the plan's ledger is untouched");
     }
 
     /// A raw ledger loaded without a segment the vault now retires is

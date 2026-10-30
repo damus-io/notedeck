@@ -19,11 +19,13 @@
 //! one record replace each other, a record in a live link can't be
 //! categorized and a categorized one can't be linked, and a dismissed
 //! suggestion is a cleared link note, so it is never suggested again.
-//! [`check`] makes the same refusals without writing.
+//! [`check`] makes the same refusals without writing, and
+//! [`crate::plan::plan`] makes them off the UI thread from the folded
+//! edits, before saying what the write would move.
 
 use std::sync::Arc;
 
-use ledgerdb::{Ledger, Leg, TxnId, Why};
+use ledgerdb::{Edits, Ledger, Leg, TxnId, Why};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
 
@@ -252,6 +254,20 @@ pub enum WriteError {
     /// A live rule already does exactly this.
     #[error("rule {0} already does this")]
     Duplicate(String),
+    /// The loaded journal holds no transaction with this record id.
+    #[error("no transaction with id '{0}' in the journal")]
+    NoRecord(String),
+    /// Derive wouldn't apply the edit: something else decides the
+    /// transaction, it has no counter leg, or the edit is rejected.
+    #[error("the {what} on {record} wouldn't apply: {why}")]
+    NotApplied {
+        /// The edit: "override", "split" or "link".
+        what: &'static str,
+        /// The record it names.
+        record: String,
+        /// What derive did instead.
+        why: String,
+    },
     /// The rule doesn't validate.
     #[error(transparent)]
     Rule(#[from] RuleError),
@@ -396,45 +412,35 @@ fn run<'a>(
         }
         Action::Override { record, account } => {
             let stored = VaultEdits::load(ndb, &txn, author);
-            refuse_linked(&stored, record)?;
+            refuse(&stored, action)?;
             let note = OverrideNote::new(OverrideBody { account }, agentium);
-            note.check()?;
             sink.clear(record, stored.split_of(record), agentium)?;
             let old = stored.override_of(record);
             sink.put(record, &note, old.map_or(0, |o| o.created_at), live(old))?;
         }
         Action::Split { record, legs } => {
             let stored = VaultEdits::load(ndb, &txn, author);
-            refuse_linked(&stored, record)?;
-            let legs = legs
-                .iter()
-                .map(|l| SplitLeg {
-                    account: &l.account,
-                    qty: l.qty,
-                })
-                .collect();
-            let note = SplitNote::new(SplitBody { legs }, agentium);
-            note.check()?;
+            refuse(&stored, action)?;
+            let note = SplitNote::new(
+                SplitBody {
+                    legs: split_legs(legs),
+                },
+                agentium,
+            );
             sink.clear(record, stored.override_of(record), agentium)?;
             let old = stored.split_of(record);
             sink.put(record, &note, old.map_or(0, |s| s.created_at), live(old))?;
         }
         Action::Uncategorize { record } => {
             let stored = VaultEdits::load(ndb, &txn, author);
-            let overridden = stored.override_of(record);
-            let split = stored.split_of(record);
-            if !live(overridden) && !live(split) {
-                return Err(WriteError::NotCategorized(record.clone()));
-            }
-            sink.clear(record, overridden, agentium)?;
-            sink.clear(record, split, agentium)?;
+            refuse(&stored, action)?;
+            sink.clear(record, stored.override_of(record), agentium)?;
+            sink.clear(record, stored.split_of(record), agentium)?;
         }
         Action::Link { a, b } => {
             let id = link_id(a, b)?;
             let stored = VaultEdits::load(ndb, &txn, author);
-            for side in [a, b] {
-                linkable(&stored, side)?;
-            }
+            refuse(&stored, action)?;
             let old = stored.link(&id);
             let note = LinkNote::new(LinkBody { a, b }, agentium);
             sink.put(&id, &note, old.map_or(0, |l| l.created_at), live(old))?;
@@ -442,12 +448,7 @@ fn run<'a>(
         Action::Unlink { a, b } => {
             let id = link_id(a, b)?;
             let stored = VaultEdits::load(ndb, &txn, author);
-            if !live(stored.link(&id)) {
-                return Err(WriteError::NotLinked {
-                    a: a.clone(),
-                    b: b.clone(),
-                });
-            }
+            refuse(&stored, action)?;
             sink.clear(&id, stored.link(&id), agentium)?;
         }
         Action::Dismiss { a, b } => {
@@ -473,31 +474,110 @@ fn run<'a>(
     Ok(sink.applied)
 }
 
-/// Fail when `record` is in a live link: an override would shadow it and
-/// leave the other side half-netted.
-fn refuse_linked(stored: &VaultEdits, record: &str) -> Result<(), WriteError> {
-    match stored.links_of(record).next() {
-        Some(link) => Err(WriteError::Linked {
-            record: record.to_owned(),
-            other: link.body.body.map_or("", |b| b.other(record)).to_owned(),
-        }),
-        None => Ok(()),
+/// What the write rules read of a record's edits as they stand: the
+/// vault's notes ([`VaultEdits`]) when writing, or the edits they fold
+/// into ([`Edits`]) when planning off the UI thread, so both refuse alike.
+pub(crate) trait Standing {
+    /// The other side of a live link naming `record`, if one does.
+    fn linked_with(&self, record: &str) -> Option<&str>;
+    /// Whether `record` has a live override or split.
+    fn categorized(&self, record: &str) -> bool;
+    /// Whether `a` and `b` are linked.
+    fn links(&self, a: &str, b: &str) -> bool;
+}
+
+impl Standing for VaultEdits<'_> {
+    fn linked_with(&self, record: &str) -> Option<&str> {
+        let link = self.links_of(record).next()?;
+        Some(link.body.body.map_or("", |b| b.other(record)))
+    }
+
+    fn categorized(&self, record: &str) -> bool {
+        live(self.override_of(record)) || live(self.split_of(record))
+    }
+
+    fn links(&self, a: &str, b: &str) -> bool {
+        link_id(a, b).is_ok_and(|id| live(self.link(&id)))
     }
 }
 
-/// Fail unless `record` can join a new link: no override, split or other
-/// link decides it.
-fn linkable(stored: &VaultEdits, record: &str) -> Result<(), WriteError> {
-    let live_override = stored
-        .override_of(record)
-        .is_some_and(|o| o.body.body.is_some());
-    let live_split = stored
-        .split_of(record)
-        .is_some_and(|s| s.body.body.is_some());
-    if live_override || live_split {
-        return Err(WriteError::Categorized(record.to_owned()));
+impl Standing for Edits {
+    fn linked_with(&self, record: &str) -> Option<&str> {
+        let link = self.links.iter().find(|l| l.a == record || l.b == record)?;
+        Some(if link.a == record { &link.b } else { &link.a })
     }
-    refuse_linked(stored, record)
+
+    fn categorized(&self, record: &str) -> bool {
+        self.overrides.iter().any(|o| o.record_id == record)
+            || self.splits.iter().any(|s| s.record_id == record)
+    }
+
+    fn links(&self, a: &str, b: &str) -> bool {
+        self.links
+            .iter()
+            .any(|l| (l.a == a && l.b == b) || (l.a == b && l.b == a))
+    }
+}
+
+/// The refusal `action` meets against `standing`, the record's edits as
+/// they stand: an override or split of a linked record, or one that won't
+/// store (an account name that isn't one), a link of a categorized or
+/// already linked one, an uncategorize or unlink of what isn't there.
+/// Rules, dismissals and projects meet none here.
+pub(crate) fn refuse(standing: &impl Standing, action: &Action) -> Result<(), WriteError> {
+    match action {
+        Action::Override { record, account } => {
+            refuse_linked(standing, record)?;
+            Ok(OverrideBody { account }.check()?)
+        }
+        Action::Split { record, legs } => {
+            refuse_linked(standing, record)?;
+            Ok(SplitBody {
+                legs: split_legs(legs),
+            }
+            .check()?)
+        }
+        Action::Uncategorize { record } if !standing.categorized(record) => {
+            Err(WriteError::NotCategorized(record.clone()))
+        }
+        Action::Link { a, b } => {
+            link_id(a, b)?;
+            for side in [a, b] {
+                if standing.categorized(side) {
+                    return Err(WriteError::Categorized(side.clone()));
+                }
+                refuse_linked(standing, side)?;
+            }
+            Ok(())
+        }
+        Action::Unlink { a, b } if !standing.links(a, b) => Err(WriteError::NotLinked {
+            a: a.clone(),
+            b: b.clone(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// `legs` as a split note stores them.
+fn split_legs(legs: &[Leg]) -> Vec<SplitLeg<'_>> {
+    legs.iter()
+        .map(|l| SplitLeg {
+            account: &l.account,
+            qty: l.qty,
+        })
+        .collect()
+}
+
+/// Fail when `record` is in a live link: an override would shadow it and
+/// leave the other side half-netted.
+fn refuse_linked(standing: &impl Standing, record: &str) -> Result<(), WriteError> {
+    match standing.linked_with(record) {
+        Some(other) => Err(WriteError::Linked {
+            record: record.to_owned(),
+            other: other.to_owned(),
+        }),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -915,5 +995,53 @@ mod tests {
 
         let blank = check(&f.vault, ndb, &tag(Some(" "))).unwrap_err();
         assert!(matches!(blank, WriteError::Chart(_)), "{blank}");
+    }
+
+    /// What a plan says a write moves is what applying it does: apply,
+    /// re-derive, and each moved transaction is as the plan's after says.
+    #[test]
+    fn plan_and_apply_agree() {
+        use crate::plan::{Categorized, plan};
+
+        let f = fixture();
+        let actions = [
+            Action::Rule {
+                pattern: "coffee shop".to_owned(),
+                source: None,
+                account: "expenses:coffee".to_owned(),
+            },
+            Action::Override {
+                record: "card:2".to_owned(),
+                account: "expenses:food".to_owned(),
+            },
+            Action::Link {
+                a: "bank:1".to_owned(),
+                b: "card:1".to_owned(),
+            },
+            Action::Uncategorize {
+                record: "card:2".to_owned(),
+            },
+        ];
+        for action in &actions {
+            let ndb = &f.ndb.ndb;
+            let txn = Transaction::new(ndb).unwrap();
+            let inputs = DeriveInputs::load(ndb, &txn, f.vault.author());
+            drop(txn);
+            let planned = plan(&f.raw, &inputs, action).unwrap();
+            assert!(!planned.moves.is_empty(), "{action:?} moves something");
+            f.apply(action, 1).unwrap();
+
+            let txn = Transaction::new(ndb).unwrap();
+            let inputs = DeriveInputs::load(ndb, &txn, f.vault.author());
+            let derived = ledgerdb::derive(&f.raw, &inputs.edits);
+            for moved in &planned.moves {
+                let now = Categorized::of(&f.raw, &derived, &inputs.edits, moved.txn);
+                assert_eq!(
+                    crate::plan::tier(now.why),
+                    crate::plan::tier(moved.after.why)
+                );
+                assert_eq!(now.legs, moved.after.legs, "{action:?}");
+            }
+        }
     }
 }

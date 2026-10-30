@@ -70,7 +70,7 @@ use cashflow::projects::Projects;
 use cashflow::triage::{self, Action, Triage};
 use cashflow::zone::Zone;
 use cashflow::{Books, CashflowDir, Config, DeriveInputs, Vault};
-use ledgerdb::Date;
+use ledgerdb::{Date, Ledger};
 use notedeck::{AppAction, AppContext, AppResponse, OpenUri};
 
 pub mod boards;
@@ -81,6 +81,7 @@ pub mod layers;
 pub mod money;
 pub mod news;
 pub mod period;
+pub mod plan_job;
 pub mod route;
 pub mod ui;
 mod view;
@@ -93,6 +94,7 @@ pub use view::View;
 
 use boards::{BoardSource, Boards, ProjectLink};
 use journal::{JournalSource, JournalState, Loaded};
+use plan_job::{PlanInputs, PlanJob};
 use ui::palette::Palette;
 
 /// How soon to poll again while a load or a sync is running.
@@ -114,6 +116,13 @@ pub struct CashflowApp {
     labels: Arc<Labels>,
     /// Vault writes the views asked for this frame, made in `render`.
     outbox: Vec<Action>,
+    /// What those writes would move, planned off the UI thread before a
+    /// view makes them.
+    plans: PlanJob,
+    /// The raw ledger an app handed its books plans over
+    /// ([`Self::set_raw`]); an app loading its own takes it from
+    /// [`Self::journal`].
+    raw: Option<Arc<Ledger>>,
     /// Where the books come from, when the app loads its own: `None` for an
     /// app handed its books with [`Self::set_books`].
     journal: Option<JournalSource>,
@@ -214,6 +223,8 @@ impl CashflowApp {
             triage: None,
             labels: Arc::new(Labels::default()),
             outbox: Vec::new(),
+            plans: PlanJob::default(),
+            raw: None,
             journal: None,
             summary: String::new(),
             projects: Projects::default(),
@@ -292,6 +303,18 @@ impl CashflowApp {
         self.books = Some(loaded.books);
         self.triage = Some(loaded.triage);
         self.generation += 1;
+    }
+
+    /// The raw ledger the books handed in with [`Self::set_loaded`] were
+    /// derived from, which the views' write plans derive from too. Without
+    /// it a handed app plans nothing.
+    pub fn set_raw(&mut self, raw: Arc<Ledger>) {
+        self.raw = Some(raw);
+    }
+
+    /// Whether a write plan a view asked for isn't made yet.
+    pub fn is_planning(&self) -> bool {
+        self.plans.is_busy()
     }
 
     /// Which project each account is in, as Projects and goals attribute
@@ -484,6 +507,8 @@ impl CashflowApp {
             triage,
             labels,
             outbox,
+            plans,
+            raw: _,
             journal,
             summary,
             projects,
@@ -562,6 +587,7 @@ impl CashflowApp {
                     ledger,
                     labels,
                     outbox,
+                    plans,
                     summary,
                     journal: journal.as_mut(),
                     projects,
@@ -626,6 +652,26 @@ impl CashflowApp {
         match cashflow::adventure::seen::write(&vault, ctx.ndb, &write.seen, write.after) {
             Ok(written) => self.news.written(written.created_at),
             Err(err) => tracing::warn!("cashflow: saving what the Adventure announced: {err}"),
+        }
+    }
+
+    /// Take the write plans that finished and start the ones the views
+    /// asked for this frame, from the books in hand's raw ledger and edits;
+    /// poll again soon while one runs.
+    fn update_plans(&mut self, ctx: &mut AppContext<'_>, ui: &egui::Ui) {
+        let raw = match &self.journal {
+            Some(journal) => journal.raw(),
+            None => self.raw.as_ref(),
+        };
+        let inputs = raw
+            .zip(self.triage.as_ref())
+            .map(|(raw, triage)| PlanInputs {
+                raw,
+                inputs: &triage.inputs,
+                generation: self.generation,
+            });
+        if self.plans.update(ctx.job_pool, inputs) {
+            ui.ctx().request_repaint_after(BUSY_REPAINT);
         }
     }
 
@@ -725,6 +771,7 @@ impl notedeck::App for CashflowApp {
         if lands {
             nav.reconcile(ctx.navigator);
         }
+        self.update_plans(ctx, ui);
         self.flush_writes(ctx);
         self.flush_news(ctx);
         let open = self.take_open_card();

@@ -32,7 +32,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use ledgerdb::{Accounts, Cond, Edits, Field, Ledger, Rule, TxnId, Why, derive};
+use ledgerdb::{Accounts, Cond, Edits, Field, Ledger, Rule, TxnId, Why};
 use nostrdb::{Ndb, Tags, Transaction};
 use nostrdb_net::Pubkey;
 
@@ -546,58 +546,6 @@ pub struct Decision {
     pub account: String,
 }
 
-/// A transaction a rule change moves.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Moved {
-    /// The transaction, in the raw ledger.
-    pub txn: TxnId,
-    /// Where it went before the change.
-    pub before: Decision,
-    /// Where it goes after.
-    pub after: Decision,
-}
-
-/// Every transaction in `raw` whose deciding rule differs between the
-/// rules `before` and `after`, in ledger order, with `before_rule` and
-/// `after_rule` mapping each side's compiled index to a rule's identity.
-///
-/// Transactions an override, split or transfer link decides are never in
-/// it: those win over every rule, so no rule change reaches them. Both
-/// sides must carry the same defaults.
-pub fn moves<K: PartialEq>(
-    raw: &Ledger,
-    before: &Compiled,
-    after: &Compiled,
-    before_rule: impl Fn(u32) -> K,
-    after_rule: impl Fn(u32) -> K,
-) -> Vec<Moved> {
-    let old = derive(raw, &before.edits);
-    let new = derive(raw, &after.edits);
-    let mut moved = Vec::new();
-    for i in 0..raw.txns().len() {
-        let txn = TxnId(i as u32);
-        let Some(was) = Decision::of(raw, before, txn, old.why(txn)) else {
-            continue;
-        };
-        let Some(now) = Decision::of(raw, after, txn, new.why(txn)) else {
-            continue;
-        };
-        let same = match (was.rule, now.rule) {
-            (None, None) => true,
-            (Some(a), Some(b)) => before_rule(a) == after_rule(b),
-            _ => false,
-        };
-        if !same {
-            moved.push(Moved {
-                txn,
-                before: was,
-                after: now,
-            });
-        }
-    }
-    moved
-}
-
 impl Decision {
     /// Where `why`, from deriving `raw` with `compiled`, sent `txn`'s
     /// counter leg, when a rule or the importer's default decided it; `None`
@@ -632,7 +580,7 @@ mod tests {
 
     use crate::test_util::{INGEST_TIMEOUT, TempNdb};
     use crate::vault::Vault;
-    use ledgerdb::{Journal, JournalStore, LayerFilter, SegmentHeader};
+    use ledgerdb::{Journal, JournalStore, LayerFilter, SegmentHeader, derive};
     use nostrdb::Filter;
 
     const SECRET: [u8; 32] = [7u8; 32];
@@ -817,6 +765,36 @@ mod tests {
         Fixture { _store: tmp, raw }
     }
 
+    /// [`crate::plan::moves`] between the rules `before` and `after`,
+    /// identified by `ids_before` and `ids_after`.
+    fn moves(
+        raw: &Ledger,
+        before: &Compiled,
+        after: &Compiled,
+        ids_before: &[&str],
+        ids_after: &[&str],
+    ) -> Vec<crate::plan::Move> {
+        use crate::plan::Side;
+        let old = derive(raw, &before.edits);
+        let new = derive(raw, &after.edits);
+        let id = |compiled: &Compiled, ids: &[&str], i: u32| {
+            ids[compiled.owner(Why::Rule(i)).unwrap().rule as usize].to_owned()
+        };
+        crate::plan::moves(
+            raw,
+            Side {
+                edits: &before.edits,
+                derived: &old,
+            },
+            Side {
+                edits: &after.edits,
+                derived: &new,
+            },
+            |a, b| id(before, ids_before, a) == id(after, ids_after, b),
+            &[],
+        )
+    }
+
     /// Adding a rule ahead of another moves the rows it takes, and says
     /// which rule they came from; rows no rule matched before move from the
     /// default.
@@ -825,47 +803,30 @@ mod tests {
         let Fixture { raw, _store } = ledger();
         let grocer = rule("expenses:food", "m", &["grocer"]);
         let air = rule("expenses:travel", "c", &["airline"]);
-        let before = [&grocer];
-        let after = [&air, &grocer];
-        let ids_before = ["grocer"];
-        let ids_after = ["air", "grocer"];
-        let moved = moves(
-            &raw,
-            &Compiled::of(before),
-            &Compiled::of(after),
-            |i| ids_before[i as usize],
-            |i| ids_after[i as usize],
-        );
+        let before = Compiled::of([&grocer]);
+        let after = Compiled::of([&air, &grocer]);
+        let moved = moves(&raw, &before, &after, &["grocer"], &["air", "grocer"]);
         assert_eq!(moved.len(), 1);
-        assert_eq!(raw.journal().txn(moved[0].txn).payee, {
-            let t2 = raw.find("t:2").unwrap();
-            raw.journal().txn(t2).payee
-        });
-        assert_eq!(moved[0].before.account, "expenses:food");
-        assert_eq!(moved[0].before.rule, Some(0));
-        assert_eq!(moved[0].after.account, "expenses:travel");
+        assert_eq!(moved[0].txn, raw.find("t:2").unwrap());
+        assert_eq!(moved[0].record.as_deref(), Some("t:2"));
+        assert_eq!(moved[0].before.account(), "expenses:food");
+        assert_eq!(before.owner(moved[0].before.why).map(|o| o.rule), Some(0));
+        assert_eq!(moved[0].after.account(), "expenses:travel");
 
         let bakery = rule("expenses:food", "z", &["bakery"]);
-        let after = [&grocer, &bakery];
-        let ids_after = ["grocer", "bakery"];
-        let moved = moves(
-            &raw,
-            &Compiled::of(before),
-            &Compiled::of(after),
-            |i| ids_before[i as usize],
-            |i| ids_after[i as usize],
-        );
+        let after = Compiled::of([&grocer, &bakery]);
+        let moved = moves(&raw, &before, &after, &["grocer"], &["grocer", "bakery"]);
         assert_eq!(moved.len(), 1);
-        assert_eq!(moved[0].before.rule, None);
-        assert_eq!(moved[0].before.account, "expenses:unknown");
+        assert_eq!(moved[0].before.why, Why::Default);
+        assert_eq!(moved[0].before.account(), "expenses:unknown");
 
         // Reordering rules that don't overlap moves nothing.
         let moved = moves(
             &raw,
             &Compiled::of([&grocer, &bakery]),
             &Compiled::of([&bakery, &grocer]),
-            |i| ["grocer", "bakery"][i as usize],
-            |i| ["bakery", "grocer"][i as usize],
+            &["grocer", "bakery"],
+            &["bakery", "grocer"],
         );
         assert!(moved.is_empty());
     }

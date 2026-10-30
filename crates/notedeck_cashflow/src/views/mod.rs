@@ -34,6 +34,9 @@ pub struct ViewCx<'a> {
     /// Vault writes to make once this frame is drawn: a view queues what
     /// the person asked for, and the app writes it with the host's account.
     pub outbox: &'a mut Vec<Action>,
+    /// What a write would move, planned off the UI thread: a view asks
+    /// before it queues one on [`Self::outbox`].
+    pub plans: &'a mut crate::plan_job::PlanJob,
     /// One line on what the books hold and how long they took to load
     /// ([`crate::ui::journal_status::summary`]); empty with no books.
     pub summary: &'a str,

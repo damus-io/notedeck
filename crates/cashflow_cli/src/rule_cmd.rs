@@ -9,10 +9,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use cashflow::plan::{self, Move, Side};
 use cashflow::vault_edits::VaultEdits;
 use cashflow::vault_rules::{
-    AmountCond, Compiled, Decision, MetaNeedle, Moved, Owner, Place as RulePlace, RuleNote,
-    VaultRules, moves, new_rule_id,
+    AmountCond, Compiled, Decision, MetaNeedle, Owner, Place as RulePlace, RuleNote, VaultRules,
+    new_rule_id,
 };
 use cashflow::{CashflowDir, rules};
 use ledgerdb::{Ledger, TxnId, Why, derive};
@@ -231,35 +232,52 @@ impl<'r, 'a> Plan<'r, 'a> {
     }
 }
 
-/// What a change does to the books: every row it moves. `per_txn`'s rows
-/// never move.
-fn plan_moves(raw: &Ledger, per_txn: &VaultEdits, before: &Plan, after: &Plan) -> Vec<Moved> {
-    moves(
+/// The id of the rule `plan`'s compiled rule `i` came from, `compiled`
+/// being `plan` compiled.
+fn rule_id<'r>(plan: &Plan<'r, '_>, compiled: &Compiled, i: u32) -> Option<&'r str> {
+    compiled.owner(Why::Rule(i)).map(|o| plan.id(o.rule))
+}
+
+/// What a change does to the books: every row it moves, from one rule to
+/// another ([`plan::moves`]). `per_txn`'s rows never move.
+fn plan_moves(raw: &Ledger, per_txn: &VaultEdits, before: &Plan, after: &Plan) -> Vec<Move> {
+    let old = with_edits(before.compile(), per_txn);
+    let new = with_edits(after.compile(), per_txn);
+    let old_derived = derive(raw, &old.edits);
+    let new_derived = derive(raw, &new.edits);
+    plan::moves(
         raw,
-        &with_edits(before.compile(), per_txn),
-        &with_edits(after.compile(), per_txn),
-        |i| before.id(i),
-        |i| after.id(i),
+        Side {
+            edits: &old.edits,
+            derived: &old_derived,
+        },
+        Side {
+            edits: &new.edits,
+            derived: &new_derived,
+        },
+        |a, b| rule_id(before, &old, a) == rule_id(after, &new, b),
+        &[],
     )
 }
 
 /// Print what `moved` moves; `extra` is the command's own JSON fields.
 fn summarize(
     raw: &Ledger,
-    moved: &[Moved],
+    moved: &[Move],
     before: &Plan,
     after: &Plan,
     write: Write,
     extra: Value,
 ) {
+    let compiled = before.compile();
     // (from, to) -> rows, and the rows each existing rule loses.
     let mut flows: BTreeMap<(&str, &str), u64> = BTreeMap::new();
     let mut taken: BTreeMap<&str, u64> = BTreeMap::new();
     for row in moved {
         *flows
-            .entry((&row.before.account, &row.after.account))
+            .entry((row.before.account(), row.after.account()))
             .or_default() += 1;
-        if let Some(rule) = row.before.rule {
+        if let Some(rule) = compiled.owner(row.before.why).map(|o| o.rule) {
             let still_here = after.rules.iter().any(|r| r.id == before.id(rule));
             // A rule that is still there lost the row to another; a removed
             // one didn't have it taken.
@@ -285,8 +303,8 @@ fn summarize(
                 "date": txn.date.to_string(),
                 "id": id,
                 "payee": journal.strings.get(txn.payee),
-                "from": row.before.account,
-                "to": row.after.account,
+                "from": row.before.account(),
+                "to": row.after.account(),
             })).collect::<Vec<_>>(),
         });
         if let (Value::Object(out), Value::Object(extra)) = (&mut out, extra) {
@@ -317,8 +335,8 @@ fn summarize(
             "  {}  {id}  {}  {} -> {}",
             txn.date,
             journal.strings.get(txn.payee),
-            row.before.account,
-            row.after.account
+            row.before.account(),
+            row.after.account()
         );
     }
     if write.dry_run {

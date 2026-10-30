@@ -2,196 +2,74 @@
 //! `split`, `transfer` and `edits` ([`cashflow::vault_edits`]), and the
 //! triage queue, `unknown` ([`cashflow::unknown`]).
 //!
-//! A write derives the raw ledger with the vault's edits before and after
-//! the change, so it can print the transaction's legs both ways and refuse
-//! an edit derive would reject (a split that doesn't sum, a link that
-//! doesn't net) before anything is stored. `--dry-run` stops there.
-//! The write itself, and the refusals that come before it, are
-//! [`cashflow::triage::apply`]'s, the copy of the rules the app uses too.
+//! A write is planned first ([`cashflow::plan::plan`]): the raw ledger
+//! derived with the vault's edits before and after the change, so it can
+//! print the transaction's legs both ways and refuse an edit derive would
+//! reject (a split that doesn't sum, a link that doesn't net) before
+//! anything is stored. `--dry-run` stops there. The plan's refusals and
+//! the write itself are [`cashflow::triage`]'s, the copy of the rules the
+//! app uses too.
 
+use cashflow::plan::{self, Categorized, Move, Plan};
 use cashflow::split::{self, LegDraft};
 use cashflow::transfers;
 use cashflow::triage::{self, Action, WriteError};
 use cashflow::unknown::{self, Scope};
 use cashflow::vault::Record;
 use cashflow::vault_edits::{LinkNote, OverrideNote, SplitLeg, SplitNote, VaultEdits, link_id};
-use cashflow::{Books, CashflowDir, journal};
-use ledgerdb::{
-    Derived, Edits, LayerFilter, Ledger, Override, Split, TransferLink, TxnId, Why, derive,
-};
+use cashflow::{Books, CashflowDir, DeriveInputs, journal};
+use ledgerdb::{Edits, LayerFilter, Ledger};
 use serde_json::{Value, json};
 
 use crate::args::{TransferCommand, UnknownArgs, Write};
-use crate::books_cmd::{format_total, raw_ledger, retired, vault_edits};
+use crate::books_cmd::{derive_inputs, format_total, raw_ledger, retired, vault_edits};
 use crate::vault_cmd::{Session, session_ref};
 
-/// The raw transaction with record id `record`, or an error.
-fn find(raw: &Ledger, record: &str) -> Result<TxnId, String> {
-    raw.find(record)
-        .ok_or_else(|| format!("no transaction with id '{record}' in the journal"))
+/// How a transaction is decided, as JSON.
+fn categorized_json(categorized: &Categorized) -> Value {
+    json!({
+        "decided_by": plan::tier(categorized.why),
+        "legs": categorized.legs.iter().map(|l| json!({"account": l.account, "amount": l.amount})).collect::<Vec<_>>(),
+    })
 }
 
-/// The name derive's report and `rule test` give each tier.
-fn tier(why: Why) -> &'static str {
-    match why {
-        Why::Untouched => "untouched",
-        Why::Default => "default",
-        Why::Rule(_) => "rule",
-        Why::Transfer(_) => "transfer",
-        Why::Override(_) => "override",
-        Why::Split(_) => "split",
-    }
-}
-
-/// One posting as shown: its account and amount.
-struct Leg {
-    account: String,
-    amount: String,
-}
-
-/// How a derive left one transaction: which tier decided it and the legs
-/// it decided, leaving out the source's own legs, which no edit moves.
-struct Categorized {
-    tier: &'static str,
-    legs: Vec<Leg>,
-}
-
-impl Categorized {
-    /// Transaction `txn` in `derived`, whose raw form is in `raw` and whose
-    /// default accounts are `edits.defaults`.
-    fn of(raw: &Ledger, derived: &Derived, edits: &Edits, txn: TxnId) -> Self {
-        let raw_journal = raw.journal();
-        let own: Vec<&str> = raw_journal
-            .postings_of(raw_journal.txn(txn))
-            .iter()
-            .map(|p| raw_journal.accounts.full_name(p.account))
-            .filter(|name| !edits.defaults.iter().any(|d| d == name))
-            .collect();
-        let journal = derived.ledger().journal();
-        let legs = journal
-            .postings_of(journal.txn(txn))
-            .iter()
-            .filter(|p| !own.contains(&journal.accounts.full_name(p.account)))
-            .map(|p| Leg {
-                account: journal.accounts.full_name(p.account).to_owned(),
-                amount: p.amount().display(&journal.commodities).to_string(),
-            })
-            .collect();
-        Categorized {
-            tier: tier(derived.why(txn)),
-            legs,
-        }
-    }
-
-    fn json(&self) -> Value {
-        json!({
-            "decided_by": self.tier,
-            "legs": self.legs.iter().map(|l| json!({"account": l.account, "amount": l.amount})).collect::<Vec<_>>(),
-        })
-    }
-
-    /// `tier  account amount, account amount`.
-    fn line(&self) -> String {
-        let legs: Vec<String> = self
-            .legs
-            .iter()
-            .map(|l| format!("{} {}", l.account, l.amount))
-            .collect();
-        format!("{:<9} {}", self.tier, legs.join(", "))
-    }
-}
-
-/// One transaction a change touches, before and after.
-struct Change {
-    record: String,
-    date: String,
-    payee: String,
-    before: Categorized,
-    after: Categorized,
-}
-
-impl Change {
-    fn json(&self) -> Value {
-        json!({
-            "record_id": self.record,
-            "date": self.date,
-            "payee": self.payee,
-            "before": self.before.json(),
-            "after": self.after.json(),
-        })
-    }
-
-    fn print(&self) {
-        println!("{}  {}  {}", self.record, self.date, self.payee);
-        println!("  before  {}", self.before.line());
-        println!("  after   {}", self.after.line());
-    }
-}
-
-/// A change to the vault's edits, planned: the edits as they stand and as
-/// they would be.
-struct Planned<'r> {
-    raw: &'r Ledger,
-    before: Edits,
-    after: Edits,
-}
-
-/// The derives of a [`Planned`] change.
-struct Derives {
-    before: Derived,
-    after: Derived,
-}
-
-impl Planned<'_> {
-    fn derive(&self) -> Derives {
-        Derives {
-            before: derive(self.raw, &self.before),
-            after: derive(self.raw, &self.after),
-        }
-    }
-
-    /// Transaction `record` before and after.
-    fn change(&self, derives: &Derives, record: &str) -> Result<Change, String> {
-        let txn = find(self.raw, record)?;
-        let journal = self.raw.journal();
-        let found = journal.txn(txn);
-        Ok(Change {
-            record: record.to_owned(),
-            date: found.date.to_string(),
-            payee: journal.strings.get(found.payee).to_owned(),
-            before: Categorized::of(self.raw, &derives.before, &self.before, txn),
-            after: Categorized::of(self.raw, &derives.after, &self.after, txn),
-        })
-    }
-}
-
-/// Fail unless derive applied the edit to `record` after the change: it is
-/// decided by `want`. Otherwise say what derive rejected about it.
-fn require_applied(
-    raw: &Ledger,
-    derived: &Derived,
-    record: &str,
-    want: fn(Why) -> bool,
-    what: &str,
-) -> Result<(), String> {
-    let txn = find(raw, record)?;
-    if want(derived.why(txn)) {
-        return Ok(());
-    }
-    let problems: Vec<String> = derived
-        .report()
-        .rejected
+/// `tier  account amount, account amount`.
+fn categorized_line(categorized: &Categorized) -> String {
+    let legs: Vec<String> = categorized
+        .legs
         .iter()
-        .map(|r| format!("{:?}", r.problem))
+        .map(|l| format!("{} {}", l.account, l.amount))
         .collect();
-    let why = match derived.why(txn) {
-        Why::Untouched => {
-            "it has no counter leg (no posting, or more than one, to a default account)".to_owned()
-        }
-        other if problems.is_empty() => format!("a {} decides it", tier(other)),
-        _ => problems.join("; "),
-    };
-    Err(format!("the {what} on {record} wouldn't apply: {why}"))
+    format!("{:<9} {}", plan::tier(categorized.why), legs.join(", "))
+}
+
+/// One transaction a write reaches, before and after, as JSON.
+fn move_json(raw: &Ledger, moved: &Move) -> Value {
+    let journal = raw.journal();
+    let txn = journal.txn(moved.txn);
+    json!({
+        "record_id": moved.record,
+        "date": txn.date.to_string(),
+        "payee": journal.strings.get(txn.payee),
+        "before": categorized_json(&moved.before),
+        "after": categorized_json(&moved.after),
+    })
+}
+
+/// Print one transaction a write reaches, before and after.
+fn print_move(raw: &Ledger, moved: &Move) {
+    let journal = raw.journal();
+    let txn = journal.txn(moved.txn);
+    let record = moved.record.as_deref().unwrap_or("");
+    println!("{record}  {}  {}", txn.date, journal.strings.get(txn.payee));
+    println!("  before  {}", categorized_line(&moved.before));
+    println!("  after   {}", categorized_line(&moved.after));
+}
+
+/// What `action` would do to the raw ledger, derived with the vault's
+/// edits, or the refusal it meets ([`plan::plan`]).
+fn planned(raw: &Ledger, inputs: &DeriveInputs, action: &Action) -> Result<Plan, String> {
+    plan::plan(raw, inputs, action).map_err(refusal)
 }
 
 /// `err` as the CLI says it: a refusal names the command that gets past it.
@@ -210,14 +88,6 @@ fn refusal(err: WriteError) -> String {
 /// The `d` tag a record of type `T` with id `id` is stored at.
 fn d_of<'a, T: Record<'a>>(id: &str) -> String {
     format!("{}:{id}", T::PREFIX)
-}
-
-/// The refusal [`triage::apply`] would make of `action`, before anything
-/// is planned.
-fn check(session: &Session, action: &Action) -> Result<(), String> {
-    triage::check(&session.vault, &session.ndb, action)
-        .map(drop)
-        .map_err(refusal)
 }
 
 /// Write each of `actions` through [`triage::apply`], as this session, and
@@ -274,27 +144,41 @@ fn legs_json(legs: &[SplitLeg]) -> Value {
         .collect()
 }
 
-/// Print a single-transaction write's outcome.
-fn report(
-    session: &Session,
-    write: Write,
-    changes: &[Change],
-    d: &str,
+/// What a single-transaction write reached, to print.
+struct Outcome<'a> {
+    /// The raw ledger the plan was made over.
+    raw: &'a Ledger,
+    /// The plan.
+    plan: &'a Plan,
+    /// The `d` tag written or cleared.
+    d: &'a str,
+    /// The note it replaced, as JSON, or null.
     replaced: Value,
-    verb: &str,
-) {
+    /// What it did: "wrote" or "cleared".
+    verb: &'a str,
+}
+
+/// Print a single-transaction write's outcome.
+fn report(session: &Session, write: Write, outcome: Outcome<'_>) {
+    let Outcome {
+        raw,
+        plan,
+        d,
+        replaced,
+        verb,
+    } = outcome;
     if write.json {
         let out = json!({
             "dry_run": write.dry_run,
             "d": d,
             "replaced": replaced,
-            "changes": changes.iter().map(Change::json).collect::<Vec<_>>(),
+            "changes": plan.moves.iter().map(|m| move_json(raw, m)).collect::<Vec<_>>(),
         });
         println!("{out}");
         return;
     }
-    for change in changes {
-        change.print();
+    for moved in &plan.moves {
+        print_move(raw, moved);
     }
     let replaced = match replaced.get("kind").and_then(Value::as_str) {
         Some(kind) => format!(
@@ -310,12 +194,6 @@ fn report(
     }
 }
 
-/// Drop every override and split of `record` from `edits`.
-fn without_categorization(edits: &mut Edits, record: &str) {
-    edits.overrides.retain(|o| o.record_id != record);
-    edits.splits.retain(|s| s.record_id != record);
-}
-
 /// `categorize <record-id> <account>`.
 pub async fn categorize(
     dir: &CashflowDir,
@@ -325,45 +203,26 @@ pub async fn categorize(
     write: Write,
 ) -> Result<(), String> {
     let raw = raw_ledger(dir, session)?;
-    find(&raw, record)?;
     let action = Action::Override {
         record: record.to_owned(),
         account: account.to_owned(),
     };
-    check(session, &action)?;
-    let before = vault_edits(session)?;
-
-    let mut after = before.clone();
-    without_categorization(&mut after, record);
-    after.overrides.push(Override {
-        record_id: record.to_owned(),
-        account: account.to_owned(),
-    });
-    let plan = Planned {
-        raw: &raw,
-        before,
-        after,
-    };
-    let derives = plan.derive();
-    require_applied(
-        &raw,
-        &derives.after,
-        record,
-        |w| matches!(w, Why::Override(_)),
-        "override",
-    )?;
-    let change = plan.change(&derives, record)?;
+    let plan = planned(&raw, &derive_inputs(session)?, &action)?;
     let replaced = replaced(session, record, Rewrites::Override)?;
     if !write.dry_run {
         commit(session, &[action]).await?;
     }
+    let d = d_of::<OverrideNote>(record);
     report(
         session,
         write,
-        &[change],
-        &d_of::<OverrideNote>(record),
-        replaced,
-        "wrote",
+        Outcome {
+            raw: &raw,
+            plan: &plan,
+            d: &d,
+            replaced,
+            verb: "wrote",
+        },
     );
     Ok(())
 }
@@ -376,26 +235,26 @@ pub async fn uncategorize(
     write: Write,
 ) -> Result<(), String> {
     let raw = raw_ledger(dir, session)?;
-    find(&raw, record)?;
     let action = Action::Uncategorize {
         record: record.to_owned(),
     };
-    check(session, &action)?;
-    let before = vault_edits(session)?;
+    let plan = planned(&raw, &derive_inputs(session)?, &action)?;
     let replaced = replaced(session, record, Rewrites::Override)?;
     let d = replaced["d"].as_str().unwrap_or_default().to_owned();
-    let mut after = before.clone();
-    without_categorization(&mut after, record);
-    let plan = Planned {
-        raw: &raw,
-        before,
-        after,
-    };
-    let change = plan.change(&plan.derive(), record)?;
     if !write.dry_run {
         commit(session, &[action]).await?;
     }
-    report(session, write, &[change], &d, Value::Null, "cleared");
+    report(
+        session,
+        write,
+        Outcome {
+            raw: &raw,
+            plan: &plan,
+            d: &d,
+            replaced: Value::Null,
+            verb: "cleared",
+        },
+    );
     Ok(())
 }
 
@@ -408,45 +267,31 @@ pub async fn split(
     write: Write,
 ) -> Result<(), String> {
     let raw = raw_ledger(dir, session)?;
-    let id = find(&raw, record)?;
-    let before = vault_edits(session)?;
-    let legs = split::legs(&raw, &before, id, record, legs).map_err(|e| e.to_string())?;
-    let mut after = before.clone();
-    without_categorization(&mut after, record);
-    after.splits.push(Split {
-        record_id: record.to_owned(),
-        legs: legs.clone(),
-    });
+    let id = raw
+        .find(record)
+        .ok_or_else(|| WriteError::NoRecord(record.to_owned()).to_string())?;
+    let inputs = derive_inputs(session)?;
+    let legs = split::legs(&raw, &inputs.edits, id, record, legs).map_err(|e| e.to_string())?;
     let action = Action::Split {
         record: record.to_owned(),
         legs,
     };
-    check(session, &action)?;
-    let plan = Planned {
-        raw: &raw,
-        before,
-        after,
-    };
-    let derives = plan.derive();
-    require_applied(
-        &raw,
-        &derives.after,
-        record,
-        |w| matches!(w, Why::Split(_)),
-        "split",
-    )?;
-    let change = plan.change(&derives, record)?;
+    let plan = planned(&raw, &inputs, &action)?;
     let replaced = replaced(session, record, Rewrites::Split)?;
     if !write.dry_run {
         commit(session, &[action]).await?;
     }
+    let d = d_of::<SplitNote>(record);
     report(
         session,
         write,
-        &[change],
-        &d_of::<SplitNote>(record),
-        replaced,
-        "wrote",
+        Outcome {
+            raw: &raw,
+            plan: &plan,
+            d: &d,
+            replaced,
+            verb: "wrote",
+        },
     );
     Ok(())
 }
@@ -476,46 +321,25 @@ async fn link(
 ) -> Result<(), String> {
     let id = link_id(a, b).map_err(|e| e.to_string())?;
     let raw = raw_ledger(dir, session)?;
-    find(&raw, a)?;
-    find(&raw, b)?;
     let action = Action::Link {
         a: a.to_owned(),
         b: b.to_owned(),
     };
-    check(session, &action)?;
-    let before = vault_edits(session)?;
-
-    let mut after = before.clone();
-    after.links.push(TransferLink {
-        a: a.to_owned(),
-        b: b.to_owned(),
-    });
-    let plan = Planned {
-        raw: &raw,
-        before,
-        after,
-    };
-    let derives = plan.derive();
-    for side in [a, b] {
-        require_applied(
-            &raw,
-            &derives.after,
-            side,
-            |w| matches!(w, Why::Transfer(_)),
-            "link",
-        )?;
-    }
-    let changes = [plan.change(&derives, a)?, plan.change(&derives, b)?];
+    let plan = planned(&raw, &derive_inputs(session)?, &action)?;
     if !write.dry_run {
         commit(session, &[action]).await?;
     }
+    let d = d_of::<LinkNote>(&id);
     report(
         session,
         write,
-        &changes,
-        &d_of::<LinkNote>(&id),
-        Value::Null,
-        "wrote",
+        Outcome {
+            raw: &raw,
+            plan: &plan,
+            d: &d,
+            replaced: Value::Null,
+            verb: "wrote",
+        },
     );
     Ok(())
 }
@@ -534,34 +358,21 @@ async fn unlink(
         a: a.to_owned(),
         b: b.to_owned(),
     };
-    check(session, &action)?;
-    let before = vault_edits(session)?;
-    let mut after = before.clone();
-    after
-        .links
-        .retain(|l| link_id(&l.a, &l.b).is_ok_and(|other| other != id));
-    let plan = Planned {
-        raw: &raw,
-        before,
-        after,
-    };
-    let derives = plan.derive();
-    let mut changes = Vec::with_capacity(2);
-    for side in [a, b] {
-        if raw.find(side).is_some() {
-            changes.push(plan.change(&derives, side)?);
-        }
-    }
+    let plan = planned(&raw, &derive_inputs(session)?, &action)?;
     if !write.dry_run {
         commit(session, &[action]).await?;
     }
+    let d = d_of::<LinkNote>(&id);
     report(
         session,
         write,
-        &changes,
-        &d_of::<LinkNote>(&id),
-        Value::Null,
-        "cleared",
+        Outcome {
+            raw: &raw,
+            plan: &plan,
+            d: &d,
+            replaced: Value::Null,
+            verb: "cleared",
+        },
     );
     Ok(())
 }

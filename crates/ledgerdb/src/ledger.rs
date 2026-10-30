@@ -172,7 +172,7 @@ pub struct Loaded {
 ///
 /// The arrays can only be changed by loading; everything else reads them
 /// through the accessors.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Ledger {
     /// Transactions sorted by `(date, segment hash, position)`, postings in
     /// the same order, prices sorted by `(date, imported, segment hash,

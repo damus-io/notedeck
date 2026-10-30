@@ -1,9 +1,11 @@
 //! The triage inbox: transfer suggestions to accept or dismiss, then the
 //! unknown transactions grouped by payee, biggest total first.
 //!
-//! A group's "Categorize all…" picks an account and writes a rule matching
-//! the group's payee pattern; a row's "This one…" writes an override for
-//! just that transaction. Accepting a suggestion writes a transfer link,
+//! A group's "Categorize all…" picks an account, then says what a rule
+//! matching the group's payee pattern would move ("Moves 3 transactions to
+//! …"), planned off the UI thread ([`crate::plan_job`]), and writes it on
+//! Apply, which only a plan that came back clean enables. A row's "This
+//! one…" writes an override for just that transaction. Accepting a suggestion writes a transfer link,
 //! dismissing it a cleared one. Each write is queued on the outbox and
 //! whatever it takes is hidden at once; the hides go when the next triage
 //! arrives, which is the re-derive with the write in it, and come back if
@@ -24,6 +26,7 @@ use ledgerdb::TxnId;
 
 use super::TransactionsState;
 use super::model::{self, GroupView, SuggestionView};
+use crate::plan_job::{PlanJob, PlanKey};
 use crate::ui::account_picker::{self, AccountPicker, Choices};
 use crate::ui::hud::{FloatingXp, Grouped};
 use crate::ui::palette::Palette;
@@ -54,6 +57,8 @@ pub(crate) struct InboxState {
     picking: Option<Target>,
     /// The account picker.
     picker: AccountPicker,
+    /// A group's rule, picked and waiting for its Apply.
+    confirm: Option<Confirm>,
     /// The last write that failed, and why.
     error: Option<String>,
     /// The XP the writes earned, floating up from the progress line.
@@ -69,6 +74,48 @@ struct Hidden {
     suggestions: HashSet<usize>,
     /// How many unknown transactions the hidden groups and rows hold.
     unknown: usize,
+}
+
+/// A group's rule waiting for its Apply, and what its plan says.
+struct Confirm {
+    /// The group's index.
+    group: usize,
+    /// The rule.
+    action: Action,
+    /// What the plan says it moves, or why it can't be written; empty
+    /// until the plan lands.
+    text: String,
+    /// Whether the plan came back clean, so Apply is enabled.
+    ok: bool,
+}
+
+impl Confirm {
+    /// Write what `plan` says, once it has landed.
+    fn land(&mut self, plan: &crate::plan_job::PlanResult) {
+        let Action::Rule { account, .. } = &self.action else {
+            return;
+        };
+        self.ok = plan.is_ok();
+        self.text = match plan {
+            Ok(plan) => {
+                let n = plan.moves.len();
+                let rows = if n == 1 {
+                    "transaction"
+                } else {
+                    "transactions"
+                };
+                let mut text = format!("Moves {n} {rows} to {account}");
+                if plan.unchanged > 0 {
+                    text.push_str(&format!(
+                        "; {} more it matches stay as they are decided",
+                        plan.unchanged
+                    ));
+                }
+                text
+            }
+            Err(err) => err.to_string(),
+        };
+    }
 }
 
 /// What a pick categorizes.
@@ -98,6 +145,7 @@ impl InboxState {
         self.progress = ledger.triage.progress;
         self.hidden = Hidden::default();
         self.picking = None;
+        self.confirm = None;
         self.expanded.retain(|&i| i < self.groups.len());
         self.write_progress();
     }
@@ -181,6 +229,10 @@ enum Click {
     Accept(usize),
     /// Dismiss it.
     Dismiss(usize),
+    /// Write the rule waiting for its Apply.
+    Apply,
+    /// Drop it.
+    CancelRule,
     /// Open the detail of the row of group `group` that is transaction
     /// `txn`.
     Open {
@@ -191,20 +243,40 @@ enum Click {
     },
 }
 
-/// Draw the inbox, queueing on `outbox` the writes it asks for, and
-/// floating the XP each earns at `xp`'s rates when it is given. Returns
-/// the record id of a row clicked, whose detail to open.
+/// Where the inbox's writes go: queued on the outbox, after a plan when
+/// they take many rows.
+pub(crate) struct Writes<'a> {
+    /// The writes to make once this frame is drawn.
+    pub(crate) outbox: &'a mut Vec<Action>,
+    /// What a rule would move, asked for before its Apply.
+    pub(crate) plans: &'a mut PlanJob,
+    /// The XP rates to float what each write earns at, when shown.
+    pub(crate) xp: Option<&'a XpTuning>,
+}
+
+/// Draw the inbox, queueing the writes it asks for on `writes`, and
+/// floating the XP each earns. Returns the record id of a row clicked,
+/// whose detail to open.
 #[profiling::function]
 pub(crate) fn ui(
     ui: &mut egui::Ui,
     palette: &Palette,
-    outbox: &mut Vec<Action>,
-    xp: Option<&XpTuning>,
+    writes: Writes<'_>,
     state: &mut TransactionsState,
 ) -> Option<String> {
+    let Writes { outbox, plans, xp } = writes;
     let TransactionsState {
         inbox, accounts, ..
     } = state;
+    match inbox.confirm.as_mut() {
+        Some(confirm) if confirm.text.is_empty() => {
+            if let Some(plan) = plans.result(PlanKey::Inbox) {
+                confirm.land(plan);
+            }
+        }
+        Some(_) => {}
+        None => plans.cancel(PlanKey::Inbox),
+    }
     let mut click = None;
     let mut picked = None;
     egui::ScrollArea::vertical()
@@ -251,6 +323,7 @@ pub(crate) fn ui(
                     open,
                     hidden: &inbox.hidden.rows,
                     picking: inbox.picking,
+                    confirm: inbox.confirm.as_ref().filter(|c| c.group == group.index),
                 };
                 let choices = Choices {
                     accounts: &accounts.names,
@@ -283,13 +356,16 @@ pub(crate) fn ui(
     {
         account_picker::remember(&mut accounts.recent, &account);
         inbox.error = None;
-        categorize(inbox, outbox, xp, target, account);
+        categorize(inbox, outbox, plans, xp, target, account);
     }
     match click {
         Some(Click::Pick(target)) => {
             inbox.picking = Some(target);
+            inbox.confirm = None;
             inbox.picker.open();
         }
+        Some(Click::Apply) => apply(inbox, outbox, xp),
+        Some(Click::CancelRule) => inbox.confirm = None,
         Some(Click::Toggle(index)) => {
             if !inbox.expanded.remove(&index) {
                 inbox.expanded.insert(index);
@@ -331,10 +407,12 @@ fn answer(
     inbox.hidden.suggestions.insert(index);
 }
 
-/// Queue the write that sends `target` to `account`, and hide it.
+/// Send `target` to `account`: a group's rule waits for its plan and an
+/// Apply; a row's override is queued, and the row hidden, at once.
 fn categorize(
     inbox: &mut InboxState,
     outbox: &mut Vec<Action>,
+    plans: &mut PlanJob,
     xp: Option<&XpTuning>,
     target: Target,
     account: String,
@@ -352,9 +430,13 @@ fn categorize(
                 source: rule.source.clone(),
                 account,
             };
-            let rows = group.rows.len() + group.more;
-            inbox.queue(outbox, action, rows, xp);
-            inbox.hide_group(index, rows);
+            plans.request(PlanKey::Inbox, action.clone());
+            inbox.confirm = Some(Confirm {
+                group: index,
+                action,
+                text: String::new(),
+                ok: false,
+            });
         }
         Target::Row { group, txn } => {
             let row = inbox
@@ -368,6 +450,19 @@ fn categorize(
             inbox.hide_row(txn);
         }
     }
+}
+
+/// Queue the rule waiting for its Apply, and hide its group.
+fn apply(inbox: &mut InboxState, outbox: &mut Vec<Action>, xp: Option<&XpTuning>) {
+    let Some(confirm) = inbox.confirm.take() else {
+        return;
+    };
+    let Some(group) = inbox.groups.get(confirm.group) else {
+        return;
+    };
+    let rows = group.rows.len() + group.more;
+    inbox.queue(outbox, confirm.action, rows, xp);
+    inbox.hide_group(confirm.group, rows);
 }
 
 /// A section's heading.
@@ -419,6 +514,8 @@ struct GroupDraw<'a> {
     hidden: &'a HashSet<TxnId>,
     /// What the picker is open for, if anything.
     picking: Option<Target>,
+    /// The group's rule waiting for its Apply, if it has one.
+    confirm: Option<&'a Confirm>,
 }
 
 /// What a frame of [`group_ui`] did.
@@ -427,6 +524,28 @@ struct GroupOut {
     click: Option<Click>,
     picked: Option<String>,
     cancelled: bool,
+}
+
+/// A group's rule waiting for its Apply: what its plan says it moves, and
+/// Apply (enabled once the plan came back clean) and Cancel.
+fn confirm_ui(ui: &mut egui::Ui, palette: &Palette, confirm: &Confirm, out: &mut GroupOut) {
+    let (text, color) = match (confirm.text.as_str(), confirm.ok) {
+        ("", _) => ("Checking what it moves…", palette.text_muted),
+        (text, true) => (text, palette.text),
+        (text, false) => (text, palette.warning),
+    };
+    ui.label(RichText::new(text).size(13.0).color(color));
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(confirm.ok, egui::Button::new("Apply"))
+            .clicked()
+        {
+            out.click = Some(Click::Apply);
+        }
+        if ui.button("Cancel").clicked() {
+            out.click = Some(Click::CancelRule);
+        }
+    });
 }
 
 /// One payee group: its name, size and the rule it would take, its rows
@@ -476,6 +595,9 @@ fn group_ui(
         }
         if draw.picking == Some(Target::Group(group.index)) {
             pick(ui, &mut out);
+        }
+        if let Some(confirm) = draw.confirm {
+            confirm_ui(ui, palette, confirm, &mut out);
         }
         if !draw.open {
             return;

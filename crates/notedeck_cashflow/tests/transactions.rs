@@ -12,8 +12,8 @@ mod common;
 
 use cashflow::kinds;
 use common::{
-    CashflowTestState, DESKTOP, JournalFixture, MOBILE, TRIAGE_CARD, VaultNote, harness,
-    loaded_harness, snapshot_harness, step_until, triage_app, wait_vault, watch_vault,
+    CashflowTestState, DESKTOP, JournalFixture, MOBILE, TRIAGE_CARD, VaultNote, apply_plan,
+    harness, loaded_harness, snapshot_harness, step_until, triage_app, wait_vault, watch_vault,
 };
 use egui::accesskit::Role;
 use egui_kittest::Harness;
@@ -74,8 +74,9 @@ fn the_inbox_lists_groups_and_suggestions() {
     assert_eq!(harness.query_all_by_label("Categorize all…").count(), 7);
 }
 
-/// "Categorize all…" on a group writes a rule matching its payee, to an
-/// account typed in as a new path, and hides the group at once.
+/// "Categorize all…" on a group plans a rule matching its payee, to an
+/// account typed in as a new path, says what it moves, and on Apply
+/// writes it and hides the group at once.
 #[test]
 fn categorize_all_writes_a_rule() {
     let mut harness = harness(triage_app(), TALL);
@@ -96,6 +97,13 @@ fn categorize_all_writes_a_rule() {
         .get_by_label("+ New account expenses:food:coffee")
         .click();
     harness.run();
+    step_until(&mut harness, "the plan lands", |s| !s.app.is_planning());
+    assert!(
+        harness
+            .query_by_label("Moves 3 transactions to expenses:food:coffee")
+            .is_some()
+    );
+    apply_plan(&mut harness);
 
     let rules = wait_vault(harness.state_mut(), sub, 1, kinds::RULE);
     assert_eq!(rules.len(), 1);
@@ -191,6 +199,8 @@ fn a_rule_from_the_inbox_rederives() {
     harness
         .get_by_label("+ New account expenses:food:coffee")
         .click();
+    harness.run();
+    apply_plan(&mut harness);
     step_until(&mut harness, "the rule re-derives", |s| {
         progress(s).is_some_and(|p| p.left == 4)
     });
@@ -200,6 +210,30 @@ fn a_rule_from_the_inbox_rederives() {
             .query_by_label("4 unknown left (−3 today)")
             .is_some()
     );
+}
+
+/// A group's rule picked, its plan landed: what it moves, and Apply.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_transactions_rule_plan() {
+    let mut harness = snapshot_harness(triage_app(), TALL);
+    open_inbox(&mut harness);
+    harness
+        .get_all_by_label("Categorize all…")
+        .last()
+        .unwrap()
+        .click();
+    harness.run();
+    harness
+        .get_by_role(Role::TextInput)
+        .type_text("expenses:food:coffee");
+    harness.run();
+    harness
+        .get_by_label("+ New account expenses:food:coffee")
+        .click();
+    harness.run();
+    step_until(&mut harness, "the plan lands", |s| !s.app.is_planning());
+    harness.snapshot("cashflow_transactions_rule_plan");
 }
 
 /// The register over the triage journals: icons and display names from

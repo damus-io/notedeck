@@ -22,6 +22,7 @@ use cashflow::chart::{AccountMeta, record_id};
 use cashflow::manifest::{self, Manifest};
 use cashflow::{Books, CashflowDir, Vault, kinds};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use ledgerdb::{Date, Edits, Journal, JournalStore, LayerFilter, SegmentHash, SegmentHeader};
 use nostrdb::Filter;
 use nostrdb_net::FullKeypair;
@@ -414,6 +415,14 @@ pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
         .build()
         .expect("runtime")
         .block_on(future)
+}
+
+/// Wait for the write plan the inbox asked for to land, then press its
+/// Apply.
+pub fn apply_plan(harness: &mut Harness<'_, CashflowTestState>) {
+    step_until(harness, "the plan lands", |s| !s.app.is_planning());
+    harness.get_by_label("Apply").click();
+    harness.run();
 }
 
 /// Step `harness` until `done` holds of its state, or fail after
@@ -879,6 +888,7 @@ pub fn loaded_app(store: &JournalStore) -> CashflowApp {
     let mut app = CashflowApp::new();
     app.set_today(today());
     app.set_loaded(notedeck_cashflow::journal::Loaded { books, triage });
+    app.set_raw(Arc::new(loaded.ledger));
     app.set_labels(triage_labels());
     app.set_view(notedeck_cashflow::View::Transactions);
     app
