@@ -14,16 +14,19 @@
 //!
 //! - **Wide** (≥ [`TWO_COLUMNS`]): the facts on the left, a
 //!   [`ACTIONS_WIDTH`] column of actions on the right.
-//! - **Narrow**: one column, why → actions → source.
+//! - **Narrow**: one column, why → actions → similar → source.
 //!
 //! Its actions are the Categorize section ([`categorize`]), the Project
 //! section ([`project`]) under it, the Transfer section ([`transfer`]),
 //! first when a transfer is suggested or linked, and the record's own:
-//! copy it, show its payee.
+//! copy it, show its payee. The Similar section ([`similar`]) lists the
+//! transactions like it, under the why in the facts column, and its "Use …"
+//! pre-fills Categorize.
 
 pub mod categorize;
 pub mod model;
 pub mod project;
+pub mod similar;
 pub mod transfer;
 
 use std::sync::Arc;
@@ -139,13 +142,16 @@ impl DetailState {
         // The triage's inputs are the ones these books were derived with,
         // which `detail::of` needs to trace a decision to its edit.
         let text = cx.ledger.and_then(|ledger| {
-            let detail =
-                cashflow::detail::of(ledger.books, &ledger.triage.inputs, cx.projects, record)?;
+            let inputs = &ledger.triage.inputs;
+            let detail = cashflow::detail::of(ledger.books, inputs, cx.projects, record)?;
+            let txn = ledger.books.ledger().find(record)?;
             Some(model::text_of(model::TextOf {
                 books: ledger.books,
                 labels: cx.labels,
                 detail: &detail,
                 suggested: ledger.triage.suggestion_for(record),
+                similar: &ledger.similar.like(ledger.books, inputs, txn),
+                alike: ledger.similar.same_payee(ledger.books, txn),
                 now: unix_now(),
             }))
         });
@@ -217,6 +223,7 @@ struct Galleys {
     categorize: categorize::CategorizeGalleys,
     transfer: transfer::TransferGalleys,
     project: project::ProjectGalleys,
+    similar: similar::SimilarGalleys,
     /// Whether the Transfer section comes before Categorize: a transfer is
     /// suggested or linked, so it is the thing to act on.
     transfer_first: bool,
@@ -290,6 +297,17 @@ impl Layouter<'_> {
             FontId::new(size, self.bold.clone()),
             Color32::PLACEHOLDER,
         )
+    }
+
+    /// `text` at `size` on one line, cut short with an ellipsis at `width`.
+    fn truncated(&self, text: &str, size: f32, width: f32) -> Arc<Galley> {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.to_owned(),
+            FontId::proportional(size),
+            Color32::PLACEHOLDER,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(24.0));
+        self.painter.layout_job(job)
     }
 
     /// `text` at `size`, wrapped at `width`.
@@ -390,6 +408,7 @@ impl Galleys {
                 !matches!(text.tier, Tier::Transfer | Tier::AsImported),
                 widths.actions,
             ),
+            similar: similar::SimilarGalleys::lay_out(&l, &text.similar, widths.facts),
             transfer_first: matches!(
                 text.transfer,
                 TransferText::Suggested(_) | TransferText::Linked { .. }
@@ -420,6 +439,8 @@ enum Click {
     Transfer(transfer::Event),
     /// Something the Project section asked for.
     Project(project::Event),
+    /// Something the Similar section asked for.
+    Similar(similar::Event),
 }
 
 /// Draw the open record's detail, over `under`, the view the rail names.
@@ -544,6 +565,36 @@ fn act(
                 cx.open = Some(View::Transactions);
             }
         }
+        Some(Click::Similar(event)) => {
+            let (Some(text), Some(ledger)) = (text, cx.ledger) else {
+                return DetailOut::default();
+            };
+            match event {
+                similar::Event::Open(at) => {
+                    cx.open_txn = text
+                        .similar
+                        .rows
+                        .get(at)
+                        .filter(|r| !r.record.is_empty())
+                        .map(|r| r.record.clone());
+                }
+                similar::Event::Use => {
+                    let Some(use_account) = &text.similar.use_account else {
+                        return DetailOut::default();
+                    };
+                    let event = categorize::Event::Use(use_account.account.clone());
+                    let write = categorize_cx(cx, ledger);
+                    categorize::act(&mut state.categorize, event, text, write);
+                }
+                similar::Event::ShowAll => {
+                    cx.states.transactions.show_register(RegisterFilter {
+                        payee: text.similar.pattern.clone(),
+                        ..RegisterFilter::default()
+                    });
+                    cx.open = Some(View::Transactions);
+                }
+            }
+        }
         Some(Click::Agentium) => {
             cx.open_card = text.and_then(|t| t.why.agentium.clone());
         }
@@ -614,7 +665,6 @@ fn act(
 /// What the Categorize section writes with, from `cx` over `ledger`.
 fn categorize_cx<'a>(cx: &'a mut ViewCx<'_>, ledger: super::LedgerCx<'a>) -> categorize::Cx<'a> {
     categorize::Cx {
-        books: ledger.books,
         raw: ledger.raw,
         edits: &ledger.triage.inputs.edits,
         generation: ledger.generation,
@@ -712,6 +762,7 @@ fn detail_ui(
                             hero_ui(ui, palette, tier, g, true);
                             postings_ui(ui, palette, g);
                             on(why_ui(ui, palette, g));
+                            on(similar::section_ui(ui, palette, &g.similar).map(Click::Similar));
                             source_ui(ui, palette, g);
                         },
                     );
@@ -730,6 +781,7 @@ fn detail_ui(
                 postings_ui(ui, palette, g);
                 on(why_ui(ui, palette, g));
                 on(actions_ui(ui, palette, g, sections));
+                on(similar::section_ui(ui, palette, &g.similar).map(Click::Similar));
                 source_ui(ui, palette, g);
             }
         });

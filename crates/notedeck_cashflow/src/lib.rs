@@ -112,6 +112,8 @@ pub struct CashflowApp {
     books: Option<Books>,
     /// What is left to categorize in [`Self::books`], set with them.
     triage: Option<Triage>,
+    /// [`Self::books`]' transactions by payee and by amount, set with them.
+    similar: cashflow::similar::Index,
     /// The chart's display names and icons.
     labels: Arc<Labels>,
     /// Vault writes the views asked for this frame, made in `render`.
@@ -221,6 +223,7 @@ impl CashflowApp {
             palette: Palette::default(),
             books: None,
             triage: None,
+            similar: cashflow::similar::Index::default(),
             labels: Arc::new(Labels::default()),
             outbox: Vec::new(),
             plans: PlanJob::default(),
@@ -291,8 +294,7 @@ impl CashflowApp {
     pub fn set_books(&mut self, books: Books) {
         let inputs = Arc::new(DeriveInputs::from_edits(cashflow::rules::default_edits()));
         let since = period::start_of_day(self.today);
-        let triage = Triage::new(None, &books, inputs, since);
-        self.set_loaded(Loaded { books, triage });
+        self.set_loaded(Loaded::of(None, books, inputs, since));
     }
 
     /// Report on `loaded`'s books and triage from now on. Every view
@@ -302,6 +304,7 @@ impl CashflowApp {
         self.summary = ui::journal_status::summary(&loaded.books, load_time);
         self.books = Some(loaded.books);
         self.triage = Some(loaded.triage);
+        self.similar = loaded.similar;
         self.generation += 1;
     }
 
@@ -505,6 +508,7 @@ impl CashflowApp {
             palette,
             books,
             triage,
+            similar,
             labels,
             outbox,
             plans,
@@ -572,6 +576,7 @@ impl CashflowApp {
                             books,
                             raw: raw.as_deref(),
                             triage,
+                            similar,
                             generation: *generation,
                         });
                 let goals = views::GoalsCx {

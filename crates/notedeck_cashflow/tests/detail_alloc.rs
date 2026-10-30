@@ -42,9 +42,11 @@ const FRAMES: usize = 15;
 /// their accesskit nodes and labels. The Project section's heading, its
 /// "Unattributed" line in the wrapping row it shares with a project's
 /// chip, and its "Move to a project account…" button added 16, all
-/// egui's. Measured, not chosen; if it moves, measure it again and write
-/// the new figure down.
-const MEASURED_DETAIL_ALLOCS: u64 = 284;
+/// egui's. The Similar section's heading row, its tally, its "Same payee"
+/// line, the two coffees' rows and "Show all" added 32, their accesskit
+/// nodes and labels and the heading's row. Measured, not chosen; if it
+/// moves, measure it again and write the new figure down.
+const MEASURED_DETAIL_ALLOCS: u64 = 316;
 
 /// How far above the measured figure a frame may land and still be
 /// unchanged: a different machine has measured a frame one or two

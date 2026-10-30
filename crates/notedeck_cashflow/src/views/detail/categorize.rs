@@ -14,6 +14,10 @@
 //! [`cashflow::triage::apply`]. "Saving…" shows until the books come back
 //! derived with it, and a write that fails says why here.
 //!
+//! The Similar section's "Use …" ([`Event::Use`]) pre-fills it: the
+//! override's account, or the rule's when "All like this" is open, planned
+//! like a pick and never written without Apply.
+//!
 //! The Project section's "Move to a project account" opens this section's
 //! override (or, for a split, its split editor) with the accounts in a
 //! project listed first ([`Event::Move`], [`CategorizeState::projects_first`]),
@@ -29,11 +33,9 @@
 
 use std::sync::Arc;
 
-use cashflow::Books;
 use cashflow::plan::{Categorized, Plan};
 use cashflow::split::{self, LegDraft};
 use cashflow::triage::Action;
-use cashflow::unknown;
 use egui::{Galley, RichText};
 use ledgerdb::{Edits, Ledger, TxnId};
 
@@ -289,12 +291,13 @@ pub(crate) enum Event {
     /// Move it to a project's account: the override's picker, or for a
     /// split the split editor, with the accounts in a project first.
     Move,
+    /// Pre-fill this account, the Similar section's "Use …": the rule's
+    /// when one is open, else an override's, planned as if picked.
+    Use(String),
 }
 
 /// What [`act`] writes with.
 pub(crate) struct Cx<'a> {
-    /// The books on screen.
-    pub(crate) books: &'a Books,
     /// The raw ledger they were derived from, which a split is checked
     /// against.
     pub(crate) raw: Option<&'a Ledger>,
@@ -396,7 +399,7 @@ pub(crate) fn act(state: &mut CategorizeState, event: Event, text: &DetailText, 
                 }
                 Open::Rule => {
                     state.rule = RuleDraft {
-                        pattern: like_this(cx.books, &text.payee),
+                        pattern: text.similar.pattern.clone(),
                         source: text.categorize.source.clone(),
                         limit: true,
                         account: None,
@@ -422,6 +425,17 @@ pub(crate) fn act(state: &mut CategorizeState, event: Event, text: &DetailText, 
             state.close();
             act(state, Event::Open(open), text, cx);
             state.projects_first = true;
+        }
+        Event::Use(account) if state.open == Open::Rule => {
+            state.picking = Some(PickFor::Rule);
+            act(state, Event::Picked(account), text, cx);
+        }
+        Event::Use(account) => {
+            state.close();
+            state.error = None;
+            state.open = Open::Recategorize;
+            pick(state, PickFor::Override);
+            act(state, Event::Picked(account), text, cx);
         }
         Event::Cancel => state.close(),
         Event::Pick(what) => pick(state, what),
@@ -573,21 +587,6 @@ fn plan_rule(state: &mut CategorizeState, plans: &mut PlanJob) {
         account,
     };
     state.plan(plans, action);
-}
-
-/// What an "all like this" rule matches `payee` by: the substring every
-/// transaction with the same normalized payee shares
-/// ([`unknown::common_pattern`]), else the normalized payee itself. Walks
-/// the journal once, when the rule is opened.
-fn like_this(books: &Books, payee: &str) -> String {
-    let key = unknown::normalize(payee);
-    let ledger = books.ledger();
-    let journal = ledger.journal();
-    let alike: Vec<&str> = (0..ledger.txns().len())
-        .map(|i| journal.strings.get(journal.txn(TxnId(i as u32)).payee))
-        .filter(|p| unknown::normalize(p) == key)
-        .collect();
-    unknown::common_pattern(alike.iter().copied()).unwrap_or(key)
 }
 
 /// What [`section_ui`] draws with.

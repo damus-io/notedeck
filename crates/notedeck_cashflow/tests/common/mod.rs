@@ -890,10 +890,11 @@ pub fn loaded_app(store: &JournalStore) -> CashflowApp {
     let edits = cashflow::rules::default_edits();
     let books = Books::from_raw(&loaded.ledger, loaded.report, &edits, None, "CAD");
     let inputs = Arc::new(cashflow::DeriveInputs::from_edits(edits));
-    let triage = cashflow::triage::Triage::new(Some(&loaded.ledger), &books, inputs, 0);
+    let loaded_books =
+        notedeck_cashflow::journal::Loaded::of(Some(&loaded.ledger), books, inputs, 0);
     let mut app = CashflowApp::new();
     app.set_today(today());
-    app.set_loaded(notedeck_cashflow::journal::Loaded { books, triage });
+    app.set_loaded(loaded_books);
     app.set_raw(Arc::new(loaded.ledger));
     app.set_labels(triage_labels());
     app.set_view(notedeck_cashflow::View::Transactions);

@@ -3,16 +3,19 @@
 //! [`text_of`] turns one [`TxnDetail`] into the strings the detail draws:
 //! the hero's payee and amount, each posting with its chart label, why the
 //! counter leg went where it did, the transfer it is or could be a side of,
-//! the project each counter leg is in, and where the record came from. It runs
+//! the project each counter leg is in, the transactions like it and how
+//! those were categorized, and where the record came from. It runs
 //! when the books or the record open change, never per frame; the view lays
 //! these strings out into galleys and paints those.
 
 use cashflow::Books;
 use cashflow::chart::Labels;
 use cashflow::detail::{Decision, MetaLine, ProjectFrom, TxnDetail};
+use cashflow::similar::{Similar, Tally};
 use cashflow::split::LegDraft;
 use cashflow::transfers::{self, Suggestion};
-use ledgerdb::{Amount, Commodities, Date};
+use cashflow::unknown;
+use ledgerdb::{Amount, Commodities, Date, TxnId, Why};
 
 use crate::money::money;
 use crate::views::transactions::model::shown;
@@ -38,6 +41,18 @@ pub enum Tier {
 }
 
 impl Tier {
+    /// The tier a transaction decided by `why` is in.
+    pub fn of_why(why: Why) -> Self {
+        match why {
+            Why::Untouched => Tier::AsImported,
+            Why::Default => Tier::Unknown,
+            Why::Rule(_) => Tier::Rule,
+            Why::Override(_) => Tier::Override,
+            Why::Split(_) => Tier::Split,
+            Why::Transfer(_) => Tier::Transfer,
+        }
+    }
+
     /// The tier deciding `decision`.
     fn of(decision: &Decision) -> Self {
         match decision {
@@ -99,6 +114,58 @@ pub struct DetailText {
     pub transfer: TransferText,
     /// What the Project section shows: each counter leg's project.
     pub projects: Vec<LegProject>,
+    /// What the Similar section shows.
+    pub similar: SimilarText,
+}
+
+/// The transactions like a record, as the Similar section shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SimilarText {
+    /// "same payee 14 · same amount 2", beside the heading; empty with
+    /// neither.
+    pub summary: String,
+    /// The rows: the same payee's first, then the same amount's.
+    pub rows: Vec<SimilarRow>,
+    /// How many of [`Self::rows`] are the same payee's.
+    pub payee_rows: usize,
+    /// How many others have the payee, listed or not.
+    pub payee_total: usize,
+    /// How many others of another payee have the amount, listed or not.
+    pub amount_total: usize,
+    /// "12 → 🛒 Groceries (rule quiet-otter), 2 unknown"; `None` with no
+    /// same-payee rows.
+    pub tally: Option<String>,
+    /// The account "Use …" pre-fills: where the most same-payee rows were
+    /// categorized to, unless this one is there already or can't be
+    /// categorized.
+    pub use_account: Option<UseAccount>,
+    /// What every transaction with the payee contains, ignoring case: the
+    /// register's "Show all" filter and an "all like this" rule's pattern.
+    pub pattern: String,
+}
+
+/// The account a "Use …" quick action pre-fills.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UseAccount {
+    /// Its full name: what the override or rule writes.
+    pub account: String,
+    /// "Use 🛒 Groceries →".
+    pub label: String,
+}
+
+/// One similar transaction, as the Similar section lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimilarRow {
+    /// Its record id, which a click opens; empty for one without.
+    pub record: String,
+    /// "2024-10-07".
+    pub date: String,
+    /// The payee as written.
+    pub payee: String,
+    /// Where its counter legs went, as a list shows them.
+    pub account: String,
+    /// What decided them.
+    pub tier: Tier,
 }
 
 /// One counter leg's project, as the Project section shows it.
@@ -216,6 +283,11 @@ pub struct TextOf<'a> {
     pub detail: &'a TxnDetail,
     /// The transfer the triage suggests it is a side of, if any.
     pub suggested: Option<&'a Suggestion>,
+    /// The transactions like it.
+    pub similar: &'a Similar,
+    /// Every transaction with its normalized payee, itself among them:
+    /// what an "all like this" pattern is drawn from.
+    pub alike: &'a [TxnId],
     /// What the written time is measured from, in unix seconds.
     pub now: u64,
 }
@@ -227,6 +299,8 @@ pub fn text_of(of: TextOf<'_>) -> DetailText {
         labels,
         detail,
         suggested,
+        similar,
+        alike,
         now,
     } = of;
     let commodities = &books.ledger().journal().commodities;
@@ -283,6 +357,13 @@ pub fn text_of(of: TextOf<'_>) -> DetailText {
             legs: split_drafts(&detail.decided, commodities),
         },
         transfer: transfer_text(books, labels, detail, suggested),
+        similar: similar_text(SimilarOf {
+            books,
+            labels,
+            detail,
+            similar,
+            alike,
+        }),
         projects: detail
             .postings
             .iter()
@@ -364,6 +445,150 @@ fn transfer_text(
         }),
         payee: format!("{} · {}", journal.strings.get(row.payee), row.date),
         gap: gap(row.date, detail.date),
+    })
+}
+
+/// What [`similar_text`] works the text out of.
+struct SimilarOf<'a> {
+    books: &'a Books,
+    labels: &'a Labels,
+    detail: &'a TxnDetail,
+    similar: &'a Similar,
+    alike: &'a [TxnId],
+}
+
+/// The Similar section's text for `detail`.
+fn similar_text(of: SimilarOf<'_>) -> SimilarText {
+    let SimilarOf {
+        books,
+        labels,
+        detail,
+        similar,
+        alike,
+    } = of;
+    let journal = books.ledger().journal();
+    let rows = similar
+        .same_payee
+        .iter()
+        .chain(&similar.same_amount)
+        .map(|&txn| similar_row(books, labels, txn))
+        .collect();
+    let mut summary = Vec::new();
+    if similar.payee_total > 0 {
+        summary.push(format!("same payee {}", similar.payee_total));
+    }
+    if similar.amount_total > 0 {
+        summary.push(format!("same amount {}", similar.amount_total));
+    }
+    let payees = alike
+        .iter()
+        .map(|&t| journal.strings.get(journal.txn(t).payee));
+    let pattern =
+        unknown::common_pattern(payees).unwrap_or_else(|| unknown::normalize(&detail.payee));
+    SimilarText {
+        summary: summary.join(" · "),
+        rows,
+        payee_rows: similar.same_payee.len(),
+        payee_total: similar.payee_total,
+        amount_total: similar.amount_total,
+        tally: tally_text(labels, &similar.accounts),
+        use_account: use_account(labels, detail, &similar.accounts),
+        pattern,
+    }
+}
+
+/// `txn` of `books` as a similar row.
+fn similar_row(books: &Books, labels: &Labels, txn: TxnId) -> SimilarRow {
+    let journal = books.ledger().journal();
+    let row = journal.txn(txn);
+    let mut account = String::new();
+    for p in journal.postings_of(row) {
+        let name = journal.accounts.full_name(p.account);
+        if transfers::is_own(name) {
+            continue;
+        }
+        if !account.is_empty() {
+            account.push_str(" + ");
+        }
+        account.push_str(&shown(labels, name));
+    }
+    SimilarRow {
+        record: row
+            .id
+            .map_or_else(String::new, |id| journal.strings.get(id).to_owned()),
+        date: row.date.to_string(),
+        payee: journal.strings.get(row.payee).to_owned(),
+        account,
+        tier: Tier::of_why(books.derived.why(txn)),
+    }
+}
+
+/// How many accounts the tally line names before "+N more".
+const TALLY_NAMES: usize = 3;
+
+/// "12 → 🛒 Groceries (rule quiet-otter), 2 unknown": where the same-payee
+/// rows went and what put them there, the ones nothing categorized last.
+/// `None` with no rows.
+fn tally_text(labels: &Labels, tallies: &[Tally]) -> Option<String> {
+    if tallies.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let decided = tallies.iter().filter(|t| t.tiers.categorized() > 0);
+    for t in decided.clone().take(TALLY_NAMES) {
+        let tiers = &t.tiers;
+        let by = if tiers.links * 2 >= tiers.categorized() {
+            "linked".to_owned()
+        } else if tiers.rules >= tiers.overrides.max(tiers.splits) {
+            match &t.rule {
+                Some(id) => format!("rule {id}"),
+                None => "rule".to_owned(),
+            }
+        } else if tiers.overrides >= tiers.splits {
+            "override".to_owned()
+        } else {
+            "split".to_owned()
+        };
+        parts.push(format!(
+            "{} → {} ({by})",
+            tiers.categorized(),
+            shown(labels, &t.account)
+        ));
+    }
+    let more = decided.count().saturating_sub(TALLY_NAMES);
+    if more > 0 {
+        parts.push(format!("+{more} more"));
+    }
+    let unknown: usize = tallies.iter().map(|t| t.tiers.unknown).sum();
+    if unknown > 0 {
+        parts.push(format!("{unknown} unknown"));
+    }
+    Some(parts.join(", "))
+}
+
+/// The account "Use …" offers for `detail`: the one the most same-payee
+/// rows were categorized to other than by a link, unless the detail's
+/// counter leg is already there, or it is a transfer or has no counter leg.
+fn use_account(labels: &Labels, detail: &TxnDetail, tallies: &[Tally]) -> Option<UseAccount> {
+    if matches!(
+        detail.decided,
+        Decision::AsImported | Decision::Transfer { .. }
+    ) {
+        return None;
+    }
+    // Reversed, so a tie goes to the first: the most rows overall.
+    let top = tallies
+        .iter()
+        .rev()
+        .filter(|t| t.tiers.categorized() > t.tiers.links)
+        .max_by_key(|t| t.tiers.categorized() - t.tiers.links)?;
+    let here = detail
+        .postings
+        .iter()
+        .any(|p| !p.own && p.account == top.account);
+    (!here).then(|| UseAccount {
+        account: top.account.clone(),
+        label: format!("Use {} →", shown(labels, &top.account)),
     })
 }
 

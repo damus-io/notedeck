@@ -5,3 +5,4 @@ caller that shows, splits or groups by it re-finds it by `edits.defaults` name.
 
 - headway:cashflow/name-draw-animal — ~10 min: `edit_cmd::counter_leg` (split amounts), `Categorized::of` (which legs an edit moved) and `unknown::groups` each re-derive it, beside `transfers::suggest`'s own copy
 - headway:cashflow/emerge-street-achieve — wrote a second copy in `transfers::counter_leg` (HashSet-keyed, returns the Posting) for the txid pass, because derive's takes a `&[bool]` and is private
+- headway:cashflow/slide-cluster-dinner — wrote a fifth: `similar::counter_legs` (non-own postings, for the amount key and the tally), and `model::similar_row` re-walks them again for a row's account text, beside `detail::Counter` and `Hero`

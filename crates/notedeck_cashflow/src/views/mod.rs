@@ -102,6 +102,8 @@ pub struct LedgerCx<'a> {
     pub raw: Option<&'a ledgerdb::Ledger>,
     /// What is left to categorize in them.
     pub triage: &'a Triage,
+    /// Their transactions by payee and by amount.
+    pub similar: &'a cashflow::similar::Index,
     /// Changes whenever the books are replaced, so a view knows its cached
     /// results are stale.
     pub generation: u64,

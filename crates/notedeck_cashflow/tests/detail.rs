@@ -7,6 +7,10 @@
 //! link are written through the vault before the app's first load
 //! (`common::detail_harness`), so the detail traces them to their notes.
 //!
+//! Its Similar section lists the coffees and the other side's amount, a
+//! row opens its own entry, and "Use …" pre-fills Categorize without
+//! writing.
+//!
 //! Its Categorize and Transfer sections write through the vault too, each
 //! write planned first: the tests wait for the plan, Apply, and read the
 //! notes back. Its Project section's tag writes the account's metadata,
@@ -572,6 +576,144 @@ fn opening_the_other_leg_pushes_its_detail() {
     assert_eq!(harness.state().app.open_txn(), Some("bank:4"));
 }
 
+/// The coffee's detail lists the other two coffees, newest first, and
+/// tallies them: both unknown, so there is nothing to use.
+#[test]
+fn similar_lists_the_same_payee() {
+    let harness = open_on("card:1");
+    assert!(harness.query_by_label("same payee 2").is_some());
+    assert!(harness.query_by_label("Same payee (2)").is_some());
+    assert!(harness.query_by_label("2 unknown").is_some());
+    let rows: Vec<String> = harness
+        .get_all_by_role(Role::Button)
+        .filter_map(|n| n.accesskit_node().label())
+        .filter(|l| l.contains("COFFEE SHOP"))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "2024-10-09 SQ *COFFEE SHOP #31",
+            "2024-10-05 SQ *COFFEE SHOP #9"
+        ]
+    );
+    assert!(harness.query_by_label_contains("Use ").is_none());
+}
+
+/// The card payment arriving lists the bank's payment leaving: the same
+/// 600 CAD from another payee.
+#[test]
+fn similar_lists_the_same_amount() {
+    let harness = open_on("card:8");
+    assert!(
+        harness
+            .query_by_label("Same amount, other payees (1)")
+            .is_some()
+    );
+    assert!(harness.query_by_label("2024-10-12 Card payment").is_some());
+    assert!(harness.query_by_label("Same payee (0)").is_none());
+}
+
+/// A similar row pushes its own entry over the first, and the chrome's
+/// back onto the first entry draws the first record again.
+#[test]
+fn a_similar_row_pushes_another_detail() {
+    let mut harness = harness(triage_app(), DESKTOP);
+    harness.state_mut().take_nav();
+    harness.get_by_role_and_label(Role::Button, COFFEE).click();
+    harness.run();
+    harness
+        .get_by_label("2024-10-05 SQ *COFFEE SHOP #9")
+        .click();
+    harness.run();
+
+    let requests = harness.state_mut().take_nav();
+    let routes: Vec<&CashflowRoute> = requests
+        .iter()
+        .filter_map(|r| match r {
+            NavRequest::Push(token) => token.downcast_ref::<CashflowRoute>(),
+            _ => None,
+        })
+        .collect();
+    let first = txn_route("card:1", "SQ *COFFEE SHOP #12 · 2024-10-02");
+    let second = txn_route("card:3", "SQ *COFFEE SHOP #9 · 2024-10-05");
+    assert_eq!(routes, [&first, &second]);
+    assert_eq!(harness.state().app.open_txn(), Some("card:3"));
+
+    // Back: the chrome hands the first entry's token to `render_nav`.
+    harness.state_mut().route = Some(Rc::new(first));
+    harness.run();
+    assert_eq!(harness.state().app.open_txn(), Some("card:1"));
+    assert!(harness.query_by_label("SQ *COFFEE SHOP #12").is_some());
+}
+
+/// "Show all" lists every coffee in the register, by what their payees
+/// share.
+#[test]
+fn show_all_filters_the_register_by_the_payee() {
+    let mut harness = open_on("card:1");
+    harness.get_by_label("Show all 3 in the register →").click();
+    harness.run();
+
+    assert_eq!(harness.state().app.view(), View::Transactions);
+    assert_eq!(harness.state().app.open_txn(), None);
+    assert!(harness.query_by_label("3 transactions").is_some());
+}
+
+/// Step `harness` until a label containing `part` is on screen.
+fn plan_says_part(harness: &mut Harness<'static, CashflowTestState>, part: &str) {
+    let deadline = std::time::Instant::now() + common::INGEST_TIMEOUT;
+    while harness.query_by_label_contains(part).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {part:?}"
+        );
+        harness.step();
+    }
+}
+
+/// "Use …" on the second grocer run plans an override to where the first
+/// run's split sent the most, and writes nothing; with "All like this"
+/// open it is the rule's account instead.
+#[test]
+fn use_pre_fills_categorize_without_writing() {
+    let fixture = detail_fixture();
+    let mut harness = detail_harness(&fixture, DESKTOP, false);
+    harness.state_mut().app.set_open_txn(Some("card:7"));
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("1 → expenses:food:groceries (split), 1 → expenses:household (split)")
+            .is_some()
+    );
+    harness
+        .get_by_label("Use expenses:food:groceries →")
+        .click();
+    harness.run();
+    plan_says(
+        &mut harness,
+        "This one: expenses:unknown → expenses:food:groceries",
+    );
+    assert!(!disabled(&harness, "Apply override"));
+
+    harness.get_by_label("All like this…").click();
+    harness.run();
+    harness
+        .get_by_label("Use expenses:food:groceries →")
+        .click();
+    harness.run();
+    assert!(harness.query_by_label("expenses:food:groceries").is_some());
+    plan_says_part(
+        &mut harness,
+        "Would move 1 transaction to expenses:food:groceries",
+    );
+    assert!(!disabled(&harness, "Add rule"));
+
+    // Nothing was written: the fixture's one override, and no rule.
+    harness.run();
+    assert_eq!(read_vault(harness.state_mut(), kinds::OVERRIDE).len(), 1);
+    assert!(read_vault(harness.state_mut(), kinds::RULE).is_empty());
+}
+
 /// A categorized record can't be linked: Link is disabled, and
 /// "Uncategorize first" opens the uncategorize.
 #[test]
@@ -903,4 +1045,16 @@ fn snapshot_detail_project_picker() {
     harness.get_by_label("Move to a project account…").click();
     harness.run();
     harness.snapshot("cashflow_detail_project_picker");
+}
+
+/// The second Corner Grocer run: the first run in its Similar section,
+/// split two ways, the tally saying so and offering its groceries.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_detail_similar() {
+    let fixture = detail_fixture();
+    let mut harness = detail_harness(&fixture, DESKTOP, true);
+    harness.state_mut().app.set_open_txn(Some("card:7"));
+    harness.run();
+    harness.snapshot("cashflow_detail_similar");
 }

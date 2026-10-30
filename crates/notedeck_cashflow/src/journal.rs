@@ -17,8 +17,9 @@
 //!    derived with, else a rescan every [`RESCAN_EVERY`].
 //!
 //! A job that derives also works out the books' [`Triage`] from the raw
-//! ledger and the same edits, so the inbox never groups or suggests on the
-//! UI thread. When a vault record changes the chart's [`Labels`] are
+//! ledger and the same edits, and groups the transactions for the detail's
+//! similar ones ([`cashflow::similar::Index`]), so neither the inbox nor the
+//! detail groups or suggests on the UI thread. When a vault record changes the chart's [`Labels`] are
 //! re-read too.
 //!
 //! The raw ledger is kept between jobs, so a rescan that finds a segment
@@ -35,6 +36,7 @@ use cashflow::adventure::seen;
 use cashflow::chart::{Chart, Labels};
 use cashflow::projects::Projects;
 use cashflow::settings::Setting;
+use cashflow::similar;
 use cashflow::sync::{self, SyncJob, SyncReport, TransportInfo, TransportReport};
 use cashflow::triage::Triage;
 use cashflow::zone::Zone;
@@ -88,12 +90,30 @@ pub struct LoadJob {
     pub since: u64,
 }
 
-/// Books a job derived, and their triage.
+/// Books a job derived, their triage, and their transactions grouped for
+/// the detail's similar ones.
 pub struct Loaded {
     /// The books.
     pub books: Books,
     /// What is left to categorize in them, worked out with the same edits.
     pub triage: Triage,
+    /// Their transactions by payee and by amount.
+    pub similar: similar::Index,
+}
+
+impl Loaded {
+    /// `books`, derived with `inputs` from `raw`, with their triage
+    /// counting today from `since` (unix seconds) and their similar index.
+    /// Blocking: a job runs it off the UI thread.
+    pub fn of(raw: Option<&Ledger>, books: Books, inputs: Arc<DeriveInputs>, since: u64) -> Self {
+        let triage = Triage::new(raw, &books, inputs, since);
+        let similar = similar::Index::build(&books);
+        Loaded {
+            books,
+            triage,
+            similar,
+        }
+    }
 }
 
 /// What a [`LoadJob`] did.
@@ -155,8 +175,7 @@ impl LoadJob {
                 self.previous.as_deref(),
                 &self.home,
             );
-            let triage = Triage::new(Some(&raw.ledger), &books, self.inputs.clone(), self.since);
-            Loaded { books, triage }
+            Loaded::of(Some(&raw.ledger), books, self.inputs.clone(), self.since)
         });
         LoadDone {
             raw: Some(raw),
