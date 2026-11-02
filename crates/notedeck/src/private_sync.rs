@@ -24,8 +24,9 @@ use std::sync::Arc;
 use enostr::{NormRelayUrl, RelayId};
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb_net::relay::auth::AuthSigner;
 use nostrdb_net::relay::sync::Session;
-use nostrdb_net::{private_note, Pubkey};
+use nostrdb_net::{private_note, FullKeypair, Pubkey};
 
 use crate::{
     AppContext, ExplicitPublishApi, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey,
@@ -273,6 +274,34 @@ fn keyshare_filter() -> Filter {
         .build()
 }
 
+/// Live filter for the kind-1059 gift-wraps addressed to `account` (`#p`), the
+/// carrier of every key-share another member sends us.
+///
+/// The account's own gift-wrap sub runs only on its NIP-65 read relays (see
+/// `Accounts`), so a share delivered to a private relay — a members-only,
+/// encrypted-only rendezvous like wss://sns.damus.io, where both members' private
+/// sets meet — would otherwise never be seen. Pulled in here, nostrdb peels it into
+/// the kind-1082 rumor the roster is read from ([`registered_roots`]), and the
+/// roster poll then adds the channel's 1081 stream. The live leg is capped like the
+/// channel streams'; the backfill ([`giftwrap_history_filter`]) fetches everything.
+fn giftwrap_filter(account: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([crate::account::private_relay_set::GIFT_WRAP_KIND as u64])
+        .pubkeys([account.bytes()])
+        .limit(LIVE_ENVELOPE_REPLAY)
+        .build()
+}
+
+/// History (backfill) filter for the gift-wraps addressed to `account`:
+/// [`giftwrap_filter`] without the replay cap, so a share older than the newest
+/// few thousand still reaches a fresh device.
+fn giftwrap_history_filter(account: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([crate::account::private_relay_set::GIFT_WRAP_KIND as u64])
+        .pubkeys([account.bytes()])
+        .build()
+}
+
 /// How many stored envelopes a channel's *live* `REQ` asks a relay to replay
 /// before it streams. Only the live leg is capped: the history backfill
 /// ([`team_envelope_history_filter`]) fetches everything we lack.
@@ -475,6 +504,42 @@ struct DeclaredSync {
     roots: Vec<[u8; 32]>,
 }
 
+/// The private relays whose NIP-42 AUTH signer changes on a re-declaration, so
+/// the account's identity is offered to its own private set and nowhere else.
+///
+/// A relay learns who we are from the 22242 we sign for it, so the [`Session`]
+/// answers only relays it holds a signer for, and this is what decides that set:
+/// a relay new to the private set gets the account's signer, one that left it
+/// loses its signer, and an account switch re-grants every relay so none keeps
+/// answering as the previous account.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AuthSignerChanges {
+    /// Relays to hand the account's signer to.
+    grant: Vec<NormRelayUrl>,
+    /// Relays to stop answering challenges from.
+    revoke: Vec<NormRelayUrl>,
+}
+
+impl AuthSignerChanges {
+    /// The changes from the `prev` declaration to one for `account` over `urls`.
+    fn between(prev: Option<&DeclaredSync>, account: &Pubkey, urls: &[NormRelayUrl]) -> Self {
+        let prev_relays = prev.map_or(&[][..], |prev| prev.relays.as_slice());
+        let same_account = prev.is_some_and(|prev| &prev.account == account);
+        Self {
+            grant: urls
+                .iter()
+                .filter(|url| !same_account || !prev_relays.contains(url))
+                .cloned()
+                .collect(),
+            revoke: prev_relays
+                .iter()
+                .filter(|url| !urls.contains(url))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
 /// The SNS team roots apps have asked the host to sync this session — the seam
 /// [`AppContext::register_team_root`](crate::AppContext::register_team_root)
 /// writes into and [`HostPrivateSync`] reads from its off-foreground pump.
@@ -528,7 +593,14 @@ impl PrivateChannels {
 /// - the account's kind-1082 key-share stream ([`keyshare_filter`]), so a new
 ///   join accepted on *another* of the account's devices arrives here and grows
 ///   the roster (the closed loop: relay → 1082 in ndb → roster poll → re-derive →
-///   new 1081 filter).
+///   new 1081 filter);
+/// - the kind-1059 gift-wraps addressed to the account ([`giftwrap_filter`]), so
+///   a key-share a co-member delivered to a private relay we share is peeled into
+///   that same 1082 stream.
+///
+/// The host answers NIP-42 AUTH from these relays as the account, and from no
+/// other relay ([`AuthSignerChanges`]), so a members-only private relay such as
+/// wss://sns.damus.io serves us once we have marked it private.
 ///
 /// That covers *both* directions for the account's private notes at once:
 ///
@@ -738,7 +810,11 @@ impl HostPrivateSync {
             roots,
         };
         if self.declared.as_ref() != Some(&next) {
-            self.redeclare(&session, &pns_pubkey, private_urls, &next.roots);
+            // Signers first: the backfills `redeclare` spawns take the signer the
+            // session holds at spawn time, so a relay that demands AUTH would
+            // refuse a backfill started before it.
+            self.update_auth_signers(&session, account_secret, &next);
+            self.redeclare(&session, account, &pns_pubkey, private_urls, &next.roots);
             // Catch up the outbound envelope leg. Keyed off the declaration change
             // rather than the root-set change above for the same reason as the
             // gift-wrap leg below: a board sealed before any private relay was
@@ -763,18 +839,50 @@ impl HostPrivateSync {
         self.fan_out_local_envelopes(ndb, &session, private_urls, account, &keyshare_keys);
     }
 
+    /// Give the session the account's AUTH signer for each private relay that
+    /// needs it and take it from each relay that left the set
+    /// ([`AuthSignerChanges`]), relative to the current declaration. Only the
+    /// private relays ever get one: the host dials no other relay, and a relay
+    /// that never challenges is never sent a 22242, so marking a relay private is
+    /// the one act that lets it learn the account's pubkey.
+    fn update_auth_signers(
+        &self,
+        session: &Session,
+        account_secret: &[u8; 32],
+        next: &DeclaredSync,
+    ) {
+        let changes =
+            AuthSignerChanges::between(self.declared.as_ref(), &next.account, &next.relays);
+        for url in &changes.revoke {
+            session.set_auth_signer(url.to_string(), None);
+        }
+        if changes.grant.is_empty() {
+            return;
+        }
+        let Some(keypair) = FullKeypair::from_secret_bytes(account_secret) else {
+            tracing::warn!("host private sync: account secret is not a valid key; no AUTH");
+            return;
+        };
+        let signer = AuthSigner::new(keypair);
+        for url in &changes.grant {
+            session.set_auth_signer(url.to_string(), Some(signer.clone()));
+        }
+    }
+
     /// Replace the private declaration: close the prior `REQ` on every relay and,
     /// when the account still has private relays, open a fresh live + backfilling
     /// subscription over the current set, arming a generation-guarded settle
     /// watcher. With no private relays this is the teardown to local-only.
     ///
     /// The filter set is the account's whole private surface: the PNS 1080 stream,
-    /// one 1081 envelope stream per registered SNS `root`, and the 1082 key-share
-    /// stream. They ride one logical sub per relay under [`HOST_PRIVATE_SUB_ID`], so
-    /// the single drop above closes all of them.
+    /// one 1081 envelope stream per registered SNS `root`, the 1059 gift-wraps
+    /// addressed to `account`, and the 1082 key-share stream. They ride one logical
+    /// sub per relay under [`HOST_PRIVATE_SUB_ID`], so the single drop above closes
+    /// all of them.
     fn redeclare(
         &mut self,
         session: &Arc<Session>,
+        account: &Pubkey,
         pns_pubkey: &Pubkey,
         urls: &[NormRelayUrl],
         roots: &[[u8; 32]],
@@ -798,6 +906,10 @@ impl HostPrivateSync {
                 history.push(team_envelope_history_filter(&team_pk));
             }
         }
+        // The gift-wraps addressed to us: a co-member's key-share delivered to a
+        // private relay we share, peeled into a 1082 that grows the roster.
+        live.push(giftwrap_filter(account));
+        history.push(giftwrap_history_filter(account));
         // The 1082 key-share stream: a join accepted on another of the account's
         // devices arrives here and (via the roster poll) grows the roster.
         live.push(keyshare_filter());
@@ -2219,5 +2331,231 @@ mod tests {
             "a root joined after the roster grew never peeled its envelope: \
              nostrdb's root table was full of duplicate registrations"
         );
+    }
+
+    // ===== NIP-42 AUTH to private relays =====
+
+    /// A websocket relay url for the signer-set tests.
+    fn ws(url: &str) -> NormRelayUrl {
+        NormRelayUrl::new(url).expect("relay url")
+    }
+
+    /// A declaration for `account` over `relays`, as the host keeps between pumps.
+    fn declared(account: &Pubkey, relays: &[NormRelayUrl]) -> DeclaredSync {
+        DeclaredSync {
+            account: *account,
+            relays: relays.to_vec(),
+            roots: Vec::new(),
+        }
+    }
+
+    /// The first declaration grants every private relay its signer, and only
+    /// those: the signer set is exactly the private set.
+    #[test]
+    fn first_declaration_grants_only_the_private_set() {
+        let account = FullKeypair::generate().pubkey;
+        let private = [ws("wss://sns.example"), ws("wss://home.example")];
+        let changes = AuthSignerChanges::between(None, &account, &private);
+        assert_eq!(changes.grant, private.to_vec());
+        assert!(changes.revoke.is_empty());
+    }
+
+    /// A relay leaving the private set loses its signer, a relay joining it gets
+    /// one, and a relay that stays is left alone, so the session doesn't
+    /// re-answer a challenge it already answered.
+    #[test]
+    fn relay_set_change_grants_joiners_and_revokes_leavers() {
+        let account = FullKeypair::generate().pubkey;
+        let stays = ws("wss://sns.example");
+        let leaves = ws("wss://old.example");
+        let joins = ws("wss://new.example");
+        let prev = declared(&account, &[stays.clone(), leaves.clone()]);
+
+        let changes = AuthSignerChanges::between(Some(&prev), &account, &[stays, joins.clone()]);
+        assert_eq!(changes.grant, vec![joins]);
+        assert_eq!(changes.revoke, vec![leaves]);
+
+        // Going local-only revokes everything and grants nothing.
+        let prev = declared(&account, std::slice::from_ref(&changes.grant[0]));
+        let changes = AuthSignerChanges::between(Some(&prev), &account, &[]);
+        assert!(changes.grant.is_empty());
+        assert_eq!(changes.revoke, prev.relays);
+    }
+
+    /// An account switch re-grants every relay, so none keeps answering as the
+    /// account we switched away from; a roster-only change touches none.
+    #[test]
+    fn account_switch_regrants_every_relay() {
+        let first = FullKeypair::generate().pubkey;
+        let second = FullKeypair::generate().pubkey;
+        let relays = [ws("wss://sns.example")];
+        let prev = declared(&first, &relays);
+
+        let switched = AuthSignerChanges::between(Some(&prev), &second, &relays);
+        assert_eq!(switched.grant, relays.to_vec());
+        assert!(switched.revoke.is_empty());
+
+        assert_eq!(
+            AuthSignerChanges::between(Some(&prev), &first, &relays),
+            AuthSignerChanges::default()
+        );
+    }
+
+    /// Two members whose only common relay is members-only and AUTH-locked, as
+    /// wss://sns.damus.io is, join and sync a shared channel through it.
+    ///
+    /// A's host authenticates and fans its sealed 1081 edit up. B has no key-share
+    /// locally: its host authenticates, pulls the 1059 gift-wrap A delivered to the
+    /// relay (the new `#p` leg), nostrdb peels it into a 1082, the roster grows,
+    /// and B then backfills the channel and unwraps A's edit. A third account the
+    /// relay doesn't list gets neither, and its sync still settles rather than
+    /// hanging on the refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn members_join_a_shared_channel_over_an_auth_locked_relay() {
+        use nostrdb_net::relay::server::{spawn_with_policy, AccessPolicy};
+        use std::time::Duration;
+
+        let alice = FullKeypair::generate();
+        let bob = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let alice_secret = alice.secret_key.secret_bytes();
+        let bob_secret = bob.secret_key.secret_bytes();
+        let stranger_secret = stranger.secret_key.secret_bytes();
+
+        // The relay names its host in its policy and compares a 22242's `relay`
+        // tag by host alone, so the hosts' plain signers, which name the dialed
+        // `ws://127.0.0.1:<port>`, authenticate as they would to the real name.
+        let TempNdb {
+            dir: _relay_dir,
+            ndb: relay_ndb,
+        } = TempNdb::new();
+        let policy = AccessPolicy::new(
+            "ws://127.0.0.1",
+            [alice.pubkey, bob.pubkey],
+            [
+                1059,
+                nostrdb_net::pns::PNS_KIND,
+                nostrdb_net::sns::SNS_ENVELOPE_KIND,
+            ],
+        );
+        let relay = spawn_with_policy(
+            relay_ndb.clone(),
+            "127.0.0.1:0".parse().expect("addr"),
+            policy,
+        )
+        .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        // Alice's board: she syncs its root, and the share she sent Bob is on the
+        // relay. The share's delivery is the sharer's job, not the host's, so it is
+        // seeded into the relay's db directly.
+        let root = test_root(0x77);
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
+        let alice_roots = std::slice::from_ref(&root);
+        relay_ndb
+            .process_event(&format!(
+                "[\"EVENT\",\"share\",{}]",
+                gift_wrapped_keyshare(&alice, &bob.pubkey, &root, Some("30619:alice:board"))
+            ))
+            .expect("seed the relay with bob's share");
+
+        let TempNdb {
+            dir: _a_dir,
+            ndb: mut ndb_a,
+        } = TempNdb::new();
+        ndb_a.add_key(&alice_secret);
+        let mut host_a = HostPrivateSync::new();
+        host_a.update(
+            &mut ndb_a,
+            &alice.pubkey,
+            &alice_secret,
+            relays,
+            alice_roots,
+        );
+
+        let rumor = NoteBuilder::new()
+            .kind(1)
+            .content("edit over the members-only relay")
+            .created_at(HOST_TEST_TS)
+            .sign(&alice_secret)
+            .build()
+            .expect("rumor");
+        let inner_id = *rumor.id();
+        let envelope = nostrdb_net::sns::wrap_rumor(
+            &sns_keys,
+            &alice,
+            &rumor.json().expect("json"),
+            HOST_TEST_TS,
+        )
+        .expect("sns envelope");
+        let envelope_id = *envelope.id();
+        ndb_a
+            .process_event(&format!(
+                "[\"EVENT\",\"_local\",{}]",
+                envelope.json().expect("envelope json")
+            ))
+            .expect("local envelope ingest");
+
+        let TempNdb {
+            dir: _b_dir,
+            ndb: mut ndb_b,
+        } = TempNdb::new();
+        ndb_b.add_key(&bob_secret);
+        let mut host_b = HostPrivateSync::new();
+
+        let mut delivered = false;
+        for _ in 0..500 {
+            host_a.update(
+                &mut ndb_a,
+                &alice.pubkey,
+                &alice_secret,
+                relays,
+                alice_roots,
+            );
+            host_b.update(&mut ndb_b, &bob.pubkey, &bob_secret, relays, &[]);
+            if ndb_has(&ndb_b, &inner_id) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered,
+            "bob's host should auth, pull his gift-wrapped share, join the channel \
+             and unwrap alice's edit"
+        );
+        assert_eq!(registered_roots(&ndb_b, &bob.pubkey), vec![root]);
+
+        // The stranger syncs the same root: the relay refuses it, it learns
+        // nothing, and its sync settles instead of hanging.
+        let TempNdb {
+            dir: _c_dir,
+            ndb: mut ndb_c,
+        } = TempNdb::new();
+        ndb_c.add_key(&stranger_secret);
+        let mut host_c = HostPrivateSync::new();
+        let mut settled = false;
+        for _ in 0..250 {
+            host_c.update(
+                &mut ndb_c,
+                &stranger.pubkey,
+                &stranger_secret,
+                relays,
+                alice_roots,
+            );
+            if host_c.settled() {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(settled, "a refused sync should settle, not hang");
+        assert!(
+            !ndb_has(&ndb_c, &envelope_id),
+            "a non-member must not be served the channel"
+        );
+
+        relay.shutdown();
     }
 }

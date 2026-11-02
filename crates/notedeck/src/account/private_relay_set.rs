@@ -24,7 +24,7 @@ pub enum PrivateRelayRole {
 }
 
 /// The kind of a NIP-59 gift-wrap, the carrier of a kind-1082 key-share.
-const GIFT_WRAP_KIND: u32 = 1059;
+pub(crate) const GIFT_WRAP_KIND: u32 = 1059;
 
 /// Whether `kind` is an encrypted envelope — a kind-1059 gift-wrap, a kind-1080
 /// PNS note or a kind-1081 SNS envelope — and so may go to an encrypted-only
