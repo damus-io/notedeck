@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+#
+# Two-party acceptance for an SNS shared board over a members-only, encrypted-
+# only, NIP-42-AUTH-locked relay: the wss://sns.damus.io setup, run locally
+# against an ndb-sns-relay with throwaway keys. Every step asserts; the script
+# exits non-zero at the first one that fails.
+#
+#   1. An owner seeds a sealed board, adds a card, and shares it with a member.
+#   2. The member joins from the relay alone, edits, and comments; the owner
+#      sees both attributed to the member.
+#   3. An outsider that AUTHs gets `restricted:` on REQ and NEG-OPEN and no
+#      events; plaintext kinds are neither served nor accepted.
+#   4. A headless notedeck, logged in as a second member whose kind-10013 marks
+#      the relay encrypted-only, pulls its key-share, joins the channel and
+#      unwraps the board from the relay alone.
+#   5. Over all of it, no client sent the relay anything but a kind-1059, -1080
+#      or -1081 envelope.
+#
+# Every client dials the relay through scripts/relay-wire-log.mjs, a logging
+# websocket proxy, which is how step 5 sees what was *sent* (the relay refuses plaintext, but refusing it is
+# too late). The 22242 relay tag still matches, because the relay compares it
+# by host.
+#
+# Usage:
+#   scripts/sns-acceptance [options]
+#
+# Options:
+#   --relay-bin <path>  The ndb-sns-relay binary [default: on PATH, else
+#                       ~/src/rust/ndb-sns-relay/target/{release,debug}]
+#   --headway <path>    The headway CLI [default: build this checkout's]
+#   --notedeck <path>   The notedeck binary [default: build this checkout's]
+#   --no-notedeck       Skip step 4 (and the notedeck build)
+#   --dir <dir>         Scratch dir [default: a fresh mktemp dir, kept]
+#
+# Needs: cargo, nak, jq, node (the proxy and the NEG probe), and the `ndb` CLI
+# for step 4. Nothing it starts outlives it; each is stopped by pid. The
+# notedeck gets its own NOTEDECK_SOCKET, so it never takes the tool socket of
+# a notedeck the user is running.
+
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+relay_bin=
+headway_bin=
+notedeck_bin=
+with_notedeck=1
+dir=
+
+die() {
+    echo "sns-acceptance: FAIL: $*" >&2
+    exit 1
+}
+
+pass() {
+    echo "ok: $*"
+}
+
+need() {
+    local tool
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null || die "needs '$tool' on PATH"
+    done
+}
+
+while (($#)); do
+    case $1 in
+    --relay-bin) relay_bin=$2 && shift ;;
+    --headway) headway_bin=$2 && shift ;;
+    --notedeck) notedeck_bin=$2 && shift ;;
+    --no-notedeck) with_notedeck=0 ;;
+    --dir) dir=$2 && shift ;;
+    -h | --help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' && exit 0 ;;
+    *) die "unknown argument '$1' (see --help)" ;;
+    esac
+    shift
+done
+
+need nak jq node
+((with_notedeck)) && need ndb
+
+if [[ -z $relay_bin ]]; then
+    relay_bin=$(command -v ndb-sns-relay || true)
+    for b in ~/src/rust/ndb-sns-relay/target/{release,debug}/ndb-sns-relay; do
+        [[ -z $relay_bin && -x $b ]] && relay_bin=$b
+    done
+fi
+[[ -x $relay_bin ]] || die "no ndb-sns-relay binary; pass --relay-bin"
+
+dir=${dir:-$(mktemp -d "${TMPDIR:-/tmp}/sns-acceptance.XXXXXX")}
+mkdir -p "$dir"
+dir=$(cd "$dir" && pwd)
+umask 077
+echo "scratch dir: $dir"
+
+# Copies, so a rebuild in another checkout can't swap a binary mid-run.
+cp "$relay_bin" "$dir/ndb-sns-relay"
+if [[ -z $headway_bin ]]; then
+    (cd "$repo" && cargo build -q -p headway_cli)
+    headway_bin="$repo/target/debug/headway"
+fi
+cp "$headway_bin" "$dir/headway"
+if ((with_notedeck)); then
+    if [[ -z $notedeck_bin ]]; then
+        (cd "$repo" && cargo build -q -p notedeck_chrome --bin notedeck)
+        notedeck_bin="$repo/target/debug/notedeck"
+    fi
+    cp "$notedeck_bin" "$dir/notedeck"
+fi
+
+pids=()
+cleanup() {
+    local pid
+    for pid in "${pids[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+}
+trap cleanup EXIT
+
+port_open() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+free_port() {
+    node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'
+}
+
+# Poll `cmd…` every 0.2s until it succeeds, for at most <secs>.
+wait_for() {
+    local secs=$1 what=$2
+    shift 2
+    local tries=$((secs * 5))
+    until "$@"; do
+        tries=$((tries - 1))
+        ((tries > 0)) || die "timed out after ${secs}s waiting for $what"
+        sleep 0.2
+    done
+}
+
+# --- keys -------------------------------------------------------------------
+
+# Generate <who>'s secret into $dir/<who>.sec and print its pubkey.
+keygen() {
+    nak key generate </dev/null >"$dir/$1.sec"
+    nak key public "$(<"$dir/$1.sec")" </dev/null
+}
+owner_pk=$(keygen owner)
+member_pk=$(keygen member)
+host_pk=$(keygen host)
+keygen outsider >/dev/null
+
+# --- the relay, behind the wire log ----------------------------------------
+
+relay_port=$(free_port)
+cat >"$dir/relay.toml" <<EOF
+bind = "127.0.0.1:$relay_port"
+db_dir = "$dir/relay-db"
+service_url = "ws://127.0.0.1:$relay_port"
+members = ["$owner_pk", "$member_pk", "$host_pk"]
+kinds = [1059, 1080, 1081]
+EOF
+mkdir -p "$dir/relay-db"
+"$dir/ndb-sns-relay" "$dir/relay.toml" >"$dir/relay.log" 2>&1 &
+pids+=($!)
+wait_for 20 "the relay on :$relay_port" port_open "$relay_port"
+
+proxy_port=$(free_port)
+node "$repo/scripts/relay-wire-log.mjs" "$proxy_port" "$relay_port" >"$dir/proxy.log" 2>&1 &
+pids+=($!)
+wait_for 10 "the proxy on :$proxy_port" port_open "$proxy_port"
+relay="ws://127.0.0.1:$proxy_port"
+
+# One party's headway run: its own key, cache and data dir, the relay alone.
+hw() {
+    local who=$1
+    shift
+    env -u AGENTIUM_SESSION -u HEADWAY_NSEC -u HEADWAY_BOARD -u HEADWAY_RELAY \
+        -u HEADWAY_COMMENT_NSEC -u HEADWAY_COMMENT_NSEC_FILE \
+        XDG_DATA_HOME="$dir/xdg-$who" \
+        "$dir/headway" --nsec "$(<"$dir/$who.sec")" --relay "$relay" \
+        --db "$dir/db-$who" --board accept "$@"
+}
+
+# --- 1. the owner seeds and shares -----------------------------------------
+
+hw owner seed >/dev/null 2>"$dir/step1.err" || die "owner seed: $(<"$dir/step1.err")"
+card=$(hw owner add "acceptance card" --col todo 2>>"$dir/step1.err" |
+    grep -o 'headway:accept/[a-z-]*' | sed 's|headway:accept/||')
+[[ -n $card ]] || die "owner add printed no card ref"
+hw owner share "$member_pk" 2>>"$dir/step1.err" | grep -q "^shared board 'accept'" ||
+    die "owner share: $(<"$dir/step1.err")"
+pass "1. owner seeded a sealed board, added $card, shared it with the member"
+
+# --- 2. the member joins from the relay alone and edits --------------------
+
+hw member --author "$owner_pk" show 2>"$dir/step2.err" | grep -q "acceptance card" ||
+    die "member can't read the shared board: $(<"$dir/step2.err")"
+hw member --author "$owner_pk" add "member's card" --col in-progress >/dev/null 2>>"$dir/step2.err"
+hw member --author "$owner_pk" comment "$card" "member comment" >/dev/null 2>>"$dir/step2.err"
+hw owner show --json 2>>"$dir/step2.err" | jq -e --arg pk "$member_pk" \
+    '[.columns[].cards[] | select(.title == "member'"'"'s card")] | any(.author == $pk)' >/dev/null ||
+    die "owner doesn't see the member's card attributed to the member"
+hw owner show "$card" --json 2>>"$dir/step2.err" | jq -e --arg pk "$member_pk" \
+    '.[0].comments | any(.author == $pk and .body == "member comment")' >/dev/null ||
+    die "owner doesn't see the member's comment on $card attributed to the member"
+pass "2. member joined from the relay alone; owner sees its card and comment, attributed to it"
+
+# --- 3. outsiders and plaintext get nothing --------------------------------
+
+# AUTH as <sec>, then NEG-OPEN (an empty negentropy set, so a member would get
+# every id back) and REQ the envelope kinds; print every reply.
+cat >"$dir/negprobe.mjs" <<'EOF'
+import { execFileSync } from "node:child_process";
+const [url, sec] = process.argv.slice(2);
+const ws = new WebSocket(url), kinds = [1059, 1080, 1081];
+setTimeout(() => process.exit(0), 8000);
+ws.onmessage = (ev) => {
+  const m = JSON.parse(ev.data);
+  console.log(JSON.stringify(m).slice(0, 300));
+  if (m[0] === "AUTH") {
+    const auth = execFileSync("nak", ["event", "-k", "22242", "-c", "", "--sec", sec,
+      "-t", `relay=${url}`, "-t", `challenge=${m[1]}`], { stdin: "ignore" }).toString();
+    ws.send(JSON.stringify(["AUTH", JSON.parse(auth)]));
+  } else if (m[0] === "OK" && !ws.probed) {
+    ws.probed = true;
+    // 0x61 version, an infinity bound (ts 0, no id prefix), IdList mode, 0 ids.
+    ws.send(JSON.stringify(["NEG-OPEN", "n", { kinds }, "6100000200"]));
+    ws.send(JSON.stringify(["REQ", "r", { kinds, limit: 500 }]));
+  } else if (m[0] === "EOSE" || m[0] === "CLOSED") {
+    setTimeout(() => process.exit(0), 300);
+  }
+};
+EOF
+node "$dir/negprobe.mjs" "$relay" "$(<"$dir/outsider.sec")" >"$dir/outsider.probe"
+grep -q '^\["NEG-ERR","n","restricted:' "$dir/outsider.probe" || die "outsider NEG-OPEN wasn't refused restricted"
+grep -q '^\["CLOSED","r","restricted:' "$dir/outsider.probe" || die "outsider REQ wasn't refused restricted"
+! grep -q '^\["EVENT"' "$dir/outsider.probe" || die "the outsider was sent events"
+hw outsider --author "$owner_pk" show >/dev/null 2>"$dir/step3.err" || true
+grep -q "refused this account" "$dir/step3.err" || die "headway didn't report the outsider's refusal"
+node "$dir/negprobe.mjs" "$relay" "$(<"$dir/member.sec")" >"$dir/member.probe"
+grep -q '^\["NEG-MSG","n"' "$dir/member.probe" || die "control: the member's NEG-OPEN failed"
+grep -q '^\["EVENT"' "$dir/member.probe" || die "control: the member's REQ returned nothing"
+# The plaintext probes dial the relay itself, past the proxy, so step 5 can
+# hold every client to envelopes without exempting them.
+plaintext=$(timeout 15 nak req --auth --sec "$(<"$dir/member.sec")" -k 0 -k 1 -k 1082 -k 1621 \
+    -k 10013 -k 30619 -k 30620 -k 30623 -l 500 "ws://127.0.0.1:$relay_port" </dev/null 2>/dev/null |
+    sed 's/^[^{]*//' | grep -c '^{' || true)
+((plaintext == 0)) || die "a member's REQ for plaintext kinds returned $plaintext events"
+timeout 15 nak event --auth --sec "$(<"$dir/member.sec")" -k 1 -c plaintext "ws://127.0.0.1:$relay_port" \
+    </dev/null 2>&1 | grep -q "blocked:" || die "the relay accepted a plaintext kind-1"
+pass "3. outsider refused restricted on REQ and NEG; plaintext neither served nor accepted"
+
+# --- 4. a notedeck host joins from the relay alone -------------------------
+
+if ((with_notedeck)); then
+    hw owner share "$host_pk" >/dev/null 2>>"$dir/step1.err" || die "owner share to the host failed"
+    # The host account's 10013, on a plaintext relay of its own: the sns relay,
+    # encrypted-only.
+    plain_port=$(free_port)
+    nak serve --hostname 127.0.0.1 --port "$plain_port" </dev/null >"$dir/plain.log" 2>&1 &
+    pids+=($!)
+    wait_for 10 "the plaintext relay on :$plain_port" port_open "$plain_port"
+    host_sec=$(<"$dir/host.sec")
+    content=$(nak encrypt --sec "$host_sec" -p "$host_pk" \
+        "$(printf '[["relay","%s","encrypted"]]' "$relay")" </dev/null)
+    nak event -k 10013 -c "$content" --sec "$host_sec" "ws://127.0.0.1:$plain_port" \
+        </dev/null >/dev/null 2>&1 || die "couldn't publish the host's 10013"
+
+    mkdir -p "$dir/nd-db" "$dir/nd-data"
+    env -u DISPLAY -u WAYLAND_DISPLAY NOTEDECK_SOCKET="$dir/notedeck.sock" \
+        "$dir/notedeck" --debug --headless --nsec "$host_sec" \
+        --datapath "$dir/nd-data" --dbpath "$dir/nd-db" \
+        -r "ws://127.0.0.1:$plain_port" --no-local-relay >"$dir/notedeck.log" 2>&1 &
+    nd_pid=$!
+    pids+=("$nd_pid")
+    # The board as the host's ndb holds it once joined: the member's card and
+    # comment, unwrapped from 1081s the host could only have got from the relay.
+    host_joined() {
+        kill -0 "$nd_pid" 2>/dev/null || die "notedeck exited; see $dir/notedeck.log"
+        ndb -d "$dir/nd-db" query -l 500 2>/dev/null | grep '^{' |
+            jq -s -e --arg pk "$member_pk" \
+                'any(.kind == 1621 and .pubkey == $pk) and any(.kind == 1111 and .pubkey == $pk)' \
+                >/dev/null 2>&1
+    }
+    wait_for 90 "the host to unwrap the member's card and comment" host_joined
+    kill "$nd_pid" 2>/dev/null || true
+    pass "4. notedeck host (10013: relay encrypted-only) pulled its share and unwrapped the board"
+fi
+
+# --- 5. nothing but envelopes was ever sent --------------------------------
+
+sent=$(grep -o ' C EVENT kind=[0-9]*' "$dir/proxy.log" | sed 's/.*=//' | sort -n | uniq -c |
+    awk '{printf "%s kind-%s, ", $1, $2}')
+leaked=$(grep -o ' C EVENT kind=[0-9]*' "$dir/proxy.log" | sed 's/.*=//' |
+    grep -v -x -E '1059|1080|1081' | sort -u | tr '\n' ' ' || true)
+[[ -z $leaked ]] || die "a client sent the relay plaintext: kinds $leaked(see $dir/proxy.log)"
+pass "5. every EVENT a client sent the relay was an envelope (${sent%, })"
+
+echo "PASS (logs in $dir)"
