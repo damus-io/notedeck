@@ -767,9 +767,10 @@ impl App for Headway {
         }
 
         // Declare the inbound cross-device subscription (catch-up + realtime)
-        // against the account's private relays, and resolve the same set as our
-        // outbound publish targets. Empty => local-only. This is headway's own
-        // *plaintext* board leg only: the sealed shared-board kind-1081/1082 streams
+        // against the account's plaintext-carrying private relays (never an
+        // encrypted-only one), and resolve the same set as our outbound plaintext
+        // publish targets. Empty => local-only. This is headway's own *plaintext*
+        // board leg only: the sealed shared-board kind-1081/1082 streams
         // are now pulled centrally by the notedeck host's private `Session` (see
         // `notedeck::HostPrivateSync`), which registers the roots and auto-unwraps
         // the envelopes off-foreground — so headway no longer declares them here.
@@ -777,14 +778,19 @@ impl App for Headway {
         let private_relays = self.private_sync.update(ctx, inbound);
 
         // Flush any self-share gift-wraps captured when a board was created this
-        // session, now that the outbound relay set is resolved (see
-        // `pending_selfshares`). Held until a private relay is reachable so an
-        // account created offline still shares its key once one appears; drained
-        // only once actually forwarded, so a local-only account keeps buffering.
-        if !self.pending_selfshares.is_empty() && !private_relays.is_empty() {
-            let mut api = ctx.remote.publisher_explicit();
-            for frame in self.pending_selfshares.drain(..) {
-                notedeck::fan_out_event_frame(&mut api, &frame, &private_relays);
+        // session (see `pending_selfshares`). They are envelopes (a 1059 and a
+        // 1080), so they may go to every private relay, encrypted-only ones too;
+        // routing by kind keeps that true for anything else that lands here. Held
+        // until a private relay is reachable so an account created offline still
+        // shares its key once one appears; drained only once actually forwarded,
+        // so a local-only account keeps buffering.
+        if !self.pending_selfshares.is_empty() {
+            let targets = ctx.accounts.selected_account_private_relay_set().targets();
+            if !targets.is_empty() {
+                let mut api = ctx.remote.publisher_explicit();
+                for frame in self.pending_selfshares.drain(..) {
+                    notedeck::fan_out_routed_event_frame(&mut api, &frame, &targets);
+                }
             }
         }
 

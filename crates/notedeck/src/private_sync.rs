@@ -83,6 +83,33 @@ pub fn fan_out_event_frame(api: &mut ExplicitPublishApi, event_frame: &str, rela
     }
 }
 
+/// [`fan_out_event_frame`] for a publisher whose frames may be plaintext or an
+/// encrypted envelope: sends the frame to `targets`' envelope set when its kind
+/// is an envelope ([`crate::is_envelope_kind`]) and to the plaintext set
+/// otherwise, so an encrypted-only private relay never sees plaintext.
+pub fn fan_out_routed_event_frame(
+    api: &mut ExplicitPublishApi,
+    event_frame: &str,
+    targets: &crate::PrivateRelayTargets,
+) {
+    let Some(event) = serde_json::from_str::<serde_json::Value>(event_frame)
+        .ok()
+        .and_then(|frame| frame.get(1).cloned())
+    else {
+        return;
+    };
+    let Some(kind) = event.get("kind").and_then(|kind| kind.as_u64()) else {
+        return;
+    };
+    let relays = u32::try_from(kind)
+        .map(|kind| targets.for_kind(kind))
+        .unwrap_or(&targets.plaintext);
+    if relays.is_empty() {
+        return;
+    }
+    api.publish_event_json(event.to_string(), relays.to_vec());
+}
+
 /// Fan freshly-ingested local notes out to any private relays they have not yet
 /// been seen on.
 ///
@@ -955,6 +982,12 @@ fn fan_keys_to_relays(
 /// Hold one per app and call [`update`](Self::update) each frame with the app's
 /// event filter; it returns the resolved private relays so the caller can reuse
 /// them as outbound publish targets (see [`fan_out_event_frame`]).
+///
+/// This is the **plaintext** leg: it reads from and resolves only the private
+/// relays that may carry plaintext
+/// ([`Accounts::selected_account_plaintext_private_relays`](crate::Accounts::selected_account_plaintext_private_relays)),
+/// never an encrypted-only one. Encrypted envelopes are the host's
+/// ([`HostPrivateSync`]), which syncs them over every private relay.
 pub struct PrivateRelaySync {
     /// Human-readable app name, for log lines.
     app: &'static str,
@@ -986,16 +1019,16 @@ impl PrivateRelaySync {
     }
 
     /// Bring the inbound subscription in line with the selected account's
-    /// private relays, declaring a live + full-history scoped sub for `filters`
-    /// against them (or dropping it when none are marked). Returns the resolved
-    /// private relays for use as outbound publish targets.
+    /// plaintext-carrying private relays, declaring a live + full-history scoped
+    /// sub for `filters` against them (or dropping it when none are marked).
+    /// Returns the resolved relays for use as outbound plaintext publish targets.
     ///
     /// `filters` is the full set to sync — a plaintext-app filter usually passes a
     /// single one, but a shared-note app passes one per channel (e.g. headway's
     /// own-board filter plus a kind-1081 envelope filter per accepted shared
     /// board). An empty set drops the subscription, same as no private relay.
     pub fn update(&mut self, ctx: &mut AppContext, filters: Vec<Filter>) -> Vec<RelayId> {
-        let relays = ctx.accounts.selected_account_private_relays();
+        let relays = ctx.accounts.selected_account_plaintext_private_relays();
         let urls: Vec<NormRelayUrl> = relays
             .iter()
             .filter_map(|relay| match relay {
@@ -1050,7 +1083,7 @@ impl PrivateRelaySync {
         if urls.is_empty() {
             tracing::info!(
                 app = self.app,
-                "private-sync: no private relay marked — local-only"
+                "private-sync: no plaintext private relay marked — local-only"
             );
             return;
         }

@@ -84,6 +84,9 @@ mod test_utils;
 
 pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
+pub use account::private_relay_set::{
+    is_envelope_kind, PrivateRelay, PrivateRelayRole, PrivateRelaySet, PrivateRelayTargets,
+};
 pub use account::relay::{
     construct_nip65_relays_note, construct_private_relay_list_note, RelayAction,
 };
@@ -136,8 +139,8 @@ pub use open_uri::OpenUri;
 pub use options::NotedeckOptions;
 pub use persist::*;
 pub use private_sync::{
-    fan_out_event_frame, fan_out_unseen_notes, write_private_note, HostPrivateSync,
-    PrivateChannels, PrivateRelaySync, PrivateWriteError,
+    fan_out_event_frame, fan_out_routed_event_frame, fan_out_unseen_notes, write_private_note,
+    HostPrivateSync, PrivateChannels, PrivateRelaySync, PrivateWriteError,
 };
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi};

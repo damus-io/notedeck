@@ -1,6 +1,7 @@
 use crate::account::cache::AccountCache;
 use crate::account::contacts::Contacts;
 use crate::account::mute::AccountMutedData;
+use crate::account::private_relay_set::PrivateRelaySet;
 use crate::account::relay::{
     apply_local_advertised_relay_action, calculate_relays, modify_advertised_relays,
     modify_private_relays, write_relays, AccountRelayData, RelayAction, RelayDefaults,
@@ -381,7 +382,9 @@ impl Accounts {
     ) {
         if matches!(
             action,
-            RelayAction::AddPrivate(_) | RelayAction::RemovePrivate(_)
+            RelayAction::AddPrivate(_)
+                | RelayAction::RemovePrivate(_)
+                | RelayAction::SetPrivateRole { .. }
         ) {
             let selected = self.cache.selected_mut();
             modify_private_relays(
@@ -493,8 +496,9 @@ impl Accounts {
         &self.get_selected_account_data().relay.advertised
     }
 
-    /// Return the selected account's kind-10013 NIP-37 private-sync relay set.
-    pub fn selected_account_private_relay_set(&self) -> &std::collections::BTreeSet<NormRelayUrl> {
+    /// Return the selected account's kind-10013 NIP-37 private-sync relay set,
+    /// with each relay's role.
+    pub fn selected_account_private_relay_set(&self) -> &PrivateRelaySet {
         &self.get_selected_account_data().relay.private
     }
 
@@ -505,16 +509,25 @@ impl Accounts {
         )
     }
 
-    /// Return the selected account's private-sync relays from its decrypted
-    /// kind-10013 NIP-37 list, as `RelayId`s. Used by dave/headway/notebook to
-    /// sync private state across the user's own devices.
+    /// Return every private-sync relay from the selected account's decrypted
+    /// kind-10013 NIP-37 list, as `RelayId`s: the targets for **encrypted
+    /// envelopes** (1059 gift-wraps, 1080 PNS, 1081 SNS), which may go to an
+    /// encrypted-only relay too. Plaintext goes to
+    /// [`Self::selected_account_plaintext_private_relays`] instead.
     pub fn selected_account_private_relays(&self) -> Vec<RelayId> {
+        self.get_selected_account_data().relay.private.relay_ids()
+    }
+
+    /// Return the selected account's private-sync relays that may carry
+    /// plaintext — every one but those marked
+    /// [`PrivateRelayRole::EncryptedOnly`](crate::PrivateRelayRole::EncryptedOnly).
+    /// The targets for any private event that isn't an encrypted envelope:
+    /// own-board headway events, horizon's calendar, the 10013 itself.
+    pub fn selected_account_plaintext_private_relays(&self) -> Vec<RelayId> {
         self.get_selected_account_data()
             .relay
             .private
-            .iter()
-            .map(|url| RelayId::Websocket(url.clone()))
-            .collect()
+            .plaintext_relay_ids()
     }
 
     fn selected_account_remote_state_changed_from(

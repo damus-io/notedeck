@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod cache;
 pub mod contacts;
 pub mod mute;
+pub mod private_relay_set;
 pub mod relay;
 
 pub const FALLBACK_PUBKEY: fn() -> nostrdb_net::Pubkey = || {

@@ -451,6 +451,9 @@ edited_ee63 = edited
 # Dave session inspector files: a temp-dir folder with nothing in it
 empty_dd99 = empty
 
+# Toggle on a private relay row: send this relay only encrypted envelopes
+Encrypted_only_d2c6 = Encrypted only
+
 # Placeholder for hashtag input field
 Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = Enter the desired hashtags here (for multiple space-separated)
 
@@ -856,6 +859,9 @@ one-shot_f4a4 = one-shot
 # Dave session inspector files: this session's backend has no Claude Code temp dir
 Only_Claude_Code_sessions_keep_a_scratchpad_28c3 = Only Claude Code sessions keep a scratchpad
 
+# Hover text on an encrypted-only private relay's toggle
+Only_encrypted_envelopes_go_to_this_relay__Click_to_also_sync_plaintext_private_data_here_9545 = Only encrypted envelopes go to this relay. Click to also sync plaintext private data here.
+
 # Dave session inspector files: open a file or folder with the system's default app
 Open_4300 = Open
 
@@ -909,6 +915,9 @@ percent_____resets__time_7c1d = {$percent}% · resets {$time}
 
 # Dave session inspector section: permission mode, answered prompts, always-allow rules
 Permissions_d50b = Permissions
+
+# Hover text on a private relay's encrypted-only toggle when it is off
+Plaintext_private_data_syncs_here_too__Click_to_send_this_relay_only_encrypted_envelopes__e_g__a_relay_shared_with_a_team_0593 = Plaintext private data syncs here too. Click to send this relay only encrypted envelopes, e.g. a relay shared with a team.
 
 # Error message for missing deck name
 Please_create_a_name_for_the_deck_38e7 = Please create a name for the deck.

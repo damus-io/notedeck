@@ -6,8 +6,8 @@ use egui::{
 use egui_virtual_list::VirtualList;
 use enostr::{NormRelayUrl, RelayStatus};
 use notedeck::{
-    tr, DragResponse, Localization, NotedeckTextStyle, RelayAction, RelayInspectApi,
-    RelayInspectEntry, RelaySpec,
+    tr, DragResponse, Localization, NotedeckTextStyle, PrivateRelayRole, PrivateRelaySet,
+    RelayAction, RelayInspectApi, RelayInspectEntry, RelaySpec,
 };
 use notedeck_ui::app_images;
 use notedeck_ui::{
@@ -21,7 +21,7 @@ use super::widgets::styled_button;
 pub struct RelayView<'a> {
     relay_inspect: RelayInspectApi<'a>,
     advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
-    private_relays: &'a std::collections::BTreeSet<NormRelayUrl>,
+    private_relays: &'a PrivateRelaySet,
     relay_state: &'a mut RelayViewState,
     id_string_map: &'a mut HashMap<Id, String>,
     i18n: &'a mut Localization,
@@ -48,7 +48,9 @@ impl RelayViewState {
 struct RelaySections<'a> {
     /// In the selected account's advertised (NIP-65) relay list.
     advertised: Vec<RelayRow<'a>>,
-    /// In the private-sync relay list.
+    /// In the private-sync relay list: every one, connected or not, since an
+    /// encrypted-only relay syncs through the host's own session rather than
+    /// the relay pool, and must stay reachable to toggle or remove.
     private: Vec<RelayRow<'a>>,
     /// In neither list, e.g. outbox relays.
     other: Vec<RelayRow<'a>>,
@@ -58,6 +60,8 @@ struct RelaySections<'a> {
 struct RelayRow<'a> {
     relay_url: &'a NormRelayUrl,
     status: RelayStatus,
+    /// The relay's private-sync role, on rows of the private section only.
+    private_role: Option<PrivateRelayRole>,
 }
 
 /// Which relay list a row belongs to, controlling whether/how it can be removed.
@@ -126,7 +130,7 @@ impl<'a> RelayView<'a> {
     pub fn new(
         relay_inspect: RelayInspectApi<'a>,
         advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
-        private_relays: &'a std::collections::BTreeSet<NormRelayUrl>,
+        private_relays: &'a PrivateRelaySet,
         relay_state: &'a mut RelayViewState,
         id_string_map: &'a mut HashMap<Id, String>,
         i18n: &'a mut Localization,
@@ -301,7 +305,8 @@ fn show_empty_relay_section(ui: &mut Ui, i18n: &mut Localization) {
     });
 }
 
-/// Render one relay as a single-line list row: status dot, url, remove button.
+/// Render one relay as a single-line list row: status dot, url, remove button,
+/// and for a private relay an "encrypted only" toggle beside it.
 ///
 /// The row is laid out from an explicitly allocated rect rather than nested
 /// layouts so the url always truncates against a fixed right gutter, whether or
@@ -366,9 +371,30 @@ fn show_relay_row(
         }
     }
 
+    let mut text_right = gutter.left() - 8.0;
+    if let Some(role) = relay_row.private_role {
+        let toggle_rect = Rect::from_min_max(
+            egui::pos2(rect.left() + ROW_TEXT_INSET, rect.top()),
+            egui::pos2(text_right, rect.bottom()),
+        );
+        let mut toggle_ui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(toggle_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        let toggle = encrypted_only_toggle(&mut toggle_ui, role, i18n);
+        text_right = toggle.rect.left() - 8.0;
+        if toggle.clicked() {
+            action = Some(RelayAction::SetPrivateRole {
+                url: relay_url.to_owned(),
+                role: toggled_role(role),
+            });
+        }
+    }
+
     let text_rect = Rect::from_min_max(
         egui::pos2(rect.left() + ROW_TEXT_INSET, rect.top()),
-        egui::pos2(gutter.left() - 8.0, rect.bottom()),
+        egui::pos2(text_right, rect.bottom()),
     );
     let mut text_ui = ui.new_child(
         UiBuilder::new()
@@ -393,6 +419,47 @@ fn show_relay_row(
     });
 
     action
+}
+
+/// The small "encrypted only" chip on a private relay row: selected when the
+/// relay may only be sent encrypted envelopes. Its hover says what a click does.
+fn encrypted_only_toggle(
+    ui: &mut Ui,
+    role: PrivateRelayRole,
+    i18n: &mut Localization,
+) -> egui::Response {
+    let encrypted_only = role == PrivateRelayRole::EncryptedOnly;
+    let label = tr!(
+        i18n,
+        "Encrypted only",
+        "Toggle on a private relay row: send this relay only encrypted envelopes"
+    );
+    let hover = if encrypted_only {
+        tr!(
+            i18n,
+            "Only encrypted envelopes go to this relay. Click to also sync plaintext private data here.",
+            "Hover text on an encrypted-only private relay's toggle"
+        )
+    } else {
+        tr!(
+            i18n,
+            "Plaintext private data syncs here too. Click to send this relay only encrypted envelopes, e.g. a relay shared with a team.",
+            "Hover text on a private relay's encrypted-only toggle when it is off"
+        )
+    };
+    ui.add(Button::selectable(
+        encrypted_only,
+        RichText::new(label).text_style(NotedeckTextStyle::Small.text_style()),
+    ))
+    .on_hover_text(hover)
+}
+
+/// The role a click on the encrypted-only toggle switches to.
+fn toggled_role(role: PrivateRelayRole) -> PrivateRelayRole {
+    match role {
+        PrivateRelayRole::Full => PrivateRelayRole::EncryptedOnly,
+        PrivateRelayRole::EncryptedOnly => PrivateRelayRole::Full,
+    }
 }
 
 /// Drop the `wss://` scheme and trailing slash so the host reads as the row's title.
@@ -477,15 +544,17 @@ fn add_relay_entry(
 fn relay_rows<'a>(
     relay_infos: impl IntoIterator<Item = RelayInspectEntry<'a>>,
     advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
-    private_relays: &'a std::collections::BTreeSet<NormRelayUrl>,
+    private_relays: &'a PrivateRelaySet,
 ) -> RelaySections<'a> {
     let advertised_urls = advertised_relays
         .iter()
         .map(|relay| &relay.url)
         .collect::<std::collections::BTreeSet<_>>();
     let mut advertised = Vec::new();
-    let mut private = Vec::new();
     let mut outbox_other = Vec::new();
+    // Every private relay gets a row, connected or not: an encrypted-only one
+    // is synced by the host's own session and may never appear in the pool.
+    let mut pool_status = std::collections::BTreeMap::new();
 
     for relay_info in relay_infos {
         if relay_info.status == RelayStatus::Disconnected {
@@ -497,26 +566,37 @@ fn relay_rows<'a>(
             advertised.push(RelayRow {
                 relay_url: relay_info.relay_url,
                 status: relay_info.status,
+                private_role: None,
             });
             matched = true;
         }
         if private_relays.contains(relay_info.relay_url) {
-            private.push(RelayRow {
-                relay_url: relay_info.relay_url,
-                status: relay_info.status,
-            });
+            pool_status.insert(relay_info.relay_url, relay_info.status);
             matched = true;
         }
         if !matched {
             outbox_other.push(RelayRow {
                 relay_url: relay_info.relay_url,
                 status: relay_info.status,
+                private_role: None,
             });
         }
     }
 
+    // Already sorted by URL: the set iterates in order.
+    let private = private_relays
+        .urls()
+        .map(|relay_url| RelayRow {
+            relay_url,
+            status: pool_status
+                .get(relay_url)
+                .copied()
+                .unwrap_or(RelayStatus::Disconnected),
+            private_role: private_relays.role(relay_url),
+        })
+        .collect();
+
     advertised.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
-    private.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
     outbox_other.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
 
     RelaySections {
@@ -587,6 +667,18 @@ mod tests {
         RelaySpec::new(url.clone(), false, false)
     }
 
+    /// A private relay set of full (plaintext-carrying) relays.
+    fn private_set(urls: &[&NormRelayUrl]) -> PrivateRelaySet {
+        urls.iter()
+            .map(|url| notedeck::PrivateRelay {
+                url: (*url).clone(),
+                role: PrivateRelayRole::Full,
+            })
+            .collect()
+    }
+
+    /// Advertised and other rows come from the pool's active relays only; the
+    /// private section lists every private relay, a disconnected one included.
     #[test]
     fn relay_rows_only_shows_active_relay_infos() {
         let advertised_active = relay_url("wss://relay-advertised-active.example.com");
@@ -599,7 +691,7 @@ mod tests {
             relay_spec(&advertised_active),
             relay_spec(&advertised_inactive),
         ]);
-        let private_relays = BTreeSet::from([private_active.clone(), private_inactive.clone()]);
+        let private_relays = private_set(&[&private_active, &private_inactive]);
         let relay_infos = vec![
             RelayInspectEntry {
                 relay_url: &advertised_active,
@@ -630,20 +722,30 @@ mod tests {
             vec![RelayRow {
                 relay_url: &advertised_active,
                 status: RelayStatus::Connected,
+                private_role: None,
             }]
         );
         assert_eq!(
             private,
-            vec![RelayRow {
-                relay_url: &private_active,
-                status: RelayStatus::Connected,
-            }]
+            vec![
+                RelayRow {
+                    relay_url: &private_active,
+                    status: RelayStatus::Connected,
+                    private_role: Some(PrivateRelayRole::Full),
+                },
+                RelayRow {
+                    relay_url: &private_inactive,
+                    status: RelayStatus::Disconnected,
+                    private_role: Some(PrivateRelayRole::Full),
+                }
+            ]
         );
         assert_eq!(
             other,
             vec![RelayRow {
                 relay_url: &other_active,
                 status: RelayStatus::Connecting,
+                private_role: None,
             }]
         );
     }
@@ -664,7 +766,7 @@ mod tests {
         ];
 
         let advertised_relays = BTreeSet::new();
-        let private_relays = BTreeSet::new();
+        let private_relays = PrivateRelaySet::default();
         let RelaySections { other, .. } =
             relay_rows(relay_infos, &advertised_relays, &private_relays);
 
@@ -674,10 +776,12 @@ mod tests {
                 RelayRow {
                     relay_url: &other_a,
                     status: RelayStatus::Connecting,
+                    private_role: None,
                 },
                 RelayRow {
                     relay_url: &other_b,
                     status: RelayStatus::Connected,
+                    private_role: None,
                 }
             ]
         );
@@ -687,7 +791,7 @@ mod tests {
     fn relay_rows_updates_advertised_and_private_overlap() {
         let relay = relay_url("wss://relay-overlap.example.com");
         let advertised_relays = BTreeSet::from([relay_spec(&relay)]);
-        let private_relays = BTreeSet::from([relay.clone()]);
+        let private_relays = private_set(&[&relay]);
         let relay_infos = vec![RelayInspectEntry {
             relay_url: &relay,
             status: RelayStatus::Connected,
@@ -704,6 +808,7 @@ mod tests {
             vec![RelayRow {
                 relay_url: &relay,
                 status: RelayStatus::Connected,
+                private_role: None,
             }]
         );
         assert_eq!(
@@ -711,8 +816,44 @@ mod tests {
             vec![RelayRow {
                 relay_url: &relay,
                 status: RelayStatus::Connected,
+                private_role: Some(PrivateRelayRole::Full),
             }]
         );
         assert!(other.is_empty());
+    }
+
+    /// An encrypted-only private relay keeps its role on its row, and the
+    /// toggle flips between the two roles.
+    #[test]
+    fn relay_rows_carry_private_role() {
+        let sns = relay_url("wss://sns.example.com");
+        let private_relays: PrivateRelaySet = [notedeck::PrivateRelay {
+            url: sns.clone(),
+            role: PrivateRelayRole::EncryptedOnly,
+        }]
+        .into_iter()
+        .collect();
+        let advertised_relays = BTreeSet::new();
+
+        let RelaySections { private, other, .. } =
+            relay_rows(Vec::new(), &advertised_relays, &private_relays);
+
+        assert_eq!(
+            private,
+            vec![RelayRow {
+                relay_url: &sns,
+                status: RelayStatus::Disconnected,
+                private_role: Some(PrivateRelayRole::EncryptedOnly),
+            }]
+        );
+        assert!(other.is_empty());
+        assert_eq!(
+            toggled_role(PrivateRelayRole::EncryptedOnly),
+            PrivateRelayRole::Full
+        );
+        assert_eq!(
+            toggled_role(PrivateRelayRole::Full),
+            PrivateRelayRole::EncryptedOnly
+        );
     }
 }

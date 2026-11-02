@@ -7,15 +7,14 @@
 //! same curated schema the CLI emits with `--json`. Boards are folded for the
 //! currently-selected account — the pubkey that authors this user's boards.
 
-use enostr::RelayId;
 use headway::event::{self, BoardView, CardView, Container, Priority, resolve_card};
 use headway::store::{self, BoardAction, NewCard};
 use headway::{traversal, wordid};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
-    AppTool, ExplicitPublishApi, RegisteredTool, ToolArg, ToolArgType, ToolContext, ToolSpec,
-    fan_out_event_frame,
+    AppTool, ExplicitPublishApi, PrivateRelayTargets, RegisteredTool, ToolArg, ToolArgType,
+    ToolContext, ToolSpec, fan_out_routed_event_frame,
 };
 use serde::{Deserialize, Serialize};
 
@@ -310,14 +309,18 @@ fn resolve_container(view: &BoardView, sel: &str) -> Result<Container, String> {
 /// A [`store::Publisher`] that fans locally-ingested board events out to the
 /// selected account's private relays through a [`ToolContext`]'s publisher —
 /// the tool-side analogue of the Headway app's own `PrivateRelayPublisher`.
+///
+/// A write is a plaintext event on an own board and a kind-1081 envelope on a
+/// shared one, so each frame is routed by its kind: an encrypted-only private
+/// relay gets the envelopes and never the plaintext.
 struct RelayFanout<'x, 'a> {
     api: &'x mut ExplicitPublishApi<'a>,
-    relays: Vec<RelayId>,
+    targets: PrivateRelayTargets,
 }
 
 impl store::Publisher for RelayFanout<'_, '_> {
     fn publish(&mut self, event_frame: &str) {
-        fan_out_event_frame(self.api, event_frame, &self.relays);
+        fan_out_routed_event_frame(self.api, event_frame, &self.targets);
     }
 }
 
@@ -455,7 +458,7 @@ fn mutate(
     build: impl FnOnce(&BoardView) -> Result<BoardAction, String>,
 ) -> Result<Applied, String> {
     let author = *cx.accounts.selected_account_pubkey();
-    let relays = cx.accounts.selected_account_private_relays();
+    let targets = cx.accounts.selected_account_private_relay_set().targets();
 
     // Resolve the board and its channel first, so a bad card/column ref reports the
     // specific resolution error rather than a generic capability error. The roster
@@ -478,7 +481,7 @@ fn mutate(
     let Some(api) = cx.publish.as_mut() else {
         return Err("publishing is unavailable in this context".to_string());
     };
-    let mut publisher = RelayFanout { api, relays };
+    let mut publisher = RelayFanout { api, targets };
     store::apply(
         cx.ndb,
         board_id,
