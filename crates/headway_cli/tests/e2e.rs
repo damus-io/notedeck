@@ -2042,3 +2042,191 @@ fn comment_key_signs_comments_on_a_sealed_board_only() {
         "the refused comment reached the relay"
     );
 }
+
+/// A key that is a member of neither the board nor the relay: an in-range
+/// scalar distinct from [`SECRET`] and [`MEMBER_SECRET`].
+const STRANGER_SECRET: [u8; 32] = [0x44; 32];
+
+/// An owner and a member share a sealed board over a members-only relay that
+/// requires NIP-42 AUTH, each from their own cache, as `wss://sns.damus.io` will
+/// be used (headway:headway/tree-unhappy-feel).
+///
+/// Every run authenticates with its `--nsec`. The owner seeds, adds and shares;
+/// the member pulls the key-share, folds the board and edits it; the owner folds
+/// the edit. A key the relay doesn't list is refused as a non-member, and a
+/// read-only run with no `--nsec` is told to pass one. Both are left working
+/// offline rather than failed, as an unreachable relay would leave them.
+///
+/// The policy names the relay by host only (`ws://127.0.0.1`), and the CLI signs
+/// with a plain `AuthSigner::new`, naming the URL it dialed: the production
+/// path, with no service-URL seam.
+#[test]
+fn owner_and_member_share_a_board_over_an_auth_locked_relay() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let relay_dir = tempfile::tempdir().expect("relay dir");
+    let relay_ndb = Ndb::new(
+        relay_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("relay ndb");
+    let relay_store = relay_ndb.clone();
+
+    let owner = author();
+    let owner_hex = owner.hex();
+    let member = nostrdb_net::FullKeypair::from_secret_bytes(&MEMBER_SECRET)
+        .expect("member keypair")
+        .pubkey;
+    let member_key = hex::encode(MEMBER_SECRET);
+    let stranger_key = hex::encode(STRANGER_SECRET);
+
+    // The kinds sns.damus.io accepts: gift-wraps, PNS and SNS envelopes. No
+    // plaintext board kind, so a sealed board is the only kind that works here.
+    let policy = nostrdb_net::relay::server::AccessPolicy::new(
+        "ws://127.0.0.1",
+        [owner, member],
+        [1059, 1080, 1081],
+    );
+    let _guard = rt.enter();
+    let relay = nostrdb_net::relay::server::spawn_with_policy(
+        relay_ndb,
+        "127.0.0.1:0".parse().unwrap(),
+        policy,
+    )
+    .expect("relay");
+    let url = relay.url();
+    let slug = "kitty";
+
+    // 1. The owner seeds a sealed board and puts a card on it.
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner_db = owner_dir.path().to_str().unwrap();
+    let out = headway(&url, owner_db, &["--board", slug, "seed"]);
+    assert!(
+        out.status.success(),
+        "owner seed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("working offline"),
+        "the owner must authenticate, not fall back offline:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    wait_for_envelope(&relay_store);
+    let out = headway(
+        &url,
+        owner_db,
+        &["--board", slug, "add", "Owner card", "--col", "Todo"],
+    );
+    assert!(out.status.success(), "owner add");
+    show_board_until(&url, owner_db, slug, 1);
+
+    // 2. The owner shares it; the key-share lands on the AUTH-locked relay.
+    let out = headway(
+        &url,
+        owner_db,
+        &["--board", slug, "share", &member.npub().expect("npub")],
+    );
+    assert!(
+        out.status.success(),
+        "owner share: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut wraps = 0;
+    for _ in 0..50 {
+        wraps = giftwraps_to(&relay_store, &member);
+        if wraps > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(wraps, 1, "the member's key-share never reached the relay");
+
+    // 3. The member, on its own cache, folds the board and adds a card.
+    let member_dir = tempfile::tempdir().expect("member dir");
+    let member_db = member_dir.path().to_str().unwrap();
+    show_as_until(&member_key, &url, member_db, &owner_hex, slug, |b| {
+        find_titled(b, "Owner card").is_some()
+    });
+    let out = headway_as(
+        &member_key,
+        &url,
+        member_db,
+        &[
+            "--author",
+            &owner_hex,
+            "--board",
+            slug,
+            "add",
+            "Member card",
+            "--col",
+            "Todo",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "member add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 4. The owner folds the member's card.
+    let board = show_board_until(&url, owner_db, slug, 2);
+    let Titled { card, .. } =
+        find_titled(&board, "Member card").expect("the owner never folded the member's card");
+    assert_eq!(card["author"], member.hex());
+
+    // 5. A key the relay doesn't list authenticates but is refused, and ends up
+    // with nothing: not the key-share, not the board.
+    let stranger_dir = tempfile::tempdir().expect("stranger dir");
+    let stranger_db = stranger_dir.path().to_str().unwrap();
+    let out = headway_as(
+        &stranger_key,
+        &url,
+        stranger_db,
+        &["--author", &owner_hex, "--board", slug, "show", "--json"],
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("refused this account") && err.contains("not a member"),
+        "a non-member must be told the relay refused it:\n{err}"
+    );
+    assert!(err.contains("working offline"), "unexpected output:\n{err}");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("Owner card"),
+        "a non-member folded the board"
+    );
+
+    // 6. A read-only run has no key to AUTH with, and is told to pass one. With
+    // no `--nsec` the CLI falls back to `$HEADWAY_NSEC` and then the key stored
+    // by `headway login` under the platform data dir, so both point away from
+    // the developer's: a run that found their key would AUTH as them.
+    let no_key_home = tempfile::tempdir().expect("data dir");
+    let out = Command::new(env!("CARGO_BIN_EXE_headway"))
+        .args([
+            "--author",
+            &owner_hex,
+            "--relay",
+            &url,
+            "--db",
+            stranger_db,
+            "--board",
+            slug,
+            "show",
+        ])
+        .env("HEADWAY_BOARD", "headway")
+        .env("XDG_DATA_HOME", no_key_home.path())
+        .env_remove("HEADWAY_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC_FILE")
+        .output()
+        .expect("run headway");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("requires NIP-42 AUTH") && err.contains("Pass --nsec"),
+        "a run with no --nsec must be told to pass one:\n{err}"
+    );
+
+    // 7. Nothing went up in the clear: a sealed board rides as envelopes, and
+    // the relay's kinds list would have blocked anything else anyway.
+    assert_eq!(plaintext_member_notes(&relay_store, &owner), 0);
+    assert_eq!(plaintext_member_notes(&relay_store, &member), 0);
+}

@@ -291,6 +291,7 @@ async fn run() -> Result<()> {
     progress.phase("syncing boards");
     let mut relay = connect_and_sync(
         &cli.relay,
+        cli.secret.as_ref(),
         &ndb,
         &owner_nn,
         &filter,

@@ -5,6 +5,8 @@
 
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
+use nostrdb_net::relay::auth::AuthSigner;
+use nostrdb_net::relay::sync;
 use serde_json::json;
 
 use headway::boards::Roster;
@@ -13,6 +15,7 @@ use headway::store;
 use headway::teams;
 
 use crate::APP;
+use crate::args::SigningKey;
 use crate::edit::Collect;
 use crate::progress::SyncProgress;
 
@@ -58,15 +61,29 @@ pub(crate) fn plaintext_sync_filter(author: &Pubkey) -> nostrdb::Filter {
 /// The fork's `connect_and_sync`, split open here so the offline warning can
 /// erase the progress line first rather than splice into it; the warning text
 /// is the fork's verbatim. A failed pull propagates, as it does there.
+///
+/// `signer` is the `--nsec` keypair, and answers the relay's NIP-42 AUTH
+/// challenge, so a members-only relay such as `wss://sns.damus.io` serves this
+/// run. A read-only `--author` run has none and never authenticates. The comment
+/// key is never the AUTH identity: a relay admits the account, not the agent
+/// signing its comments. A relay that refuses this run (no signer, a rejected
+/// AUTH, or an account that isn't a member) leaves it offline like an
+/// unreachable one, with a warning that says which and what to do about it
+/// (see [`auth_refusal`]).
 pub(crate) async fn connect_and_sync(
     relay_url: &str,
+    signer: Option<&SigningKey>,
     ndb: &Ndb,
     author: &Pubkey,
     filter: &nostrdb::Filter,
     is_addressable: &dyn Fn(u32) -> bool,
     progress: &SyncProgress,
 ) -> nostrdb_net::relay::sync::Result<Option<nostrdb_net::relay::sync::Relay>> {
-    let mut relay = match nostrdb_net::relay::sync::Relay::connect(relay_url).await {
+    let auth = signer
+        .and_then(|key| nostrdb_net::FullKeypair::from_secret_bytes(&key.secret))
+        .map(AuthSigner::new);
+    let mut relay = match nostrdb_net::relay::sync::Relay::connect_with_auth(relay_url, auth).await
+    {
         Ok(relay) => relay,
         // The app being closed is the common case, not an error worth failing
         // over — fall back to the local cache.
@@ -77,6 +94,12 @@ pub(crate) async fn connect_and_sync(
             return Ok(None);
         }
     };
+    if let Err(refusal) = check_access(&mut relay, ndb, signer).await {
+        progress.clear();
+        eprintln!("warning: {refusal}");
+        eprintln!("working offline against the local cache (--relay to point elsewhere)");
+        return Ok(None);
+    }
     nostrdb_net::relay::sync::reconcile_sync_with_progress(
         &mut relay,
         ndb,
@@ -88,6 +111,73 @@ pub(crate) async fn connect_and_sync(
     )
     .await?;
     Ok(Some(relay))
+}
+
+/// A `REQ` that matches no event: the all-zero id. See [`check_access`].
+const NOTHING: &str =
+    r#"{"ids":["0000000000000000000000000000000000000000000000000000000000000000"]}"#;
+
+/// Whether `relay` will serve this run, asked before any real sync: `Err`
+/// carries the warning to print when it refused over NIP-42 (see
+/// [`auth_refusal`]).
+///
+/// The reconcile can't answer this itself. The fork's `reconcile_sync` takes a
+/// refused `NEG-OPEN` for a relay without NIP-77, falls back to a NIP-01 `REQ`
+/// that is refused too, and returns `Ok` after two warnings that say only
+/// "fallback sync failed", so the typed refusal never reaches the caller. A bare
+/// `sync_into` does return it, AUTHing first when there is a signer, so this
+/// asks for nothing and reads its answer. One round trip, and against a
+/// members-only relay it is the one that authenticates the connection.
+///
+/// Any other failure is left for the reconcile to meet and report as it always
+/// has.
+async fn check_access(
+    relay: &mut nostrdb_net::relay::sync::Relay,
+    ndb: &Ndb,
+    signer: Option<&SigningKey>,
+) -> Result<(), String> {
+    match relay.sync_into(ndb, NOTHING).await {
+        Ok(_) => Ok(()),
+        Err(e) => auth_refusal(e.as_ref(), signer).map_or(Ok(()), Err),
+    }
+}
+
+/// What to tell the user when a relay refused this run over NIP-42, or `None`
+/// for any other error.
+///
+/// The fork's errors say what the relay said; this adds what to do about it,
+/// which differs by case: a run with no `--nsec` should pass one, a rejected
+/// AUTH points at the key or the relay, and an authenticated non-member needs
+/// the relay's operator to add the account, which nothing on this side fixes.
+fn auth_refusal(
+    e: &(dyn std::error::Error + 'static),
+    signer: Option<&SigningKey>,
+) -> Option<String> {
+    if let Some(refused) = e.downcast_ref::<sync::Restricted>() {
+        let who = signer.map_or_else(String::new, |key| {
+            format!(" ({})", npub_or_hex(&key.pubkey))
+        });
+        return Some(format!(
+            "{} refused this account{who}: {}. Ask its operator to add it as a member",
+            refused.relay, refused.reason
+        ));
+    }
+    let required = e.downcast_ref::<sync::AuthRequired>()?;
+    Some(match signer {
+        None => format!(
+            "{} requires NIP-42 AUTH ({}). Pass --nsec so this run can authenticate",
+            required.relay, required.reason
+        ),
+        Some(_) => format!(
+            "{} rejected this account's NIP-42 AUTH: {}",
+            required.relay, required.reason
+        ),
+    })
+}
+
+/// `pubkey` as an npub, falling back to hex if it won't encode.
+fn npub_or_hex(pubkey: &Pubkey) -> String {
+    pubkey.npub().unwrap_or_else(|| pubkey.hex())
 }
 
 /// Reconcile every joined board's kind-1081 SNS envelopes with the relay, both

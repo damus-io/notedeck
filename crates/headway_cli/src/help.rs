@@ -928,7 +928,14 @@ be taken back, so the board must be named explicitly.
 Needs a reachable relay — a key-share is sent once and never re-sent by
 a later run, so an offline share would be lost. Each run wraps with a
 fresh throwaway key, so re-running publishes another copy; that's
-harmless, since the member's roster dedups by channel and board.",
+harmless, since the member's roster dedups by channel and board.
+
+The key-share and every later edit go to --relay, so the member has to
+read that relay too. If they can't reach yours (a private relay on your
+own network), share on one you both use: the members-only
+wss://sns.damus.io, where both keys must be members. The run signs the
+relay's NIP-42 AUTH with --nsec, and the member's runs pass the same
+--relay with their own --nsec.",
         options: &[(
             "--json",
             "Machine-readable output: {ok, board, recipient, team_pubkey}",
@@ -936,6 +943,7 @@ harmless, since the member's roster dedups by channel and board.",
         examples: &[
             "headway share --board ios-port npub1...",
             "headway share --board ios-port --json <64-hex-pubkey>",
+            "headway --relay wss://sns.damus.io share --board ios-port npub1...",
         ],
     },
     // -- keys -------------------------------------------------------------
@@ -979,7 +987,9 @@ fn with_globals<R>(
         "Board for this run (or $HEADWAY_BOARD). Normally unnecessary — a headway:<board>/<word-id> card ref routes itself, and `headway board <id>` sets it persistently [default: {default_board}]"
     );
     let relay_summary = format!("Relay URL [default: {default_relay}]");
-    let relay = format!("Relay URL (or $HEADWAY_RELAY) [default: {default_relay}]");
+    let relay = format!(
+        "Relay URL (or $HEADWAY_RELAY) [default: {default_relay}]. A relay that asks for NIP-42 AUTH is answered with --nsec; a read-only --author run can't authenticate"
+    );
     f(&[
         GlobalOption {
             flag: "--board <id>",
