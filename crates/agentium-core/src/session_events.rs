@@ -4,7 +4,10 @@
 //! mixed content (text + tool_use blocks) are split into separate events.
 //! Events are threaded using NIP-10 `e` tags with root/reply markers.
 
-use crate::config::{RunConfig, AI_RUN_CONFIG_KIND};
+use crate::config::{
+    validate_env_name, validate_slug, BackendProfile, RunConfig, AI_BACKEND_PROFILE_KIND,
+    AI_RUN_CONFIG_KIND, BACKEND_PROFILE_BACKEND,
+};
 use crate::session_jsonl::{self, ContentBlock, JsonlLine};
 use nostrdb::{NoteBuildOptions, NoteBuilder};
 use std::collections::HashMap;
@@ -2151,6 +2154,133 @@ pub fn run_config_event_id(note: &nostrdb::Note) -> Option<String> {
 
 /// Check whether a kind-31991 note is a deletion tombstone.
 pub fn is_run_config_deleted(note: &nostrdb::Note) -> bool {
+    get_tag_value(note, "deleted").is_some()
+}
+
+/// Build a kind-31992 backend-profile event (parameterized replaceable,
+/// NIP-33), d-tag = the profile's slug. Account-wide: no `hostname` tag.
+///
+/// Every field is its own tag. Env vars are one `["env", "NAME=VALUE"]` tag
+/// each: the `=` keeps a value that happens to be 64-char hex (a token, say)
+/// from being stored as a 32-byte id that `get_str` can't read back. The inner
+/// note holds the secrets in the clear, so it must only ever be published
+/// PNS-wrapped ([`wrap_pns`]). [`backend_profile_from_note`] is the inverse.
+pub fn build_backend_profile_event(
+    profile: &BackendProfile,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    build_backend_profile_event_at(profile, None, secret_key)
+}
+
+/// [`build_backend_profile_event`] with an explicit `created_at` (`None` =
+/// now) — see [`build_run_config_event_at`] for why a replacing caller wants it.
+pub fn build_backend_profile_event_at(
+    profile: &BackendProfile,
+    created_at: Option<u64>,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    profile
+        .validate()
+        .map_err(|e| EventBuildError::Build(e.to_string()))?;
+    let mut builder = init_note_builder(AI_BACKEND_PROFILE_KIND, "", created_at);
+
+    builder = builder.start_tag().tag_str("d").tag_str(&profile.slug);
+    builder = builder
+        .start_tag()
+        .tag_str("backend")
+        .tag_str(BACKEND_PROFILE_BACKEND);
+    builder = builder.start_tag().tag_str("label").tag_str(&profile.label);
+    for (name, value) in &profile.env {
+        let var = format!("{name}={value}");
+        builder = builder.start_tag().tag_str("env").tag_str(&var);
+    }
+    for model in &profile.models {
+        builder = builder.start_tag().tag_str("model").tag_str(model);
+    }
+    if let Some(model) = &profile.default_model {
+        builder = builder.start_tag().tag_str("default_model").tag_str(model);
+    }
+    if let Some(dir) = &profile.config_dir {
+        builder = builder.start_tag().tag_str("config_dir").tag_str(dir);
+    }
+
+    finalize_built_event(builder, secret_key, AI_BACKEND_PROFILE_KIND)
+}
+
+/// Build a tombstone kind-31992 event deleting the profile `slug`: the same
+/// d-tag with a `deleted` tag, which replaces the live profile via NIP-33.
+pub fn build_backend_profile_delete_event(
+    slug: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    build_backend_profile_delete_event_at(slug, None, secret_key)
+}
+
+/// [`build_backend_profile_delete_event`] with an explicit `created_at`
+/// (`None` = now).
+pub fn build_backend_profile_delete_event_at(
+    slug: &str,
+    created_at: Option<u64>,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    validate_slug(slug).map_err(|e| EventBuildError::Build(e.to_string()))?;
+    let mut builder = init_note_builder(AI_BACKEND_PROFILE_KIND, "", created_at);
+
+    builder = builder.start_tag().tag_str("d").tag_str(slug);
+    builder = builder
+        .start_tag()
+        .tag_str("backend")
+        .tag_str(BACKEND_PROFILE_BACKEND);
+    builder = builder.start_tag().tag_str("deleted").tag_str("true");
+
+    finalize_built_event(builder, secret_key, AI_BACKEND_PROFILE_KIND)
+}
+
+/// Parse a kind-31992 note back into the [`BackendProfile`]
+/// [`build_backend_profile_event`] built it from, with `updated_at` taken from
+/// its `created_at`.
+///
+/// `None` for a tombstone ([`is_backend_profile_deleted`]), a slug that doesn't
+/// validate, or a profile for a backend other than Claude (one this build
+/// can't run). A malformed `env` tag is skipped rather than failing the whole
+/// profile; a missing label falls back to the slug.
+pub fn backend_profile_from_note(note: &nostrdb::Note) -> Option<BackendProfile> {
+    if is_backend_profile_deleted(note) {
+        return None;
+    }
+    if get_tag_value(note, "backend").is_some_and(|b| b != BACKEND_PROFILE_BACKEND) {
+        return None;
+    }
+    let slug = get_tag_value(note, "d")?;
+    validate_slug(slug).ok()?;
+
+    let mut profile = BackendProfile::new(slug, slug);
+    profile.updated_at = note.created_at();
+    for tag in note.tags() {
+        let (Some(name), Some(value)) = (tag.get_str(0), tag.get_str(1)) else {
+            continue;
+        };
+        match name {
+            "label" if !value.is_empty() => profile.label = value.to_string(),
+            "env" => {
+                let Some((var, val)) = value.split_once('=') else {
+                    continue;
+                };
+                if validate_env_name(var).is_ok() {
+                    profile.env.insert(var.to_string(), val.to_string());
+                }
+            }
+            "model" if !value.is_empty() => profile.models.push(value.to_string()),
+            "default_model" if !value.is_empty() => profile.default_model = Some(value.to_string()),
+            "config_dir" if !value.is_empty() => profile.config_dir = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    Some(profile)
+}
+
+/// Check whether a kind-31992 note is a deletion tombstone.
+pub fn is_backend_profile_deleted(note: &nostrdb::Note) -> bool {
     get_tag_value(note, "deleted").is_some()
 }
 

@@ -1463,6 +1463,36 @@ pub fn load_run_configs_from_ndb(
     map
 }
 
+/// Load every live backend profile from kind-31992 events in ndb, keyed by
+/// slug.
+///
+/// Profiles are account-wide, so unlike run configs nothing narrows them to a
+/// host. `query_replaceable` keeps each slug's newest revision by
+/// `(created_at, id)` — a total order, so a same-second tie resolves the same
+/// way on every device — and a slug whose newest revision is a tombstone is
+/// absent rather than resurrected by an older upsert. The map then fixes the
+/// output order, since `query_replaceable` hands back a per-run-randomized bag.
+pub fn load_backend_profiles_from_ndb(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &nostrdb_net::Pubkey,
+) -> std::collections::BTreeMap<String, crate::config::BackendProfile> {
+    use crate::config::AI_BACKEND_PROFILE_KIND;
+    use crate::session_events::backend_profile_from_note;
+
+    let filter = Filter::new()
+        .kinds([AI_BACKEND_PROFILE_KIND as u64])
+        .authors([author.bytes()])
+        .build();
+    query_replaceable(ndb, txn, &[filter])
+        .into_iter()
+        .filter_map(|key| ndb.get_note_by_key(txn, key).ok())
+        // None for tombstones
+        .filter_map(|note| backend_profile_from_note(&note))
+        .map(|profile| (profile.slug.clone(), profile))
+        .collect()
+}
+
 /// Look up the latest valid revision of a single session by d-tag.
 ///
 /// PNS wrapping causes relays to store all revisions of replaceable
@@ -4012,5 +4042,136 @@ mod tests {
             .collect();
         assert_eq!(p, vec!["run", "test"], "one host's cwd bucket, by name");
         assert!(load_run_configs_from_ndb(&ndb, &txn, &author, "nope").is_empty());
+    }
+
+    /// The motivating profile, with a 64-char hex token: the value shape
+    /// nostrdb would store as an id if it were a bare tag element.
+    fn hydra_profile() -> crate::config::BackendProfile {
+        let mut profile = crate::config::BackendProfile::new("hydra", "Hydra");
+        for (name, value) in [
+            ("ANTHROPIC_BASE_URL", "https://llm.hydra.host"),
+            ("ANTHROPIC_AUTH_TOKEN", HYDRA_TOKEN),
+            ("ANTHROPIC_MODEL", "glm-5.3-flash"),
+            ("ANTHROPIC_API_KEY", ""),
+            ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "524288"),
+        ] {
+            profile.env.insert(name.into(), value.into());
+        }
+        profile.models = vec!["glm-5.3-flash".into(), "qwen3.8-flash-next".into()];
+        profile.default_model = Some("glm-5.3-flash".into());
+        profile.config_dir = Some("/home/u/.claude-hydra".into());
+        profile
+    }
+
+    /// Mixed-case hex: nostrdb's hex decode would also lowercase it.
+    const HYDRA_TOKEN: &str = "DEADbeef00112233445566778899aabbccddeeff00112233445566778899AABB";
+
+    /// PNS-wrap `built` under [`TEST_SECKEY`] and ingest the kind-1080
+    /// envelope, as an inbound relay event arrives, then wait for ndb to
+    /// decrypt it into the inner note. Returns the envelope JSON.
+    async fn pns_ingest(ndb: &Ndb, built: &crate::session_events::BuiltEvent) -> String {
+        use crate::test_support::{await_note, TEST_SECKEY};
+        let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
+        let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns).unwrap();
+        ndb.process_event(&format!(r#"["EVENT","_pns",{wrapped}]"#))
+            .unwrap();
+        assert!(
+            await_note(
+                ndb,
+                built.note_id,
+                built.kind as u64,
+                std::time::Duration::from_secs(5)
+            )
+            .await,
+            "inner kind-{} note never decrypted",
+            built.kind
+        );
+        wrapped
+    }
+
+    /// A TempNdb that decrypts [`TEST_SECKEY`]'s PNS envelopes.
+    fn pns_ndb() -> crate::test_support::TempNdb {
+        let db = crate::test_support::TempNdb::new();
+        db.ndb.add_key(&crate::test_support::TEST_SECKEY);
+        db
+    }
+
+    /// Build -> PNS wrap -> ingest -> load gives back the identical profile,
+    /// token included byte for byte, and the envelope on the wire carries none
+    /// of the secret.
+    #[tokio::test]
+    async fn backend_profile_round_trips_through_pns() {
+        use crate::test_support::TEST_SECKEY;
+        let db = pns_ndb();
+        let profile = hydra_profile();
+        let built = crate::session_events::build_backend_profile_event_at(
+            &profile,
+            Some(4000),
+            &TEST_SECKEY,
+        )
+        .unwrap();
+        let wrapped = pns_ingest(&db.ndb, &built).await;
+
+        assert!(built.note_json.contains(HYDRA_TOKEN), "inner note has it");
+        assert!(!wrapped.contains(HYDRA_TOKEN), "envelope leaks the token");
+        assert!(
+            !wrapped.contains("llm.hydra.host"),
+            "envelope leaks the url"
+        );
+        let envelope: serde_json::Value = serde_json::from_str(&wrapped).unwrap();
+        assert_eq!(envelope["kind"], 1080);
+
+        let txn = Transaction::new(&db.ndb).unwrap();
+        let loaded = load_backend_profiles_from_ndb(&db.ndb, &txn, &pubkey_of(&TEST_SECKEY));
+        let expected = crate::config::BackendProfile {
+            updated_at: 4000,
+            ..profile
+        };
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded["hydra"], expected);
+        assert_eq!(loaded["hydra"].env["ANTHROPIC_AUTH_TOKEN"], HYDRA_TOKEN);
+    }
+
+    /// A tombstone newer than the profile removes it; an older one doesn't,
+    /// and other slugs are untouched either way.
+    #[tokio::test]
+    async fn backend_profile_tombstones_apply_by_recency() {
+        use crate::session_events::{
+            build_backend_profile_delete_event_at, build_backend_profile_event_at,
+        };
+        use crate::test_support::TEST_SECKEY;
+        let db = pns_ndb();
+        let mut work = hydra_profile();
+        work.slug = "work".into();
+
+        for built in [
+            build_backend_profile_event_at(&hydra_profile(), Some(2000), &TEST_SECKEY),
+            build_backend_profile_delete_event_at("hydra", Some(3000), &TEST_SECKEY),
+            build_backend_profile_delete_event_at("work", Some(1000), &TEST_SECKEY),
+            build_backend_profile_event_at(&work, Some(2000), &TEST_SECKEY),
+        ] {
+            pns_ingest(&db.ndb, &built.unwrap()).await;
+        }
+
+        let txn = Transaction::new(&db.ndb).unwrap();
+        let loaded = load_backend_profiles_from_ndb(&db.ndb, &txn, &pubkey_of(&TEST_SECKEY));
+        assert_eq!(loaded.keys().collect::<Vec<_>>(), ["work"]);
+        assert_eq!(loaded["work"].updated_at, 2000);
+    }
+
+    /// An invalid profile never reaches the wire.
+    #[test]
+    fn backend_profile_builder_rejects_invalid_names() {
+        use crate::test_support::TEST_SECKEY;
+        let mut bad_slug = hydra_profile();
+        bad_slug.slug = "Hydra".into();
+        assert!(
+            crate::session_events::build_backend_profile_event(&bad_slug, &TEST_SECKEY).is_err()
+        );
+        let mut bad_env = hydra_profile();
+        bad_env.env.insert("A=B".into(), "x".into());
+        assert!(
+            crate::session_events::build_backend_profile_event(&bad_env, &TEST_SECKEY).is_err()
+        );
     }
 }
