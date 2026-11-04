@@ -578,21 +578,16 @@ impl Engine {
     /// its own relay writes. Unlike [`spawn_session`](Engine::spawn_session), the
     /// caller supplies `spawn_id` (so it can correlate the eventual kind-31988
     /// state) and publishes the returned event itself; nothing is sent here.
+    /// `opts` carries the per-spawn extras, as on `spawn_session`.
     pub fn prepare_spawn_command(
         &self,
         target_host: &str,
         cwd: &str,
         backend: &str,
+        opts: &crate::session_events::SpawnOptions<'_>,
         spawn_id: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        let built = self.make_spawn_command(
-            target_host,
-            cwd,
-            backend,
-            &Default::default(),
-            spawn_id,
-            None,
-        )?;
+        let built = self.make_spawn_command(target_host, cwd, backend, opts, spawn_id, None)?;
         self.wrap_and_ingest(&built)?;
         Ok(built)
     }

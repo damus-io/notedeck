@@ -26,6 +26,11 @@ impl BackendProfiles {
         self.profiles.get(slug)
     }
 
+    /// Every profile, in slug order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &BackendProfile> {
+        self.profiles.values()
+    }
+
     /// Whether the live kind-31992 subscription is set up.
     pub(crate) fn is_subscribed(&self) -> bool {
         self.sub.is_some()

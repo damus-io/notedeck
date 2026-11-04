@@ -946,6 +946,9 @@ Private_sync_560b = {"["}Prívàté syñç{"]"}
 # Dave session inspector overview row
 Process_7dd2 = {"["}Próçéss{"]"}
 
+# Dave session inspector overview row: the backend profile (e.g. a work endpoint) the session runs under
+Profile_a2c5 = {"["}Prófílé{"]"}
+
 # Button to go to the user's profile
 Profile_c0ba = {"["}Prófílé{"]"}
 

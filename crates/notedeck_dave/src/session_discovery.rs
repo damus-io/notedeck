@@ -48,9 +48,13 @@ fn cwd_to_project_path(cwd: &Path) -> String {
     path_str.replace('/', "-")
 }
 
-/// Get the Claude projects directory
-fn get_claude_projects_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".claude").join("projects"))
+/// Get the Claude projects directory: under `config_dir` (a backend
+/// profile's `CLAUDE_CONFIG_DIR`) when given, else under `~/.claude`.
+fn get_claude_projects_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
+    match config_dir {
+        Some(dir) => Some(dir.join("projects")),
+        None => dirs::home_dir().map(|home| home.join(".claude").join("projects")),
+    }
 }
 
 /// Extract the first user message content as a summary
@@ -152,9 +156,11 @@ fn parse_session_file(path: &Path) -> Option<ResumableSession> {
     })
 }
 
-/// Discover all resumable sessions for a given working directory
-pub fn discover_sessions(cwd: &Path) -> Vec<ResumableSession> {
-    let projects_dir = match get_claude_projects_dir() {
+/// Discover all resumable sessions for a given working directory, in the
+/// Claude config dir `config_dir` (`None` is `~/.claude`): a backend profile
+/// with its own config dir keeps its transcripts there.
+pub fn discover_sessions(cwd: &Path, config_dir: Option<&Path>) -> Vec<ResumableSession> {
+    let projects_dir = match get_claude_projects_dir(config_dir) {
         Some(dir) => dir,
         None => return Vec::new(),
     };

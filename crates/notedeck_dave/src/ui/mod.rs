@@ -1,4 +1,5 @@
 mod ask_question;
+pub mod backend_picker;
 pub mod badge;
 pub mod block_nav;
 pub mod chat_range;
@@ -31,6 +32,7 @@ pub mod walltime;
 pub mod worktree_creator;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
+pub use backend_picker::{backend_picker_overlay_ui, PickerEntry, PickerKey};
 pub use block_nav::{BlockNav, BlockSpot};
 pub(crate) use dave::input_id;
 pub(crate) use dave::subagent_block_id;
@@ -56,7 +58,7 @@ pub use worktree_creator::{WorktreeCreator, WorktreeCreatorAction};
 // =============================================================================
 
 use crate::agent_status::AgentStatus;
-use crate::backend::{BackendType, Model};
+use crate::backend::BackendType;
 use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
@@ -114,6 +116,8 @@ pub(crate) struct ChatViewContext<'a> {
         &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     /// The newest rate-limit report from any local session.
     pub account_rate_limit: Option<crate::messages::RateLimitInfo>,
+    /// The account's backend profiles, for the label of a session's profile.
+    pub backend_profiles: &'a crate::backend_profiles::BackendProfiles,
 }
 
 /// Build a DaveUi from a session, wiring up all the common builder fields.
@@ -125,6 +129,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
         run_configs,
         running_sessions,
         account_rate_limit,
+        backend_profiles,
     } = *chat;
     let status = session.status();
     let is_working = status == AgentStatus::Working;
@@ -158,6 +163,14 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
         session.inspector.set_session_id(agentic.event_session_id());
     }
 
+    // The profile's label, or its slug when this host lacks the profile (its
+    // turns then fail, and the slug is what `agentium profile set` takes).
+    let profile_label = session.details.profile.as_deref().map(|slug| {
+        backend_profiles
+            .get(slug)
+            .map_or(slug, |profile| profile.label.as_str())
+    });
+
     let walltime = session.walltime();
     let working_since = walltime.working_since;
     let mut ui_builder = DaveUi::new(
@@ -187,6 +200,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .turn_has_content(turn_has_content)
     .details(&session.details)
     .backend_type(session.backend_type)
+    .profile_label(profile_label)
     .last_activity(session.last_activity)
     .run_configs(session_run_configs)
     .running_config_ids(running_config_ids)
@@ -439,180 +453,6 @@ pub fn backend_icon(bt: BackendType) -> egui::Image<'static> {
     img.tint(backend_color(bt))
 }
 
-/// Resolve the model index to a Model variant.
-/// Index 0 = Default, 1+ = specific model from available_models.
-fn resolve_picker_model(bt: BackendType, model_idx: usize) -> Model {
-    if model_idx == 0 {
-        Model::Default
-    } else {
-        bt.available_models()
-            .into_iter()
-            .nth(model_idx - 1)
-            .unwrap_or(Model::Default)
-    }
-}
-
-/// Render a single backend row in the picker: icon, name, model dropdown, start button.
-/// Returns `Some(model)` if the user clicked Start for this backend.
-fn backend_picker_row(
-    bt: BackendType,
-    idx: usize,
-    max_width: f32,
-    selected_models: &mut std::collections::HashMap<BackendType, usize>,
-    ui: &mut egui::Ui,
-) -> Option<Model> {
-    let models = bt.available_models();
-    // Index 0 = "Default", 1..=N = specific overrides
-    let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
-    let selected_model = resolve_picker_model(bt, model_idx);
-    let display_name = selected_model.display_name();
-
-    // Backend row: icon + name + model dropdown + GO button
-    let desired = egui::vec2(max_width, 52.0);
-    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-
-    // Background
-    let fill = ui.visuals().widgets.inactive.weak_bg_fill;
-    ui.painter().rect_filled(rect, 8.0, fill);
-
-    // Icon
-    let icon_size = 20.0;
-    let icon_x = rect.left() + 12.0;
-    let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(icon_x + icon_size / 2.0, rect.center().y - 6.0),
-        egui::vec2(icon_size, icon_size),
-    );
-    backend_icon(bt).paint_at(ui, icon_rect);
-
-    // Backend name + keyboard shortcut
-    let label = format!("[{}] {}", idx + 1, bt.display_name());
-    ui.painter().text(
-        egui::pos2(icon_x + icon_size + 10.0, rect.center().y - 6.0),
-        egui::Align2::LEFT_CENTER,
-        &label,
-        egui::FontId::proportional(15.0),
-        ui.visuals().text_color(),
-    );
-
-    // Model selector + Start button on the second line
-    let controls_rect = egui::Rect::from_min_size(
-        egui::pos2(icon_x + icon_size + 10.0, rect.center().y + 4.0),
-        egui::vec2(max_width - icon_size - 34.0, 20.0),
-    );
-
-    let mut result = None;
-
-    ui.scope_builder(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
-        ui.horizontal(|ui| {
-            // Model dropdown: index 0 = "Default", then each override model
-            if !models.is_empty() {
-                let combo_id = ui.scope_id().with("model").with(idx);
-                egui::ComboBox::from_id_salt(combo_id)
-                    .selected_text(egui::RichText::new(display_name).size(11.0))
-                    .width(160.0)
-                    .show_ui(ui, |ui| {
-                        // "Default" entry
-                        if ui.selectable_label(model_idx == 0, "Default").clicked() {
-                            selected_models.insert(bt, 0);
-                        }
-                        // Specific model overrides
-                        for (mi, m) in models.iter().enumerate() {
-                            if ui
-                                .selectable_label(model_idx == mi + 1, m.display_name())
-                                .clicked()
-                            {
-                                selected_models.insert(bt, mi + 1);
-                            }
-                        }
-                    });
-            }
-
-            // Start button
-            if ui
-                .add(egui::Button::new(egui::RichText::new("Start").size(12.0)).corner_radius(4.0))
-                .clicked()
-            {
-                result = Some(resolve_picker_model(bt, model_idx));
-            }
-        });
-    });
-
-    ui.add_space(6.0);
-
-    result
-}
-
-/// A backend and model picked in the backend picker.
-#[derive(Clone, Debug)]
-pub struct BackendChoice {
-    /// The picked backend.
-    pub backend: BackendType,
-    /// The model picked for it.
-    pub model: Model,
-}
-
-/// Render the backend picker overlay UI.
-/// Returns `Some` when the user has selected a backend.
-pub fn backend_picker_overlay_ui(
-    available_backends: &[BackendType],
-    selected_models: &mut std::collections::HashMap<BackendType, usize>,
-    ui: &mut egui::Ui,
-) -> Option<BackendChoice> {
-    // Handle keyboard shortcuts: 1-9 for quick selection
-    for (idx, &bt) in available_backends.iter().enumerate().take(9) {
-        let key = match idx {
-            0 => egui::Key::Num1,
-            1 => egui::Key::Num2,
-            2 => egui::Key::Num3,
-            3 => egui::Key::Num4,
-            4 => egui::Key::Num5,
-            _ => continue,
-        };
-        if ui.input(|i| i.key_pressed(key)) {
-            let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
-            return Some(BackendChoice {
-                backend: bt,
-                model: resolve_picker_model(bt, model_idx),
-            });
-        }
-    }
-
-    let is_narrow = notedeck::ui::is_narrow(ui.ctx());
-    let mut selected = None;
-
-    egui::Frame::new()
-        .fill(ui.visuals().panel_fill)
-        .inner_margin(egui::Margin::symmetric(if is_narrow { 16 } else { 40 }, 20))
-        .show(ui, |ui| {
-            ui.heading("Select Backend");
-            ui.add_space(8.0);
-            ui.label("Choose which AI backend to use for this session:");
-            ui.add_space(16.0);
-
-            let max_width = if is_narrow {
-                ui.available_width()
-            } else {
-                400.0
-            };
-
-            ui.allocate_ui_with_layout(
-                egui::vec2(max_width, ui.available_height()),
-                egui::Layout::top_down(egui::Align::LEFT),
-                |ui| {
-                    for (idx, &bt) in available_backends.iter().enumerate() {
-                        if let Some(model) =
-                            backend_picker_row(bt, idx, max_width, selected_models, ui)
-                        {
-                            selected = Some(BackendChoice { backend: bt, model });
-                        }
-                    }
-                },
-            );
-        });
-
-    selected
-}
-
 /// Scene view action returned after rendering
 pub enum SceneViewAction {
     None,
@@ -706,7 +546,7 @@ fn scene_rename_field(ui: &mut egui::Ui, buf: &mut String) -> egui::Response {
 
 /// Render the scene view with RTS-style agent visualization and chat side panel.
 #[allow(clippy::too_many_arguments)]
-pub fn scene_ui(
+pub(crate) fn scene_ui(
     session_manager: &mut SessionManager,
     scene: &mut AgentScene,
     scene_layout: &mut crate::scene_layout::SceneLayoutMode,
@@ -717,6 +557,7 @@ pub fn scene_ui(
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     account_rate_limit: Option<crate::messages::RateLimitInfo>,
+    backend_profiles: &crate::backend_profiles::BackendProfiles,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> SceneUiResponse {
@@ -735,6 +576,7 @@ pub fn scene_ui(
         run_configs,
         running_sessions,
         account_rate_limit,
+        backend_profiles,
     };
 
     StripBuilder::new(ui)
@@ -911,7 +753,7 @@ fn session_view_ui(
 
 /// Desktop layout with sidebar for session list.
 #[allow(clippy::too_many_arguments)]
-pub fn desktop_ui(
+pub(crate) fn desktop_ui(
     session_manager: &mut SessionManager,
     focus_queue: &FocusQueue,
     collapse_state: &crate::collapse_state::CollapseState,
@@ -921,6 +763,7 @@ pub fn desktop_ui(
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     account_rate_limit: Option<crate::messages::RateLimitInfo>,
+    backend_profiles: &crate::backend_profiles::BackendProfiles,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> ListUiResponse {
@@ -989,6 +832,7 @@ pub fn desktop_ui(
         run_configs,
         running_sessions,
         account_rate_limit,
+        backend_profiles,
     };
     let chat_response = ui
         .scope_builder(egui::UiBuilder::new().max_rect(session_view_rect), |ui| {
@@ -1008,7 +852,7 @@ pub fn desktop_ui(
 
 /// Narrow/mobile layout - shows either session list or chat.
 #[allow(clippy::too_many_arguments)]
-pub fn narrow_ui(
+pub(crate) fn narrow_ui(
     session_manager: &mut SessionManager,
     focus_queue: &FocusQueue,
     collapse_state: &crate::collapse_state::CollapseState,
@@ -1018,6 +862,7 @@ pub fn narrow_ui(
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     account_rate_limit: Option<crate::messages::RateLimitInfo>,
+    backend_profiles: &crate::backend_profiles::BackendProfiles,
     show_session_list: bool,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
@@ -1056,6 +901,7 @@ pub fn narrow_ui(
             run_configs,
             running_sessions,
             account_rate_limit,
+            backend_profiles,
         };
         let response = build_dave_ui(session, &chat)
             .status_dot_color(dot_color)
@@ -2361,6 +2207,7 @@ mod tests {
         super::test_frame(ui, |ui| {
             let no_configs = std::collections::HashMap::new();
             let none_running = std::collections::HashMap::new();
+            let no_profiles = crate::backend_profiles::BackendProfiles::default();
             let mut app_ctx = state.host.app_context();
             let Some(session) = state.session_manager.get_active_mut() else {
                 return;
@@ -2372,6 +2219,7 @@ mod tests {
                 run_configs: &no_configs,
                 running_sessions: &none_running,
                 account_rate_limit: state.rate_limit,
+                backend_profiles: &no_profiles,
             };
             let mut dave_ui = super::build_dave_ui(session, &chat);
             if let Some(now) = state.now_unix {
@@ -2484,6 +2332,7 @@ mod tests {
             let view = &mut state.view;
             let no_configs = std::collections::HashMap::new();
             let none_running = std::collections::HashMap::new();
+            let no_profiles = crate::backend_profiles::BackendProfiles::default();
             let mut app_ctx = view.host.app_context();
             let response = super::scene_ui(
                 &mut view.session_manager,
@@ -2496,6 +2345,7 @@ mod tests {
                 &no_configs,
                 &none_running,
                 view.rate_limit,
+                &no_profiles,
                 &mut app_ctx,
                 ui,
             );

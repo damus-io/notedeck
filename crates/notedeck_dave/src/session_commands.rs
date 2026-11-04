@@ -2,7 +2,7 @@
 //! addressed to this host, applying it (with spawn idempotency), and queueing
 //! our own spawn/resume commands for a remote host.
 
-use crate::backend::{BackendType, Model};
+use crate::backend::{BackendChoice, BackendType, Model};
 use crate::{
     session_events, session_loader, update, Dave, DaveOverlay, HostCtx, SessionId, SessionMessage,
 };
@@ -17,10 +17,24 @@ use std::path::{Path, PathBuf};
 pub(crate) struct PendingSpawnCommand {
     pub(crate) target_host: String,
     pub(crate) cwd: PathBuf,
-    pub(crate) backend: BackendType,
+    /// The backend, profile and model the remote session starts on. The
+    /// profile and model ride the command's `profile` and `model` tags.
+    pub(crate) choice: BackendChoice,
     /// UUID that links this command to the placeholder session and the
     /// kind-31988 response from the remote host.
     pub(crate) spawn_id: String,
+}
+
+impl PendingSpawnCommand {
+    /// The command's per-spawn tags: the model and backend profile the remote
+    /// session starts on.
+    pub(crate) fn spawn_options(&self) -> session_events::SpawnOptions<'_> {
+        session_events::SpawnOptions {
+            model: self.choice.model.to_model_id(),
+            profile: self.choice.profile.as_deref(),
+            ..Default::default()
+        }
+    }
 }
 
 /// A pending kind-31989 resume command waiting to be built and published,
@@ -86,6 +100,11 @@ struct SpawnRequest {
     /// the session's `requested_model`, as a `/model` would. `None` leaves the
     /// backend's default.
     model: Option<String>,
+    /// The backend profile the session runs under, from the command's
+    /// `profile` tag. A host without that profile fails the session's turns
+    /// rather than running them on the plain backend. `None` is a plain
+    /// session.
+    profile: Option<String>,
     /// The request's identity, from the command's `idempotency_key` tag.
     /// Two commands carrying the same key are one spawn asked for twice, so
     /// the second is answered with the session the first produced rather
@@ -233,6 +252,9 @@ fn decode_session_command(
             let idempotency_key = session_events::get_tag_value(note, "idempotency_key")
                 .filter(|k| !k.is_empty())
                 .map(|s| s.to_string());
+            let profile = session_events::get_tag_value(note, "profile")
+                .filter(|p| !p.is_empty())
+                .map(|s| s.to_string());
             Some(SessionCommand::Spawn {
                 command_id,
                 request: SpawnRequest {
@@ -246,6 +268,7 @@ fn decode_session_command(
                     prompt,
                     permission_mode,
                     model,
+                    profile,
                     idempotency_key,
                 },
             })
@@ -295,6 +318,7 @@ impl Dave {
             prompt,
             permission_mode,
             model,
+            profile,
             idempotency_key,
         } = request;
 
@@ -355,6 +379,10 @@ impl Dave {
             session.details.issue_url = issue_url;
             session.details.parent_session = parent_session;
             session.details.relation = relation;
+            // Before the first message dispatches below, like the mode: the
+            // dispatch reads it to layer the profile's env (or to refuse the
+            // turn when this host lacks the profile).
+            session.details.profile = profile;
             // Set the mode *here*, before the first message is queued below:
             // `dispatch` reads it to build the backend's options, and that
             // dispatch happens later in this same frame. Applying it afterwards —
@@ -516,19 +544,21 @@ impl Dave {
         &mut self,
         target_host: &str,
         cwd: &Path,
-        backend: BackendType,
+        choice: BackendChoice,
     ) {
         let spawn_id = uuid::Uuid::new_v4().to_string();
         tracing::info!(
-            "queuing spawn command {} for {} at {:?}",
+            "queuing spawn command {} for {} at {:?} (profile {:?})",
             spawn_id,
             target_host,
-            cwd
+            cwd,
+            choice.profile,
         );
+        let backend = choice.backend;
         self.pending_spawn_commands.push(PendingSpawnCommand {
             target_host: target_host.to_string(),
             cwd: cwd.to_path_buf(),
-            backend,
+            choice,
             spawn_id: spawn_id.clone(),
         });
 
@@ -742,6 +772,70 @@ mod tests {
         );
     }
 
+    /// A spawn under a profile keeps it the whole trip: a Dave queueing the
+    /// spawn for another host (the picker's profile row, or a remote clone)
+    /// puts its profile and model on the kind-31989 command, and the host that
+    /// decodes and applies it starts the session under that profile on that
+    /// model.
+    #[tokio::test]
+    async fn a_queued_spawn_carries_its_profile_to_the_host() {
+        let sk = test_secret_key();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+
+        let mut sender = TestDave::new();
+        sender.dave.queue_spawn_command(
+            "host-a",
+            Path::new("/work/dir"),
+            BackendChoice {
+                backend: BackendType::Claude,
+                profile: Some("hydra".to_string()),
+                model: Model::Custom("glm-5.3-flash".to_string()),
+            },
+        );
+        let pending = &sender.dave.pending_spawn_commands[0];
+        let cmd = session_events::build_spawn_command_event(
+            &pending.target_host,
+            &pending.cwd.to_string_lossy(),
+            pending.choice.backend.as_str(),
+            &pending.spawn_options(),
+            &pending.spawn_id,
+            None,
+            &sk,
+        )
+        .unwrap();
+        let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+        ndb.process_event_with(&cmd.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        ndb.wait_for_all_notes(sub, 1).await.unwrap();
+
+        let request = {
+            let txn = Transaction::new(&ndb).unwrap();
+            let note = ndb.get_note_by_id(&txn, &cmd.note_id).unwrap();
+            let Some(SessionCommand::Spawn { request, .. }) =
+                decode_session_command(&note, "host-a", BackendType::Claude)
+            else {
+                panic!("expected a Spawn command for this host");
+            };
+            request
+        };
+        assert_eq!(request.profile.as_deref(), Some("hydra"));
+
+        let mut host = TestDave::new();
+        let before: Vec<_> = host.dave.session_manager.iter().map(|s| s.id).collect();
+        host.dave.apply_spawn_command(request, 1_800_000_000);
+        let spawned = host
+            .dave
+            .session_manager
+            .iter()
+            .find(|s| !before.contains(&s.id))
+            .expect("the spawn materialized a session");
+        assert_eq!(spawned.details.profile.as_deref(), Some("hydra"));
+        assert_eq!(
+            spawned.details.requested_model.as_deref(),
+            Some("glm-5.3-flash")
+        );
+    }
+
     /// A spawn's lineage survives the whole trip a real spawn takes: the CLI's
     /// [`SpawnOptions`](session_events::SpawnOptions) onto a kind-31989 command,
     /// decoded into a [`SpawnRequest`], applied onto the new session's details,
@@ -834,6 +928,7 @@ mod tests {
             prompt: Some("read crates/foo and fix it".to_string()),
             permission_mode: None,
             model: None,
+            profile: None,
             idempotency_key: key.map(str::to_string),
         }
     }

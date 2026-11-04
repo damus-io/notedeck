@@ -27,6 +27,8 @@ pub struct SessionFacts<'a> {
     pub waiting_on: WaitingOn,
     pub permission_mode: PermissionMode,
     pub backend_type: BackendType,
+    /// The label of the backend profile the session runs under, if any.
+    pub profile_label: Option<&'a str>,
     pub details: Option<&'a SessionDetails>,
     /// The git branch of the session's cwd, local sessions only.
     pub branch: Option<&'a str>,
@@ -137,6 +139,15 @@ fn facts_rows_ui(
                 mono_ui(ui, style);
             }
         });
+        ui.end_row();
+    }
+
+    if let Some(label) = facts.profile_label {
+        key_ui(
+            ui,
+            &tr!(i18n, "Profile", "Dave session inspector overview row: the backend profile (e.g. a work endpoint) the session runs under"),
+        );
+        value_ui(ui, label);
         ui.end_row();
     }
 

@@ -385,6 +385,9 @@ fn render_detail(
     out.push_str(&field("cwd", &abbreviate_home(&s.cwd, &s.home_dir)));
     out.push_str(&field("home", &dash(Some(s.home_dir.as_str()))));
     out.push_str(&field("backend", &dash(s.backend.as_deref())));
+    if let Some(profile) = s.profile.as_deref().filter(|p| !p.is_empty()) {
+        out.push_str(&field("profile", profile));
+    }
     out.push_str(&field("perm mode", &dash(s.permission_mode.as_deref())));
     if let Some(ind) = s.indicator.as_deref().filter(|i| !i.is_empty()) {
         out.push_str(&field("indicator", ind));

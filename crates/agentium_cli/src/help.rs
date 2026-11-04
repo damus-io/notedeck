@@ -324,6 +324,10 @@ after a timeout is safe. --allow-duplicate opts out of both.
                 "The issue the session works, e.g. headway:<board>/<word-id>. Recorded on the session's state (`show` prints it) so pressing s on the session in Dave opens the card",
             ),
             (
+                "--profile <slug>",
+                "Run the session under backend profile <slug> (see `agentium profile`), on the claude backend. A bare spawn from a session under a profile keeps it; pass --backend claude without --profile for a plain session. A host without the profile fails the session's turns rather than running them on the plain backend",
+            ),
+            (
                 "--child",
                 "The new session works for this one and reports its result back: each turn it finishes at rest sends its final text here as a message from it, which wakes this session. Recorded as `relation child` beside `parent-session`, this session's ref ($AGENTIUM_SESSION), on the new session's state; `show` prints both",
             ),
@@ -333,7 +337,7 @@ after a timeout is safe. --allow-duplicate opts out of both.
             ),
             (
                 "--idempotency-key <k>",
-                "Name this *request*, so a retry of it is recognized as the same spawn. Defaults to a digest of the request itself (host+cwd+backend+title+prompt+mode+model+issue), which already makes an identical re-run safe; pass your own when you have a better notion of identity (a job id, say)",
+                "Name this *request*, so a retry of it is recognized as the same spawn. Defaults to a digest of the request itself (host+cwd+backend+title+prompt+mode+model+issue+profile), which already makes an identical re-run safe; pass your own when you have a better notion of identity (a job id, say)",
             ),
             (
                 "--allow-duplicate",

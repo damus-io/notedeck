@@ -51,9 +51,10 @@ impl SessionPicker {
         }
     }
 
-    /// Open the picker for a specific working directory
-    pub fn open(&mut self, cwd: PathBuf) {
-        self.sessions = discover_sessions(&cwd);
+    /// Open the picker for a specific working directory, listing the sessions
+    /// in Claude config dir `config_dir` (`None` is `~/.claude`).
+    pub fn open(&mut self, cwd: PathBuf, config_dir: Option<&Path>) {
+        self.sessions = discover_sessions(&cwd, config_dir);
         self.cwd = Some(cwd);
         self.is_open = true;
     }

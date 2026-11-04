@@ -1,7 +1,7 @@
 //! Dave's per-frame UI: the scene, desktop and narrow layouts, and the
 //! dispatch of the UI and keybinding actions they return.
 
-use crate::backend::{BackendType, Model};
+use crate::backend::{BackendChoice, BackendType};
 use crate::ui::keybindings::{ActiveOffers, KeyAction, KeyContext, NormalView};
 use crate::ui_tools;
 use crate::{
@@ -42,8 +42,7 @@ impl Dave {
                         let cwd = std::env::current_dir().unwrap_or_default();
                         self.create_session_with_cwd(
                             cwd,
-                            self.model_config.backend,
-                            Model::Default,
+                            BackendChoice::plain(self.model_config.backend),
                         );
                         self.active_overlay = DaveOverlay::None;
                     }
@@ -86,7 +85,7 @@ impl Dave {
                             self.queue_spawn_command(
                                 &target_host,
                                 &path,
-                                self.model_config.backend,
+                                BackendChoice::plain(self.model_config.backend),
                             );
                         } else {
                             tracing::info!("directory selected: {:?}", path);
@@ -102,7 +101,7 @@ impl Dave {
                 }
                 return DaveResponse::default();
             }
-            DaveOverlay::SessionPicker { backend, model } => {
+            DaveOverlay::SessionPicker { choice } => {
                 match ui::session_picker_overlay_ui(&mut self.session_picker, ui) {
                     OverlayResult::ResumeSession {
                         cwd,
@@ -117,6 +116,7 @@ impl Dave {
                             session_id,
                             title,
                             BackendType::Claude,
+                            choice.profile.clone(),
                         );
                         self.pending_archive_convert = Some((file_path, sid, claude_session_id));
                         self.session_picker.close();
@@ -125,17 +125,17 @@ impl Dave {
                         tracing::info!(
                             "new session from session picker: {:?} (backend: {:?})",
                             cwd,
-                            backend
+                            choice.backend
                         );
                         self.session_picker.close();
-                        self.create_session_with_cwd(cwd, backend, model.clone());
+                        self.create_session_with_cwd(cwd, choice);
                     }
                     OverlayResult::BackToDirectoryPicker => {
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
                     _ => {
-                        self.active_overlay = DaveOverlay::SessionPicker { backend, model };
+                        self.active_overlay = DaveOverlay::SessionPicker { choice };
                     }
                 }
                 return DaveResponse::default();
@@ -143,25 +143,28 @@ impl Dave {
             DaveOverlay::BackendPicker {
                 cwd,
                 target_host,
+                entries,
                 mut selected_models,
             } => {
-                if let Some(ui::BackendChoice { backend: bt, model }) =
-                    ui::backend_picker_overlay_ui(
-                        &self.available_backends,
-                        &mut selected_models,
-                        ui,
-                    )
+                if let Some(choice) =
+                    ui::backend_picker_overlay_ui(&entries, &mut selected_models, ui)
                 {
-                    tracing::info!("backend selected: {:?}, model: {:?}", bt, model);
+                    tracing::info!(
+                        "backend selected: {:?}, profile: {:?}, model: {:?}",
+                        choice.backend,
+                        choice.profile,
+                        choice.model
+                    );
                     if let Some(host) = target_host {
-                        self.queue_spawn_command(&host, &cwd, bt);
+                        self.queue_spawn_command(&host, &cwd, choice);
                     } else {
-                        self.create_or_resume_session(cwd, bt, model);
+                        self.create_or_resume_session(cwd, choice);
                     }
                 } else {
                     self.active_overlay = DaveOverlay::BackendPicker {
                         cwd,
                         target_host,
+                        entries,
                         selected_models,
                     };
                 }
@@ -182,10 +185,22 @@ impl Dave {
                             is_new_branch,
                         ) {
                             Ok(()) => {
+                                // A worktree off a profile session keeps its
+                                // profile while it stays on the same backend,
+                                // so its work doesn't move to the plain
+                                // backend's account.
+                                let profile = self
+                                    .session_manager
+                                    .get(creator.from_session_id)
+                                    .filter(|s| s.backend_type == backend_type)
+                                    .and_then(|s| s.details.profile.clone());
                                 self.create_session_with_cwd(
                                     worktree_path,
-                                    backend_type,
-                                    Model::Default,
+                                    BackendChoice {
+                                        backend: backend_type,
+                                        profile,
+                                        model: crate::backend::Model::Default,
+                                    },
                                 );
                             }
                             Err(msg) => {
@@ -264,6 +279,7 @@ impl Dave {
             &self.run_configs,
             &self.running_session_ids,
             self.rate_limit,
+            &self.backend_profiles,
             app_ctx,
             ui,
         );
@@ -308,6 +324,7 @@ impl Dave {
             &self.run_configs,
             &self.running_session_ids,
             self.rate_limit,
+            &self.backend_profiles,
             app_ctx,
             ui,
         );
@@ -406,6 +423,7 @@ impl Dave {
             &self.run_configs,
             &self.running_session_ids,
             self.rate_limit,
+            &self.backend_profiles,
             self.show_session_list,
             app_ctx,
             ui,

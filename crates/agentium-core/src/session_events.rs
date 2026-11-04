@@ -1830,6 +1830,12 @@ pub struct SpawnOptions<'a> {
     /// How the new session relates to its parent (`relation` tag). The default,
     /// [`SessionRelation::None`], omits the tag.
     pub relation: SessionRelation,
+    /// The backend profile (kind-31992 slug, `profile` tag) the new session runs
+    /// under, e.g. `hydra`. The host copies it onto the session, and a host
+    /// that lacks the profile fails the session's turns rather than running
+    /// them on the plain backend. `None`/empty spawns a plain session. Ignored
+    /// on a resume, whose rehydrated state already carries its profile.
+    pub profile: Option<&'a str>,
 }
 
 /// How long a host and client treat a spawn's [`idempotency_key`] as still
@@ -1851,8 +1857,10 @@ pub const SPAWN_DEDUPE_WINDOW_SECS: u64 = 600;
 ///
 /// The digest covers exactly the fields that decide *what session you get*: the
 /// target host, the cwd it runs in, the backend, and each of `opts`' spawn
-/// extras (title, first prompt, permission mode, model, issue). Two spawns differing
-/// in any of them are different requests and get different keys.
+/// extras (title, first prompt, permission mode, model, issue, profile). Two
+/// spawns differing in any of them are different requests and get different
+/// keys. The profile is hashed only when set, so a plain spawn's key is the one
+/// it was before profiles existed.
 ///
 /// [`SpawnOptions::idempotency_key`] itself is excluded — it names the request,
 /// so it cannot be an input to its own name. That also makes the function safe to
@@ -1890,6 +1898,10 @@ pub fn spawn_idempotency_key(
     ] {
         hasher.update((field.len() as u64).to_le_bytes());
         hasher.update(field.as_bytes());
+    }
+    if let Some(profile) = opts.profile.filter(|p| !p.is_empty()) {
+        hasher.update((profile.len() as u64).to_le_bytes());
+        hasher.update(profile.as_bytes());
     }
     hex::encode(&hasher.finalize()[..16])
 }
@@ -2006,6 +2018,12 @@ pub fn build_spawn_command_event(
                 .start_tag()
                 .tag_str("relation")
                 .tag_str(opts.relation.as_str());
+        }
+        // The backend profile the session runs under. Named like the
+        // kind-31988 `profile` tag the host copies it to. A resumed session
+        // keeps the profile its state already records.
+        if let Some(profile) = opts.profile.filter(|p| !p.is_empty()) {
+            builder = builder.start_tag().tag_str("profile").tag_str(profile);
         }
     }
 
@@ -3568,6 +3586,81 @@ mod tests {
             "json: {}",
             resume.note_json
         );
+    }
+
+    /// A spawn under a profile names it on the command, so the host runs the
+    /// session under it; a plain spawn and a resume carry no `profile` tag.
+    #[test]
+    fn spawn_command_carries_the_profile_on_new_sessions_only() {
+        let sk = test_secret_key();
+        let opts = SpawnOptions {
+            profile: Some("hydra"),
+            ..Default::default()
+        };
+        let spawn =
+            build_spawn_command_event("host-a", "/tmp/proj", "claude", &opts, "spawn-1", None, &sk)
+                .unwrap();
+        assert!(
+            spawn.note_json.contains(r#"["profile","hydra"]"#),
+            "json: {}",
+            spawn.note_json
+        );
+
+        let plain = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &Default::default(),
+            "spawn-1",
+            None,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !plain.note_json.contains("profile"),
+            "json: {}",
+            plain.note_json
+        );
+
+        let resume = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &opts,
+            "spawn-1",
+            Some(&ResumeSpawn {
+                target_session_id: "sess-1",
+                cli_session_id: "cli-1",
+            }),
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !resume.note_json.contains("profile"),
+            "json: {}",
+            resume.note_json
+        );
+    }
+
+    /// A spawn under a profile is a different request from the same spawn on
+    /// the plain backend, and a plain spawn's key doesn't move with the field.
+    #[test]
+    fn spawn_idempotency_key_covers_the_profile() {
+        let plain = SpawnOptions {
+            title: Some("t"),
+            ..Default::default()
+        };
+        let hydra = SpawnOptions {
+            profile: Some("hydra"),
+            ..plain
+        };
+        let empty = SpawnOptions {
+            profile: Some(""),
+            ..plain
+        };
+        let key = |o: &SpawnOptions<'_>| spawn_idempotency_key("h", "/c", "claude", o);
+        assert_ne!(key(&plain), key(&hydra));
+        assert_eq!(key(&plain), key(&empty));
     }
 
     #[test]

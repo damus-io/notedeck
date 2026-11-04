@@ -125,6 +125,8 @@ pub struct DaveUi<'a> {
     turn_has_content: bool,
     /// Which backend this session uses
     backend_type: BackendType,
+    /// The label of the backend profile the session runs under, if any.
+    profile_label: Option<&'a str>,
     /// Current permission mode (Default, Plan, AcceptEdits)
     permission_mode: PermissionMode,
     /// When the last activity was seen, as wall-clock unix seconds
@@ -355,6 +357,7 @@ impl<'a> DaveUi<'a> {
             dispatch_state: crate::session::DispatchState::default(),
             turn_has_content: false,
             backend_type: BackendType::Remote,
+            profile_label: None,
             permission_mode: PermissionMode::Default,
             last_activity: None,
             focus_queue_info: None,
@@ -497,6 +500,13 @@ impl<'a> DaveUi<'a> {
 
     pub fn backend_type(mut self, bt: BackendType) -> Self {
         self.backend_type = bt;
+        self
+    }
+
+    /// The label of the backend profile the session runs under, shown beside
+    /// its model in the header and in the inspector.
+    pub fn profile_label(mut self, label: Option<&'a str>) -> Self {
+        self.profile_label = label;
         self
     }
 
@@ -703,6 +713,7 @@ impl<'a> DaveUi<'a> {
                             ui,
                             details,
                             self.backend_type,
+                            self.profile_label,
                             self.flags.contains(DaveUiFlags::IsSubagent),
                             refs.as_mut(),
                             walltime.as_ref().map(|w| w.text.clone()),
@@ -817,6 +828,7 @@ impl<'a> DaveUi<'a> {
                         let details = self.details;
                         let permission_mode = self.permission_mode;
                         let backend_type = self.backend_type;
+                        let profile_label = self.profile_label;
                         let session_id = self.session_id;
                         let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
                         let context_window = self.context_window;
@@ -828,6 +840,7 @@ impl<'a> DaveUi<'a> {
                                 waiting_on: inspected.waiting_on,
                                 permission_mode,
                                 backend_type,
+                                profile_label,
                                 details,
                                 branch,
                                 cli_session_id: inspected.cli_session_id,
@@ -4233,7 +4246,7 @@ const SUBAGENT_INHERITS: &str = "inherited from its parent";
 const HEADER_TITLE_SIZE: f32 = 13.0;
 
 /// Draw the chat header: the backend icon, the session's title, and a
-/// subtitle of its model and cwd.
+/// subtitle of its backend profile's label (`profile_label`), model and cwd.
 ///
 /// With `refs`, a title holding a reference (autowork titles a session with
 /// its card's `headway:<board>/<word-id>`) draws the reference as its inline
@@ -4244,6 +4257,7 @@ pub(crate) fn session_header_ui(
     ui: &mut egui::Ui,
     details: &SessionDetails,
     backend_type: BackendType,
+    profile_label: Option<&str>,
     is_subagent: bool,
     refs: Option<&mut TitleRefs<'_, '_>>,
     walltime: Option<egui::WidgetText>,
@@ -4285,6 +4299,11 @@ pub(crate) fn session_header_ui(
                 (Some(model), None) => Some(model.to_string()),
                 (None, Some(cwd)) => Some(cwd.clone()),
                 (None, None) => None,
+            };
+            let subtitle = match (profile_label, subtitle) {
+                (Some(label), Some(text)) => Some(format!("{label} \u{00B7} {text}")),
+                (Some(label), None) => Some(label.to_string()),
+                (None, subtitle) => subtitle,
             };
             let subtitle = match subtitle {
                 Some(text) if is_subagent => Some(format!("{text} \u{00B7} {SUBAGENT_INHERITS}")),

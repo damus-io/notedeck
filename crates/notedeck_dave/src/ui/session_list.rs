@@ -3087,6 +3087,7 @@ mod tests {
                 ui,
                 details,
                 BackendType::Claude,
+                None,
                 false,
                 Some(&mut refs),
                 None,

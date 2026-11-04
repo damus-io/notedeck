@@ -1,3 +1,4 @@
+mod choice;
 pub mod claude;
 mod codex;
 mod codex_protocol;
@@ -12,6 +13,7 @@ mod wait_tracker;
 
 pub(crate) use tool_summary::truncate_output;
 
+pub use choice::BackendChoice;
 pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;
 pub use openai::OpenAiBackend;

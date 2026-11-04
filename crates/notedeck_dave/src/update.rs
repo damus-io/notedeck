@@ -4,7 +4,7 @@
 //! of the main Dave struct and make the code more testable and reusable.
 
 use crate::agent_status::AgentStatus;
-use crate::backend::{AiBackend, BackendType, Model};
+use crate::backend::{AiBackend, BackendChoice, BackendType, Model};
 use crate::config::AiMode;
 use crate::focus_queue::{AutoStealState, FocusPriority, FocusQueue};
 use crate::messages::{
@@ -1464,7 +1464,8 @@ pub fn create_resumed_session_with_cwd(
 pub struct RemoteSpawn {
     pub host: String,
     pub cwd: PathBuf,
-    pub backend: BackendType,
+    /// The clone's backend, profile and model: the original's.
+    pub choice: BackendChoice,
 }
 
 /// Clone a session by ID. For local sessions, creates the new session directly
@@ -1495,7 +1496,11 @@ pub fn clone_session(
         return Some(RemoteSpawn {
             host: session.details.hostname.clone(),
             cwd,
-            backend: backend_type,
+            choice: BackendChoice {
+                backend: backend_type,
+                profile,
+                model,
+            },
         });
     }
 
@@ -1860,6 +1865,50 @@ mod tests {
         assert_eq!(
             sm.get(new_id).unwrap().details.profile.as_deref(),
             Some("hydra")
+        );
+    }
+
+    /// Cloning a remote profile session asks its host for a clone under the
+    /// same profile and model, never a plain one.
+    #[test]
+    fn remote_clone_keeps_the_backend_profile() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+
+        let orig_id = create_session_with_cwd(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/work"),
+            "monad",
+            BackendType::Claude,
+            Model::Custom("glm-5.3-flash".to_string()),
+        );
+        let orig = sm.get_mut(orig_id).unwrap();
+        orig.details.profile = Some("hydra".to_string());
+        orig.source = SessionSource::Remote;
+
+        let spawn = clone_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            "laptop",
+            orig_id,
+        )
+        .expect("a remote clone is spawned on its host");
+        assert_eq!(spawn.host, "monad");
+        assert_eq!(
+            spawn.choice,
+            BackendChoice {
+                backend: BackendType::Claude,
+                profile: Some("hydra".to_string()),
+                model: Model::Custom("glm-5.3-flash".to_string()),
+            }
         );
     }
 

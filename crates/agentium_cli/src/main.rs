@@ -212,7 +212,8 @@ enum Command {
     /// message once the session exists; `--permission-mode` picks the mode the
     /// session's agent starts in; `--model` picks the model it starts on;
     /// `--issue-url` links the session to the issue
-    /// (e.g. headway card) it works. `--allow-duplicate` opts out of both
+    /// (e.g. headway card) it works; `--profile` runs it under a backend
+    /// profile (a bare spawn keeps the current session's). `--allow-duplicate` opts out of both
     /// duplicate defences (the pre-publish guard and the host's idempotency key).
     Spawn {
         host: Option<String>,
@@ -227,6 +228,8 @@ enum Command {
         model: Option<String>,
         /// Already checked to be a URI by [`parse_issue_url`].
         issue_url: Option<String>,
+        /// `--profile`, already checked to be a valid profile slug.
+        profile: Option<String>,
         /// `--child` / `--successor`, already checked not to be both.
         relation: SessionRelation,
         idempotency_key: Option<String>,
@@ -466,6 +469,7 @@ async fn run() -> Result<()> {
             permission_mode,
             model,
             issue_url,
+            profile,
             relation,
             idempotency_key,
             allow_duplicate,
@@ -481,6 +485,7 @@ async fn run() -> Result<()> {
                 permission_mode,
                 model,
                 issue_url,
+                profile,
                 relation,
                 idempotency_key,
                 allow_duplicate,
@@ -647,6 +652,7 @@ impl Cli {
         let mut permission_mode = None;
         let mut model = None;
         let mut issue_url = None;
+        let mut spawn_profile = None;
         let mut child = false;
         let mut successor = false;
         let mut idempotency_key = None;
@@ -736,6 +742,11 @@ impl Cli {
                 }
                 "--issue-url" => {
                     issue_url = Some(parse_issue_url(&value("--issue-url")?, "--issue-url")?)
+                }
+                "--profile" => {
+                    let slug = value("--profile")?;
+                    agentium_core::config::validate_slug(&slug)?;
+                    spawn_profile = Some(slug);
                 }
                 "--child" => child = true,
                 "--successor" => successor = true,
@@ -885,6 +896,7 @@ impl Cli {
                 permission_mode,
                 model,
                 issue_url,
+                profile: spawn_profile,
                 relation,
                 idempotency_key,
                 allow_duplicate,

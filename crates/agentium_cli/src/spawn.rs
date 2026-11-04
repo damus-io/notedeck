@@ -79,6 +79,10 @@ pub(crate) struct SpawnOpts {
     /// the command and the host copies it onto the session's state. `None`
     /// links no issue.
     pub(crate) issue_url: Option<String>,
+    /// `--profile`: the backend profile (kind-31992 slug) the new session runs
+    /// under, already checked to be a valid slug. `None` inherits the current
+    /// session's profile unless `--backend` was given; see [`spawn_profile`].
+    pub(crate) profile: Option<String>,
     /// `--child` / `--successor`: how the new session relates to the session
     /// running this spawn, recorded beside its `parent-session` on the command
     /// and the new session's state. The default records no relation.
@@ -125,6 +129,8 @@ struct SpawnTarget {
     /// The spawning session's `agentium:` ref, recorded as the new session's
     /// `parent-session`. `None` when this CLI isn't running inside a session.
     parent_session: Option<String>,
+    /// The backend profile the session runs under ([`spawn_profile`]).
+    profile: Option<String>,
 }
 
 /// Where the *current* session (`$AGENTIUM_SESSION`) runs, for commands whose
@@ -138,6 +144,8 @@ pub(crate) struct CurrentSession {
     /// The current session's `agentium:` ref: its resolved state's ref, or
     /// `$AGENTIUM_SESSION` verbatim when the state isn't cached.
     pub(crate) session: Option<String>,
+    /// The backend profile the current session runs under, if any.
+    pub(crate) profile: Option<String>,
 }
 
 impl CurrentSession {
@@ -156,6 +164,7 @@ impl CurrentSession {
                 .ok()
                 .map(|d| d.to_string_lossy().into_owned()),
             backend: None,
+            profile: None,
         }
     }
 }
@@ -190,6 +199,7 @@ pub(crate) fn current_session(engine: &Engine, author: &Pubkey) -> Result<Curren
                 cwd: Some(state.cwd.clone()),
                 backend: state.backend.clone(),
                 session: Some(state.agentium_uri()),
+                profile: state.profile.clone(),
             },
             // Not cached yet, or a stale ref. Either way we are still running
             // inside that session, so its host and cwd are this machine's.
@@ -212,10 +222,35 @@ fn resolve_spawn_target(engine: &Engine, author: &Pubkey, opts: &SpawnOpts) -> R
         current.cwd.as_deref(),
         current.backend.as_deref(),
     )?;
+    let profile = spawn_profile(opts, current.profile.as_deref())?;
     Ok(SpawnTarget {
         parent_session: current.session,
+        profile,
         ..target
     })
+}
+
+/// The backend profile a spawn runs under: `--profile`, else the current
+/// session's own profile when `--backend` wasn't given, so a bare `agentium
+/// spawn` from a session under `hydra` starts its sibling under `hydra` too
+/// rather than on the plain backend's account. An explicit `--backend` without
+/// `--profile` asks for that backend plainly. A profile is an overlay on the
+/// Claude backend, so `--profile` with any other `--backend` is an error.
+/// Pure over its inputs so the inheritance is unit-testable.
+fn spawn_profile(opts: &SpawnOpts, cur_profile: Option<&str>) -> Result<Option<String>> {
+    if let Some(profile) = &opts.profile {
+        if let Some(backend) = opts.backend.as_deref().filter(|b| *b != "claude") {
+            return Err(format!(
+                "--profile {profile} runs on the claude backend, not --backend {backend}"
+            )
+            .into());
+        }
+        return Ok(Some(profile.clone()));
+    }
+    if opts.backend.is_some() {
+        return Ok(None);
+    }
+    Ok(cur_profile.filter(|p| !p.is_empty()).map(str::to_string))
 }
 
 /// Merge the raw `--host`/`--cwd`/`--backend` flags with the current session's
@@ -248,6 +283,7 @@ fn merge_spawn_target(
         cwd,
         backend,
         parent_session: None,
+        profile: None,
     })
 }
 
@@ -361,6 +397,7 @@ pub(crate) async fn cmd_spawn(
         idempotency_key: None,
         parent_session: target.parent_session.as_deref(),
         relation: opts.relation,
+        profile: target.profile.as_deref(),
     };
     let idempotency_key = (!opts.allow_duplicate).then(|| {
         opts.idempotency_key.clone().unwrap_or_else(|| {
@@ -537,6 +574,7 @@ mod tests {
             permission_mode: None,
             model: None,
             issue_url: None,
+            profile: None,
             relation: SessionRelation::None,
             idempotency_key: None,
             allow_duplicate: false,
@@ -555,6 +593,7 @@ mod tests {
             cwd: "/home/u/proj".to_string(),
             backend: "claude".to_string(),
             parent_session: None,
+            profile: None,
         };
         // `session()` puts every row in /home/u/proj, which is the target's cwd.
         let live = vec![session("mbp", "Fix the parser", "working", NOW - 30)];
@@ -587,6 +626,7 @@ mod tests {
             cwd: target.cwd.clone(),
             backend: target.backend.clone(),
             parent_session: None,
+            profile: None,
         };
         assert!(find_duplicate_spawn(&live, &other_host, Some("Fix the parser"), NOW).is_none());
         let other_cwd = SpawnTarget {
@@ -594,6 +634,7 @@ mod tests {
             cwd: "/home/u/other".to_string(),
             backend: target.backend.clone(),
             parent_session: None,
+            profile: None,
         };
         assert!(find_duplicate_spawn(&live, &other_cwd, Some("Fix the parser"), NOW).is_none());
 
@@ -627,6 +668,7 @@ mod tests {
             cwd: "/home/u/proj".to_string(),
             backend: "claude".to_string(),
             parent_session: None,
+            profile: None,
         };
         let mut renamed = session("mbp", "read crates/foo and fix…", "working", NOW - 30);
         renamed.custom_title = Some("Fix the parser".to_string());
@@ -717,6 +759,35 @@ mod tests {
         .unwrap();
         assert_eq!(t.host, host);
         assert_eq!(t.backend, "claude");
+    }
+
+    /// A bare spawn from a profile session keeps its profile (so its sibling
+    /// doesn't land on the plain backend's account), `--backend` alone asks for
+    /// a plain session, `--profile` wins, and a profile on a non-claude
+    /// backend is refused.
+    #[test]
+    fn spawn_profile_inherits_unless_a_backend_is_named() {
+        let bare = spawn_opts(None, None, None);
+        assert_eq!(
+            spawn_profile(&bare, Some("hydra")).unwrap().as_deref(),
+            Some("hydra")
+        );
+        assert_eq!(spawn_profile(&bare, None).unwrap(), None);
+        assert_eq!(spawn_profile(&bare, Some("")).unwrap(), None);
+
+        let plain = spawn_opts(None, None, Some("claude"));
+        assert_eq!(spawn_profile(&plain, Some("hydra")).unwrap(), None);
+
+        let mut flagged = spawn_opts(None, None, Some("claude"));
+        flagged.profile = Some("work".into());
+        assert_eq!(
+            spawn_profile(&flagged, Some("hydra")).unwrap().as_deref(),
+            Some("work")
+        );
+
+        let mut codex = spawn_opts(None, None, Some("codex"));
+        codex.profile = Some("hydra".into());
+        assert!(spawn_profile(&codex, None).is_err());
     }
 
     #[test]
