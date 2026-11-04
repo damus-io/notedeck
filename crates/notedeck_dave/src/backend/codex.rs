@@ -5089,7 +5089,7 @@ mod tests {
         let codex_binary = std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string());
 
         let session_env =
-            crate::backend::shared::session_env(Some("test-session"), &BTreeMap::new());
+            crate::backend::shared::session_env(Some("test-session"), &BTreeMap::new(), None);
         let mut child = match spawn_codex(&codex_binary, &None, &session_env) {
             Ok(child) => child,
             Err(e) => {

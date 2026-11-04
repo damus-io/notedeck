@@ -198,6 +198,7 @@ pub(crate) fn session_state_snapshot(
             crate::session::permission_mode_to_str(agentic.permission_mode).to_string(),
         ),
         model: session.details.requested_model.clone(),
+        profile: session.details.profile.clone(),
         created_at,
         cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
         spawn_id: session.spawn_id.clone(),

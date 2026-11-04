@@ -2,6 +2,7 @@
 //! buckets swapped in and out as the account picker changes, and the ndb
 //! subscriptions each account's sessions are discovered through.
 
+use crate::backend_profiles::BackendProfiles;
 use crate::conversation::subscribe_conversation_events;
 use crate::conversation_feed::ConversationFeed;
 use crate::focus_queue::FocusQueue;
@@ -57,6 +58,7 @@ pub(crate) struct PnsLocalRuntime {
     running_session_ids: HashMap<SessionId, HashSet<String>>,
     run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     run_config_sub: Option<nostrdb::Subscription>,
+    backend_profiles: BackendProfiles,
     inspector_snapshot_sub: Option<nostrdb::Subscription>,
     pending_reap: Vec<std::process::Child>,
 }
@@ -94,6 +96,7 @@ impl PnsLocalRuntime {
             running_session_ids: HashMap::new(),
             run_configs: HashMap::new(),
             run_config_sub: None,
+            backend_profiles: BackendProfiles::default(),
             inspector_snapshot_sub: None,
             pending_reap: Vec::new(),
         }
@@ -175,6 +178,9 @@ impl Dave {
         if self.run_config_sub.is_none() {
             self.subscribe_pns_run_configs(ctx.ndb, account);
         }
+        if !self.backend_profiles.is_subscribed() {
+            self.backend_profiles.subscribe(ctx.ndb, account);
+        }
         if self.inspector_snapshot_sub.is_none() {
             self.subscribe_inspector_snapshots(ctx.ndb, account);
         }
@@ -193,6 +199,7 @@ impl Dave {
             self.session_restore_loader.restore_account(account);
         }
         self.load_run_configs(ctx.ndb, account);
+        self.backend_profiles.load(ctx.ndb, &account);
     }
 
     fn take_pns_local_runtime(&mut self) -> PnsLocalRuntime {
@@ -233,6 +240,7 @@ impl Dave {
             running_session_ids: std::mem::take(&mut self.running_session_ids),
             run_configs: std::mem::take(&mut self.run_configs),
             run_config_sub: self.run_config_sub.take(),
+            backend_profiles: std::mem::take(&mut self.backend_profiles),
             inspector_snapshot_sub: self.inspector_snapshot_sub.take(),
             pending_reap: std::mem::take(&mut self.pending_reap),
         }
@@ -279,6 +287,7 @@ impl Dave {
         self.running_session_ids = runtime.running_session_ids;
         self.run_configs = runtime.run_configs;
         self.run_config_sub = runtime.run_config_sub;
+        self.backend_profiles = runtime.backend_profiles;
         self.inspector_snapshot_sub = runtime.inspector_snapshot_sub;
         self.pending_reap = runtime.pending_reap;
     }

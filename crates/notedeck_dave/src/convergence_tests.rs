@@ -209,10 +209,12 @@ impl Host {
             }
             Step::Dispatch => {
                 let session_env = BTreeMap::new();
+                let profiles = Default::default();
                 let ctx = DispatchCtx {
                     host: &host,
                     tools: Arc::default(),
                     session_env: &session_env,
+                    profiles: &profiles,
                 };
                 dispatch_turn(session, &ScriptBackend, &ctx);
                 self.needs_send.remove(&sid);

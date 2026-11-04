@@ -685,6 +685,9 @@ impl Dave {
                 let new_relation = session_events::SessionRelation::parse(
                     session_events::get_tag_value(&note, "relation"),
                 );
+                let new_profile = session_events::get_tag_value(&note, "profile")
+                    .filter(|p| !p.is_empty())
+                    .map(|s| s.to_string());
                 for session in self.session_manager.iter_mut() {
                     let is_remote = session.is_remote();
                     if let Some(agentic) = &mut session.agentic {
@@ -711,10 +714,12 @@ impl Dave {
                                 session.details.issue_url = new_issue_url.clone();
                             }
                             // Lineage is the host's record of how the session
-                            // was spawned; a remote copy mirrors it.
+                            // was spawned, and the profile what it runs under;
+                            // a remote copy mirrors both.
                             if is_remote {
                                 session.details.parent_session = new_parent_session.clone();
                                 session.details.relation = new_relation;
+                                session.details.profile = new_profile.clone();
                             }
                             if let Some(backend) = backend_tag {
                                 session.backend_type = backend;
@@ -1155,6 +1160,9 @@ fn hydrate_session_from_state(
     session.details.issue_url = state.issue_url.clone();
     // The model the user picked, so a restored session starts its CLI on it.
     session.details.requested_model = state.model.clone();
+    // The profile it runs under, so a restored session resumes on the same
+    // endpoint (or fails loudly here if this host lacks the profile).
+    session.details.profile = state.profile.clone();
     session.details.parent_session = state.parent_session.clone();
     session.details.relation = state.relation;
     session.spawn_id = state.spawn_id.clone();
@@ -1297,6 +1305,7 @@ mod tests {
             project_root: None,
             parent_session: Some("agentium:the-parent-ref".to_string()),
             relation: session_events::SessionRelation::Successor,
+            profile: Some("hydra".to_string()),
         }
     }
 
@@ -1357,6 +1366,9 @@ mod tests {
         assert_eq!(details.relation, session_events::SessionRelation::Successor);
         // And the model picked with `/model`, so its next CLI starts on it.
         assert_eq!(details.requested_model.as_deref(), Some("sonnet"));
+        // And the backend profile, so it resumes on the same endpoint rather
+        // than on the plain backend.
+        assert_eq!(details.profile.as_deref(), Some("hydra"));
     }
 
     /// An empty `cli_session` means the backend never started: there is nothing

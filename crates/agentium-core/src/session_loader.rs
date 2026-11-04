@@ -1029,6 +1029,11 @@ pub struct SessionState {
     /// when the backend's default is used, and on states written before it
     /// was recorded.
     pub model: Option<String>,
+    /// The backend profile the session runs under (`profile` tag): the slug of
+    /// a kind-31992 [`BackendProfile`](crate::config::BackendProfile), never its
+    /// env. Absent for a session on the plain backend, and on states written
+    /// before profiles existed.
+    pub profile: Option<String>,
     pub created_at: u64,
     /// Real CLI session ID when the d-tag is a provisional UUID.
     /// Present only for sessions created via spawn commands.
@@ -1114,6 +1119,9 @@ impl SessionState {
             backend: get_tag_value(note, "backend").map(|s| s.to_string()),
             permission_mode: get_tag_value(note, "permission-mode").map(|s| s.to_string()),
             model: get_tag_value(note, "model").map(|s| s.to_string()),
+            profile: get_tag_value(note, "profile")
+                .filter(|p| !p.is_empty())
+                .map(|s| s.to_string()),
             created_at: note.created_at(),
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
             spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
@@ -2255,6 +2263,7 @@ mod tests {
             project_root: None,
             parent_session: None,
             relation: Default::default(),
+            profile: None,
         }
     }
 
@@ -3778,6 +3787,7 @@ mod tests {
             project_root: None,
             parent_session: None,
             relation: Default::default(),
+            profile: None,
         };
 
         // Two individually-ordered lists, as the live and deleted loads arrive.
@@ -3871,6 +3881,7 @@ mod tests {
             project_root: Some("/home/u/proj".to_string()),
             parent_session: Some("agentium:parent-ref-here".to_string()),
             relation: crate::session_events::SessionRelation::Successor,
+            profile: Some("hydra".to_string()),
         };
         let event = state.build_event(&sk).unwrap().to_event_json();
         let filter = Filter::new()
@@ -3887,6 +3898,36 @@ mod tests {
             serde_json::to_value(&parsed).unwrap(),
             serde_json::to_value(&state).unwrap(),
         );
+    }
+
+    /// A state written before backend profiles existed (no `profile` tag)
+    /// parses to `profile: None`, so an old session runs on the plain backend
+    /// rather than failing as one whose profile is missing.
+    #[tokio::test]
+    async fn session_state_without_a_profile_tag_has_no_profile() {
+        let sk = test_secret_key();
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let state = SessionState {
+            claude_session_id: "no-profile".to_string(),
+            status: "idle".to_string(),
+            backend: Some("claude".to_string()),
+            created_at: 1_770_000_000,
+            ..Default::default()
+        };
+        let event = state.build_event(&sk).unwrap().to_event_json();
+        assert!(!event.contains("\"profile\""), "event: {event}");
+        let filter = Filter::new()
+            .kinds([crate::session_events::AI_SESSION_STATE_KIND as u64])
+            .build();
+        ingest_all(&ndb, &filter, &[event]).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let results = ndb.query(&txn, &[filter], 1).unwrap();
+        let note = &results.first().expect("the state landed").note;
+        let parsed = SessionState::from_note(note, None).expect("parses");
+        assert_eq!(parsed.profile, None);
     }
 
     /// The pubkey `sk` signs as, for the author-scoped loaders.

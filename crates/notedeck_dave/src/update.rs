@@ -1487,6 +1487,9 @@ pub fn clone_session(
         .resolve_model()
         .map(|id| Model::from_model_id(&id))
         .unwrap_or(Model::Default);
+    // A clone runs under the same backend profile: dropping it would send the
+    // clone's work to the plain backend's account instead.
+    let profile = session.details.profile.clone();
 
     if session.is_remote() {
         return Some(RemoteSpawn {
@@ -1496,7 +1499,7 @@ pub fn clone_session(
         });
     }
 
-    create_session_with_cwd(
+    let new_id = create_session_with_cwd(
         session_manager,
         directory_picker,
         scene,
@@ -1507,6 +1510,9 @@ pub fn clone_session(
         backend_type,
         model,
     );
+    if let Some(clone) = session_manager.get_mut(new_id) {
+        clone.details.profile = profile;
+    }
     None
 }
 
@@ -1815,6 +1821,45 @@ mod tests {
         assert!(
             sm.get(new_id).unwrap().details.requested_model.is_none(),
             "cloned default-model session should also have no model"
+        );
+    }
+
+    /// A clone runs under its original's backend profile, never silently on
+    /// the plain backend.
+    #[test]
+    fn clone_session_keeps_the_backend_profile() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+
+        let orig_id = create_session_with_cwd(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/tmp"),
+            "localhost",
+            BackendType::Claude,
+            Model::Default,
+        );
+        sm.get_mut(orig_id).unwrap().details.profile = Some("hydra".to_string());
+
+        clone_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            "localhost",
+            orig_id,
+        );
+
+        let new_id = sm.active_id().unwrap();
+        assert_ne!(new_id, orig_id, "clone must create a new session");
+        assert_eq!(
+            sm.get(new_id).unwrap().details.profile.as_deref(),
+            Some("hydra")
         );
     }
 
@@ -2729,6 +2774,7 @@ mod tests {
             host: &test.parts().host,
             tools: Default::default(),
             session_env: &Default::default(),
+            profiles: &Default::default(),
         };
         crate::stream_events::dispatch_turn(session, backend, &ctx);
     }

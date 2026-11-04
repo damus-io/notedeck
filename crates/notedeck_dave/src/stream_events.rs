@@ -5,6 +5,7 @@
 //! every session's stream through them.
 
 use crate::backend::{AiBackend, BackendType};
+use crate::backend_profiles::{missing_profile_error, BackendProfiles};
 use crate::publish::{
     build_user_send_event, ingest_live_event, ingest_live_event_within,
     publish_auto_accept_response, publish_permission_request, record_dispatch, record_published,
@@ -1062,6 +1063,8 @@ pub(crate) struct DispatchCtx<'a> {
     /// session's agentium identity is layered over it
     /// ([`session_env`](crate::backend::shared::session_env)).
     pub(crate) session_env: &'a BTreeMap<String, String>,
+    /// The account's backend profiles, for a session that runs under one.
+    pub(crate) profiles: &'a BackendProfiles,
 }
 
 /// Start a turn: hand `session`'s trailing user message(s) to `backend`.
@@ -1069,6 +1072,13 @@ pub(crate) struct DispatchCtx<'a> {
 /// Marks them dispatched and publishes their dispatch markers
 /// ([`record_dispatch`]), so every fold places a queued message where the
 /// host dispatched it, then starts the backend's stream over the chat.
+///
+/// A session that runs under a backend profile gets the profile's env
+/// ([`session_env`](crate::backend::shared::session_env)) and, when it hasn't
+/// picked a model, the profile's default. When this host has no profile by
+/// that name the turn fails instead ([`fail_turn`]): the backend is never
+/// called, since running on the plain backend would send the work to the
+/// wrong account.
 ///
 /// [`Dave::send_user_message_for`] picks the backend and calls this; the
 /// convergence harness dispatches through it too, so a dispatch that stopped
@@ -1081,12 +1091,25 @@ pub(crate) fn dispatch_turn(
     record_dispatch(session, ctx.host.ndb, ctx.host.sk());
 
     let session_id = format!("dave-session-{}", session.id);
+    let profile = match session.details.profile.as_deref() {
+        None => None,
+        Some(slug) => match ctx.profiles.get(slug) {
+            Some(profile) => Some(profile),
+            None => {
+                let error = missing_profile_error(slug, &session.details.hostname);
+                tracing::warn!("session {}: backend profile {slug:?} missing", session.id);
+                fail_turn(session, backend, session_id, error, ctx.host.waker);
+                return;
+            }
+        },
+    };
     // The stable kind-31988 d-tag (UUID), distinct from the ephemeral
     // `dave-session-{n}` routing key above, goes into the session env as the
     // agentium identity so an in-session agent reads its OWN ref. Only
     // agentic sessions have one.
     let agentium_session_id = session.agentic.as_ref().map(|a| a.event_session_id());
-    let session_env = crate::backend::shared::session_env(agentium_session_id, ctx.session_env);
+    let session_env =
+        crate::backend::shared::session_env(agentium_session_id, ctx.session_env, profile);
     let messages = session.chat.clone();
     let cwd = session.agentic.as_ref().map(|a| a.cwd.clone());
     let resume_session_id = session
@@ -1103,7 +1126,13 @@ pub(crate) fn dispatch_turn(
         .as_ref()
         .map(|a| a.permission_mode)
         .unwrap_or(claude_agent_sdk_rs::PermissionMode::Default);
-    let model_name = session.details.resolve_model();
+    // A model picked for the session wins; otherwise a profile starts on its
+    // own default, since the backend's default names a model its endpoint
+    // may not serve.
+    let model_name = session
+        .details
+        .resolve_model()
+        .or_else(|| profile.and_then(|p| p.default_model.clone()));
     // `rx` is `None` for persistent-stream backends on subsequent turns — the
     // session already owns a long-lived channel we must keep, so only replace
     // `incoming_tokens` when a new receiver was minted.
@@ -1123,6 +1152,31 @@ pub(crate) fn dispatch_turn(
         session.incoming_tokens = Some(rx);
     }
     session.task_handle = stream.task;
+}
+
+/// End the turn just dispatched on `session` with `error`, without the backend.
+///
+/// The error arrives the way a backend's own failure does: one
+/// [`DaveApiResponse::Failed`] on a channel whose sender is already dropped,
+/// so the next poll shows it in the chat, publishes it, and runs the usual
+/// stream end. A session the backend still has a live CLI for (a persistent
+/// channel from an earlier turn) has it shut down first, since the turn's
+/// receiver replaces that channel.
+fn fail_turn(
+    session: &mut session::ChatSession,
+    backend: &dyn AiBackend,
+    session_id: String,
+    error: String,
+    waker: &Waker,
+) {
+    if session.incoming_tokens.is_some() {
+        backend.cleanup_session(session_id);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(DaveApiResponse::Failed(error));
+    session.incoming_tokens = Some(rx);
+    session.task_handle = None;
+    waker.wake();
 }
 
 #[cfg(test)]
@@ -1826,5 +1880,149 @@ mod tests {
         );
         assert_eq!(run.compacts, 1);
         assert!(run.last_user.is_none());
+    }
+
+    /// What one probed turn handed the backend.
+    struct ProbedTurn {
+        model: Option<String>,
+        env: BTreeMap<String, String>,
+    }
+
+    /// A backend that records the model and env of each turn it is handed.
+    struct TurnProbe {
+        turns: std::sync::mpsc::Sender<ProbedTurn>,
+    }
+
+    impl AiBackend for TurnProbe {
+        fn stream_request(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Arc<HashMap<String, Tool>>,
+            model: Option<String>,
+            _user_id: String,
+            _session_id: String,
+            session_env: BTreeMap<String, String>,
+            _cwd: Option<std::path::PathBuf>,
+            _resume_session_id: Option<String>,
+            _permission_mode: claude_agent_sdk_rs::PermissionMode,
+            _waker: Waker,
+        ) -> crate::backend::ResponseStream {
+            let _ = self.turns.send(ProbedTurn {
+                model,
+                env: session_env,
+            });
+            crate::backend::ResponseStream {
+                rx: None,
+                task: None,
+            }
+        }
+
+        fn cleanup_session(&self, _session_id: String) {}
+
+        fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
+
+        fn set_permission_mode(
+            &self,
+            _session_id: String,
+            _mode: claude_agent_sdk_rs::PermissionMode,
+            _waker: Waker,
+        ) {
+        }
+    }
+
+    /// What sending one message on a Claude session under profile `hydra`
+    /// did, with `profiles` as the account's profiles.
+    struct ProfileRun {
+        turns: Vec<ProbedTurn>,
+        chat: Vec<Message>,
+        status: crate::agent_status::AgentStatus,
+    }
+
+    fn send_under_hydra(profiles: crate::backend_profiles::BackendProfiles) -> ProfileRun {
+        let mut test = crate::tests::TestDave::new();
+        let [sid] = test.add_sessions(["/tmp/profile"], BackendType::Claude);
+        {
+            let session = test.dave.session_manager.get_mut(sid).unwrap();
+            session.details.profile = Some("hydra".to_string());
+            session.details.hostname = "monad".to_string();
+        }
+        test.dave.backend_profiles = profiles;
+        let (tx, rx) = std::sync::mpsc::channel();
+        test.dave
+            .backends
+            .insert(BackendType::Claude, Box::new(TurnProbe { turns: tx }));
+
+        let parts = test.parts();
+        assert!(parts.dave.add_user_message_for_session(
+            sid,
+            &parts.host,
+            "ship it".to_string(),
+            Vec::new()
+        ));
+        parts.dave.send_user_message_for(sid, &parts.host);
+        parts.dave.process_events(&parts.host);
+
+        let session = test.dave.session_manager.get_mut(sid).unwrap();
+        session.update_status();
+        ProfileRun {
+            turns: rx.try_iter().collect(),
+            chat: session.chat.clone(),
+            status: session.status(),
+        }
+    }
+
+    /// A session under a profile this host doesn't have fails its turn with
+    /// an error naming the profile, the host and the fix, and never reaches
+    /// the backend: running it on the plain backend would send the work to
+    /// the wrong account.
+    #[test]
+    fn a_missing_profile_fails_the_turn_without_the_backend() {
+        let run = send_under_hydra(Default::default());
+        assert!(
+            run.turns.is_empty(),
+            "the backend must not be called without its profile"
+        );
+        let error = run
+            .chat
+            .iter()
+            .find_map(|m| match m {
+                Message::Error(e) => Some(e.as_str()),
+                _ => None,
+            })
+            .expect("the turn shows an error");
+        assert!(error.contains("`hydra`"), "error: {error}");
+        assert!(error.contains("monad"), "error: {error}");
+        assert!(
+            error.contains("agentium profile set hydra"),
+            "error: {error}"
+        );
+        assert_ne!(
+            run.status,
+            crate::agent_status::AgentStatus::Working,
+            "the failed turn is over"
+        );
+    }
+
+    /// A session under a profile this host has runs with the profile's env
+    /// and, with no model picked, on the profile's default model.
+    #[test]
+    fn a_profile_session_runs_with_its_env_and_default_model() {
+        let mut hydra = agentium_core::config::BackendProfile::new("hydra", "Hydra");
+        hydra.env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://llm.hydra.host".to_string(),
+        );
+        hydra.default_model = Some("glm-5.3-flash".to_string());
+        let run = send_under_hydra(crate::backend_profiles::BackendProfiles::from_profiles([
+            hydra,
+        ]));
+
+        let [turn] = run.turns.as_slice() else {
+            panic!("expected one turn, got {}", run.turns.len());
+        };
+        assert_eq!(turn.model.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(turn.env["ANTHROPIC_BASE_URL"], "https://llm.hydra.host");
+        assert!(turn.env.contains_key("AGENTIUM_SESSION"));
+        assert!(!run.chat.iter().any(|m| matches!(m, Message::Error(_))));
     }
 }

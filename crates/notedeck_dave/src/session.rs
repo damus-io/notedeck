@@ -183,6 +183,13 @@ pub struct SessionDetails {
     ///
     /// `None` means "let the backend choose its default model".
     pub requested_model: Option<String>,
+    /// The backend profile the session runs under: the slug of a kind-31992
+    /// [`BackendProfile`](agentium_core::config::BackendProfile), whose env
+    /// overlays the Claude backend's (see `backend::shared::session_env`).
+    /// `None` runs on the plain backend. Set when the session is created and
+    /// fixed for its life; a slug this host has no profile for fails every
+    /// turn rather than falling back (see `stream_events::dispatch_turn`).
+    pub profile: Option<String>,
     /// Model currently reported by the backend for display.
     ///
     /// This may differ from `requested_model` if the backend resolved an alias
@@ -836,6 +843,7 @@ impl ChatSession {
                 project_slug: project.as_ref().map(|p| p.slug.clone()),
                 project_root: project.map(|p| p.root),
                 requested_model: None,
+                profile: None,
                 model: None,
             },
             backend_type,
@@ -923,6 +931,7 @@ impl ChatSession {
                 project_slug: None,
                 project_root: None,
                 requested_model: None,
+                profile: None,
                 model: None,
             },
             backend_type,

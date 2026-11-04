@@ -1637,6 +1637,11 @@ pub fn build_session_state_event(
     if let Some(model) = state.model.as_deref().filter(|m| !m.is_empty()) {
         builder = builder.start_tag().tag_str("model").tag_str(model);
     }
+    // The backend profile's slug only: its env (endpoint, token) stays in the
+    // kind-31992 record, so observers see which profile without its secrets.
+    if let Some(profile) = state.profile.as_deref().filter(|p| !p.is_empty()) {
+        builder = builder.start_tag().tag_str("profile").tag_str(profile);
+    }
 
     // Real Claude CLI session ID for backend --resume.
     // Empty string means the backend hasn't started yet.

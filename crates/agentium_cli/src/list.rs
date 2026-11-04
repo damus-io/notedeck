@@ -352,6 +352,7 @@ pub(crate) mod tests {
             project_root: None,
             parent_session: None,
             relation: Default::default(),
+            profile: None,
         }
     }
 

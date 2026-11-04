@@ -382,10 +382,19 @@ pub fn prepare_prompt_and_images(
     }
 }
 
-/// The environment a subprocess backend exports into one agent session: the
-/// user's configured `session_env` (from `dave_settings.json`) plus this
-/// session's agentium identity. Both the Claude and Codex backends export
-/// exactly this map, so the two can't drift.
+/// The environment a subprocess backend exports into one agent session.
+/// Both the Claude and Codex backends export exactly this map, so the two
+/// can't drift. It is layered, each layer overriding the ones before it:
+///
+/// 1. the user's configured `session_env` (from `dave_settings.json`);
+/// 2. the session's backend `profile` env, if it runs under one (the
+///    endpoint, token and model vars of e.g. a work backend). A `""` value is
+///    passed through as an empty variable: the SDK's `ClaudeAgentOptions.env`
+///    can only set variables, not remove inherited ones, so "unset" reaches the
+///    CLI as set-to-empty;
+/// 3. `CLAUDE_CONFIG_DIR` from the profile's `config_dir`, when it sets one, so
+///    the dedicated field beats a same-named raw env entry;
+/// 4. the session's agentium identity.
 ///
 /// The identity comes from `agentium_session_id`, which MUST be the stable
 /// kind-31988 d-tag ([`event_session_id`]) that `agentium_core::wordid`
@@ -395,17 +404,32 @@ pub fn prepare_prompt_and_images(
 /// derived from it (the word-id is a one-way hash, so both are exported). With
 /// them an in-session agent identifies its OWN session deterministically, e.g.
 /// to quote the ref into a headway done-comment. Non-agentic sessions have no
-/// identity and get only the configured entries.
+/// identity and get only the layers above it.
 ///
 /// The identity variables are inserted last so they win over a same-named
-/// configured entry: a settings file can't make a session misreport itself.
+/// configured or profile entry: neither a settings file nor a profile can make
+/// a session misreport itself.
+///
+/// The map holds the profile's secrets, so it must never be logged.
 ///
 /// [`event_session_id`]: crate::session::AgenticSessionData::event_session_id
 pub fn session_env(
     agentium_session_id: Option<&str>,
     configured: &BTreeMap<String, String>,
+    profile: Option<&agentium_core::config::BackendProfile>,
 ) -> BTreeMap<String, String> {
     let mut env = configured.clone();
+    if let Some(profile) = profile {
+        env.extend(
+            profile
+                .env
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+        if let Some(config_dir) = &profile.config_dir {
+            env.insert("CLAUDE_CONFIG_DIR".to_string(), config_dir.clone());
+        }
+    }
     let Some(agentium_session_id) = agentium_session_id else {
         return env;
     };
@@ -451,7 +475,7 @@ mod tests {
             ("AGENTIUM_SESSION_ID".to_string(), "spoofed".to_string()),
         ]);
 
-        let env = session_env(Some(sid), &configured);
+        let env = session_env(Some(sid), &configured, None);
         assert_eq!(env["HEADWAY_COMMENT_NSEC_FILE"], "/keys/agent");
         assert_eq!(env["AGENTIUM_SESSION_ID"], sid);
         assert_eq!(
@@ -466,8 +490,61 @@ mod tests {
     #[test]
     fn session_env_without_identity_is_just_the_configured_entries() {
         let configured = BTreeMap::from([("FOO".to_string(), "bar".to_string())]);
-        assert_eq!(session_env(None, &configured), configured);
-        assert!(session_env(None, &BTreeMap::new()).is_empty());
+        assert_eq!(session_env(None, &configured, None), configured);
+        assert!(session_env(None, &BTreeMap::new(), None).is_empty());
+    }
+
+    /// The layers merge in order: configured, then profile env, then the
+    /// profile's `config_dir` as `CLAUDE_CONFIG_DIR`, then the identity. A
+    /// profile overrides the configured value it shares a name with, and an
+    /// empty value (the profile's "unset") still overrides it, as empty.
+    #[test]
+    fn session_env_layers_the_profile_between_configured_and_identity() {
+        let sid = "4b0c1f55-2f7e-4c47-9d3b-1f2a3b4c5d6e";
+        let configured = BTreeMap::from([
+            ("KEEP".to_string(), "configured".to_string()),
+            ("ANTHROPIC_BASE_URL".to_string(), "https://old".to_string()),
+            ("ANTHROPIC_API_KEY".to_string(), "personal-key".to_string()),
+        ]);
+        let mut profile = agentium_core::config::BackendProfile::new("hydra", "Hydra");
+        profile.env = BTreeMap::from([
+            (
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://llm.hydra.host".to_string(),
+            ),
+            ("ANTHROPIC_API_KEY".to_string(), String::new()),
+            ("CLAUDE_CONFIG_DIR".to_string(), "/from/env".to_string()),
+            (
+                "AGENTIUM_SESSION".to_string(),
+                "agentium:spoofed".to_string(),
+            ),
+        ]);
+        profile.config_dir = Some("/home/u/.claude-hydra".to_string());
+
+        let env = session_env(Some(sid), &configured, Some(&profile));
+        assert_eq!(env["KEEP"], "configured");
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "https://llm.hydra.host");
+        assert_eq!(
+            env["ANTHROPIC_API_KEY"], "",
+            "unset reaches the CLI as empty"
+        );
+        assert_eq!(env["CLAUDE_CONFIG_DIR"], "/home/u/.claude-hydra");
+        assert_eq!(
+            env["AGENTIUM_SESSION"],
+            agentium_core::wordid::session_ref(sid),
+            "the identity still beats the profile"
+        );
+        assert_eq!(env["AGENTIUM_SESSION_ID"], sid);
+        assert_eq!(env.len(), 6);
+    }
+
+    /// A profile with no `config_dir` shares the user's `~/.claude`: no
+    /// `CLAUDE_CONFIG_DIR` is exported for it.
+    #[test]
+    fn session_env_without_config_dir_exports_no_claude_config_dir() {
+        let profile = agentium_core::config::BackendProfile::new("hydra", "Hydra");
+        let env = session_env(None, &BTreeMap::new(), Some(&profile));
+        assert!(env.is_empty(), "env: {:?}", env.keys().collect::<Vec<_>>());
     }
 
     #[test]

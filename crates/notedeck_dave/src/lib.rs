@@ -2,6 +2,7 @@ mod agent_status;
 mod auto_accept;
 mod avatar;
 pub mod backend;
+mod backend_profiles;
 pub mod card_titles;
 mod child_report;
 pub(crate) mod collapse_state;
@@ -352,6 +353,9 @@ pub struct Dave {
     run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     /// ndb subscription for incoming kind-31991 run-config events (live updates).
     run_config_sub: Option<nostrdb::Subscription>,
+    /// The account's backend profiles (kind-31992), looked up by slug when a
+    /// session that runs under one dispatches a turn.
+    backend_profiles: backend_profiles::BackendProfiles,
     /// ndb subscription for remote sessions' kind-31990 inspector snapshots.
     inspector_snapshot_sub: Option<nostrdb::Subscription>,
     /// When the wake scheduled for a snapshot held back by its interval
@@ -597,6 +601,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             run_configs: HashMap::new(),
             pending_reap: Vec::new(),
             run_config_sub: None,
+            backend_profiles: Default::default(),
             inspector_snapshot_sub: None,
             snapshot_wake_at: None,
             session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
@@ -1245,6 +1250,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             host,
             tools: self.tools.clone(),
             session_env: &self.settings.session_env,
+            profiles: &self.backend_profiles,
         };
         dispatch_turn(
             session,
@@ -1341,6 +1347,12 @@ impl notedeck::App for Dave {
 
         // Poll for live run-config updates from PNS relay
         self.poll_run_config_events(ctx.ndb);
+
+        // And for backend profile revisions, which every host of the account
+        // shares.
+        if let Some(state) = &self.pns_local_state {
+            self.backend_profiles.poll(ctx.ndb, &state.account);
+        }
 
         // Fold remote sessions' inspector snapshots into their Details tab
         self.poll_inspector_snapshots(&host);
