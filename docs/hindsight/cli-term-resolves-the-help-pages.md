@@ -7,3 +7,4 @@ headway, agentium and nd each fold `help [cmd]` and `help options` in their own
 - headway:notedeck/balcony-warm-action — nd's parser re-derived `help`/`help options`/`<cmd> --help` and which flags take a value, a third copy
 - headway:cashflow/love-round-vendor — cashflow_cli's args.rs is a fourth copy of nd's parse loop (`help`/`help options`/`<cmd> --help`, globals before and after the command) with its tests copied too
 - headway:cashflow/afford-nuclear-grass — ~5 min: a fifth copy, plus nd's `takes_value` and a `Flags` store (last value, repeated values, refuse-per-subcommand) on top, since cli_term checks flag names but never reads a value
+- headway:dave/gas-child-solar — ~5 min: `profile set`'s six flags became six arms in agentium's one-bag loop plus a `ProfileEdit` threaded to the parser, and `--model` had to feed both spawn's last-value and profile's repeated list; a shared `Flags` store would have read both

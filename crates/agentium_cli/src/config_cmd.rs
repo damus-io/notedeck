@@ -227,7 +227,7 @@ pub(crate) async fn cmd_config(
 /// The `created_at` for a revision replacing one stamped `prev`: now, or one
 /// second past `prev` if the clock hasn't moved beyond it. A same-second
 /// revision would tie, and a tie goes to whichever the fold sees first.
-fn replacing(prev: u64) -> u64 {
+pub(crate) fn replacing(prev: u64) -> u64 {
     now_secs().max(prev + 1)
 }
 

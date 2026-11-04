@@ -18,6 +18,7 @@ mod link;
 mod list;
 mod log;
 mod permission;
+mod profile_cmd;
 mod publish;
 mod resume;
 mod send;
@@ -47,6 +48,7 @@ use link::cmd_link;
 use list::{ListFilters, ListScope, cmd_list};
 use log::{cmd_follow, cmd_log};
 use permission::{Decision, ResponseOpts, cmd_mode, cmd_respond};
+use profile_cmd::{EnvAssign, ProfileAction, ProfileEdit, cmd_profile};
 use resume::cmd_resume;
 use send::cmd_send;
 use show::cmd_show;
@@ -266,6 +268,11 @@ enum Command {
     Config {
         action: ConfigAction,
     },
+    /// List, show, set or remove backend profiles (kind-31992), and set or
+    /// remove their secrets: named env overlays on the Claude backend.
+    Profile {
+        action: ProfileAction,
+    },
     /// Print the `agentium:` ref for each given kind-31988 d-tag. Pure
     /// computation — no key, cache or relay — so a script that already holds a
     /// session's d-tag (say, from `ndb query --kind 31988`) gets its sayable ref
@@ -301,6 +308,7 @@ impl Command {
             // Likewise a live dashboard; a single `--once` frame is a cache read.
             Command::Watch { opts } => !opts.once,
             Command::Config { action } => action.publishes(),
+            Command::Profile { action } => action.publishes(),
             Command::Resume { .. }
             | Command::Send { .. }
             | Command::Spawn { .. }
@@ -315,7 +323,7 @@ impl Command {
 }
 
 async fn run() -> Result<()> {
-    let cli = match Cli::parse(env::args().skip(1))? {
+    let mut cli = match Cli::parse(env::args().skip(1))? {
         Invocation::Run(cli) => *cli,
         Invocation::Usage => {
             help::print_usage(nostrdb_net::relay::sync::DEFAULT_RELAY);
@@ -344,6 +352,12 @@ async fn run() -> Result<()> {
             return Ok(());
         }
         _ => {}
+    }
+
+    // `profile secret set` reads its value from stdin before the engine opens,
+    // so a bad pipe fails fast and a terminal prompt isn't stuck behind a sync.
+    if let Command::Profile { action } = &mut cli.command {
+        action.read_secret()?;
     }
 
     // Unlike a notebook canvas, agentium's sessions are PNS-encrypted to this
@@ -491,6 +505,9 @@ async fn run() -> Result<()> {
                 cwd: filters.cwd,
             };
             cmd_config(&engine, &read_pk, &secret, &action, &filters, cli.json).await?
+        }
+        Command::Profile { action } => {
+            cmd_profile(&engine, &read_pk, &secret, action, cli.json).await?
         }
         Command::Login { .. } | Command::Logout | Command::Id { .. } => {
             unreachable!("handled above")
@@ -646,6 +663,9 @@ impl Cli {
         // `config add`/`edit` fields.
         let mut config_name = None;
         let mut config_command = None;
+        // `profile set` fields. `--model` also feeds `models` (repeatable here,
+        // where `spawn` takes the last one).
+        let mut profile_edit = ProfileEdit::default();
         let mut positionals: Vec<String> = Vec::new();
         // Every flag the run passed, as typed and in order, so the command can
         // be held to the ones it documents once its name is known (the name
@@ -709,7 +729,11 @@ impl Cli {
                 "--permission-mode" => {
                     permission_mode = Some(parse_mode_flag(&value("--permission-mode")?)?)
                 }
-                "--model" => model = Some(parse_model_flag(&value("--model")?)?),
+                "--model" => {
+                    let m = parse_model_flag(&value("--model")?)?;
+                    profile_edit.models.push(m.clone());
+                    model = Some(m);
+                }
                 "--issue-url" => {
                     issue_url = Some(parse_issue_url(&value("--issue-url")?, "--issue-url")?)
                 }
@@ -731,6 +755,11 @@ impl Cli {
                 "--immediate" => immediate = true,
                 "--name" => config_name = Some(value("--name")?),
                 "--command" => config_command = Some(value("--command")?),
+                "--label" => profile_edit.label = Some(value("--label")?),
+                "--default-model" => profile_edit.default_model = Some(value("--default-model")?),
+                "--config-dir" => profile_edit.config_dir = Some(value("--config-dir")?),
+                "--env" => profile_edit.env.push(EnvAssign::parse(&value("--env")?)?),
+                "--unset" => profile_edit.unset.push(value("--unset")?),
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -829,6 +858,12 @@ impl Cli {
         } else if name == "config" {
             Command::Config {
                 action: ConfigAction::parse(rest, config_name, config_command)?,
+            }
+        } else if name == "profile" {
+            // `spawn`'s `--model` shares the flag; it means nothing here
+            // outside `set`, which `ProfileAction::parse` enforces.
+            Command::Profile {
+                action: ProfileAction::parse(rest, profile_edit)?,
             }
         } else if name == "spawn" {
             let relation = match (child, successor) {

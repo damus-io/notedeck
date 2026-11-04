@@ -17,7 +17,7 @@ use cli_term::help::{Cli, CommandHelp, GlobalOption};
 // order [`CLI`] lists them.
 const SESSIONS: &str = "SESSIONS";
 const CONTROL: &str = "CONTROL";
-const CONFIGS: &str = "RUN CONFIGS";
+const CONFIGS: &str = "RUN CONFIGS & PROFILES";
 const KEYS: &str = "KEYS & OFFLINE";
 
 /// The whole help surface: the table plus how the overview frames it.
@@ -518,6 +518,69 @@ it (Dave kills it if it is running). add, edit and rm each emit
             "agentium config",
             "agentium config add --name build --command 'cargo build'",
             "agentium config edit build --command 'cargo build --release'",
+        ],
+    },
+    CommandHelp {
+        name: "profile",
+        group: CONFIGS,
+        summary: "Manage backend profiles (endpoint, models, secrets)",
+        usage: &[
+            "profile [list] [--json]",
+            "profile show <slug> [--json]",
+            "profile set <slug> [--label <l>] [--model <m>]... [--env NAME=VALUE]... [...]",
+            "profile secret set <slug> <NAME>      (the value on stdin)",
+            "profile secret rm <slug> <NAME>",
+            "profile rm <slug>",
+        ],
+        details: "\
+A backend profile is a named env overlay on the Claude backend: the
+endpoint, credentials and models a session runs against. Each is one
+kind-31992 event per slug, PNS-encrypted to your account, so every host
+on it sees the same profiles.
+
+list and show print every var's name, but never a secret's value: a var
+whose name contains TOKEN, KEY, SECRET or PASSWORD shows as ********.
+--json masks the same way (value null).
+
+set creates the profile or changes it: --model (repeatable) replaces the
+model list, --env NAME=VALUE sets a var, and NAME= with no value clears
+it from the session's inherited env. --unset drops a var from the
+profile. --default-model and --config-dir take \"\" to clear. A secret
+var can't go in --env: argv lands in shell history.
+
+secret set reads the value from stdin: one hidden line from a terminal,
+or all of a pipe, trailing newline trimmed. It never appears in argv or
+output. rm deletes the profile.",
+        options: &[
+            (
+                "--label <l>",
+                "set: the name the backend picker shows [default: the slug]",
+            ),
+            (
+                "--model <m>",
+                "set: a model id the picker offers; repeat for several, in order",
+            ),
+            (
+                "--default-model <m>",
+                "set: the model a new session starts on",
+            ),
+            (
+                "--config-dir <path>",
+                "set: exported as CLAUDE_CONFIG_DIR [default: share ~/.claude]",
+            ),
+            (
+                "--env <NAME=VALUE>",
+                "set: set a non-secret var; NAME= clears it",
+            ),
+            ("--unset <NAME>", "set: drop a var from the profile"),
+            ("--no-sync", "list/show: read the local cache as it stands"),
+            JSON,
+        ],
+        examples: &[
+            "agentium profile set hydra --label Hydra --env ANTHROPIC_BASE_URL=https://llm.hydra.host --model glm-5.3-flash --model qwen3.8-flash-next --default-model glm-5.3-flash",
+            "agentium profile set hydra --env ANTHROPIC_API_KEY=    # clear an inherited key",
+            "pass show work/hydra | head -1 | agentium profile secret set hydra ANTHROPIC_AUTH_TOKEN",
+            "agentium profile show hydra",
         ],
     },
     // -- keys & offline ---------------------------------------------------
