@@ -18,12 +18,17 @@ fn agentium_bin() -> PathBuf {
     )
 }
 
-/// A current build lists the `id` command in its no-arg usage (on stderr).
+/// A current build has an `id` command: `agentium id --help` prints that command's
+/// own help page, headed `agentium id —` (on stderr), where a stale sibling that
+/// predates it fails. Matched on that header, not the exit status alone: the
+/// scan also meets `deps/agentium-<hash>`, the unit-test harness, whose libtest
+/// answers `--help` with exit 0. Nor on the no-arg usage, which
+/// `--help fits one screen` reworded once already.
 fn is_current_build(bin: &Path) -> bool {
-    let Ok(out) = Command::new(bin).output() else {
+    let Ok(out) = Command::new(bin).args(["id", "--help"]).output() else {
         return false;
     };
-    String::from_utf8_lossy(&out.stderr).contains("id <d-tag")
+    out.status.success() && String::from_utf8_lossy(&out.stderr).starts_with("agentium id —")
 }
 
 #[test]

@@ -48,14 +48,17 @@ fn agentium_bin() -> PathBuf {
     )
 }
 
-/// A current build has a `profile` command: `agentium profile --help` exits 0,
-/// where a stale sibling that predates it rejects the name. Read from the exit
-/// status, not the help text, so a rewording can't make the probe miss.
+/// A current build has a `profile` command: `agentium profile --help` prints that command's
+/// own help page, headed `agentium profile —` (on stderr), where a stale sibling that
+/// predates it fails. Matched on that header, not the exit status alone: the
+/// scan also meets `deps/agentium-<hash>`, the unit-test harness, whose libtest
+/// answers `--help` with exit 0. Nor on the no-arg usage, which
+/// `--help fits one screen` reworded once already.
 fn is_current_build(bin: &Path) -> bool {
-    Command::new(bin)
-        .args(["profile", "--help"])
-        .output()
-        .is_ok_and(|out| out.status.success())
+    let Ok(out) = Command::new(bin).args(["profile", "--help"]).output() else {
+        return false;
+    };
+    out.status.success() && String::from_utf8_lossy(&out.stderr).starts_with("agentium profile —")
 }
 
 /// A real relay, the CLI's cache dir, and a same-key verifier engine.

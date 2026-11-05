@@ -46,17 +46,20 @@ fn agentium_bin() -> PathBuf {
     )
 }
 
-/// A current build lists both the `spawn` command and its `--wait` flag in its
-/// no-arg usage; a stale sibling that predates either lists neither, which is how
-/// we tell a freshly-built `agentium` from a leftover one. (No-arg usage goes to
-/// stderr, so scan both streams.)
+/// A current build has `spawn --wait`: `agentium spawn --wait --help` prints that command's
+/// own help page, headed `agentium spawn —` (on stderr), where a stale sibling that
+/// predates it fails. Matched on that header, not the exit status alone: the
+/// scan also meets `deps/agentium-<hash>`, the unit-test harness, whose libtest
+/// answers `--help` with exit 0. Nor on the no-arg usage, which
+/// `--help fits one screen` reworded once already.
 fn is_current_build(bin: &Path) -> bool {
-    let Ok(out) = Command::new(bin).output() else {
+    let Ok(out) = Command::new(bin)
+        .args(["spawn", "--wait", "--help"])
+        .output()
+    else {
         return false;
     };
-    let mut usage = String::from_utf8_lossy(&out.stdout).into_owned();
-    usage.push_str(&String::from_utf8_lossy(&out.stderr));
-    usage.contains("spawn") && usage.contains("--wait")
+    out.status.success() && String::from_utf8_lossy(&out.stderr).starts_with("agentium spawn —")
 }
 
 /// `[7u8; 32]` as an nsec — the identity the CLI signs/decrypts as, and the same

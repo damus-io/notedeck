@@ -39,15 +39,17 @@ fn agentium_bin() -> PathBuf {
     )
 }
 
-/// A current build lists the `link` command in its no-arg usage; a stale
-/// sibling that predates it doesn't. (No-arg usage goes to stderr.)
+/// A current build has the `unlink` command: `agentium unlink --help` prints that command's
+/// own help page, headed `agentium unlink —` (on stderr), where a stale sibling that
+/// predates it fails. Matched on that header, not the exit status alone: the
+/// scan also meets `deps/agentium-<hash>`, the unit-test harness, whose libtest
+/// answers `--help` with exit 0. Nor on the no-arg usage, which
+/// `--help fits one screen` reworded once already.
 fn is_current_build(bin: &Path) -> bool {
-    let Ok(out) = Command::new(bin).output() else {
+    let Ok(out) = Command::new(bin).args(["unlink", "--help"]).output() else {
         return false;
     };
-    let mut usage = String::from_utf8_lossy(&out.stdout).into_owned();
-    usage.push_str(&String::from_utf8_lossy(&out.stderr));
-    usage.contains("unlink <session>")
+    out.status.success() && String::from_utf8_lossy(&out.stderr).starts_with("agentium unlink —")
 }
 
 /// `[7u8; 32]` as an nsec — shared by the CLI and the helper host so their PNS
