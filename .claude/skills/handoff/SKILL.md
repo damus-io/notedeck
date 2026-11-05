@@ -49,19 +49,25 @@ a short TL;DR — not the card's full text.)
 
 `agentium spawn` already defaults `--host`/`--cwd`/`--backend` to *this* session's
 own state (`$AGENTIUM_SESSION`), so a bare spawn starts a sibling in the same
-worktree on the same host — no need to look them up. `--prompt-file -` reads the
-first message from stdin, so a heredoc carries a long, multi-line prompt with
-**zero shell-escaping** (no wrestling with quotes, `$`, or newlines). `--wait`
-blocks (bounded) until the host answers with the new session's kind-31988 state;
-`.session` is its durable `agentium:` ref.
+worktree on the same host — no need to look them up.
+
+**Write the prompt to a file first, with the Write tool**, in your scratchpad
+(e.g. `<scratchpad>/handoff-prompt.md`). Then spawn with `--prompt-file <path>`.
+`--ref` waits (bounded) for the host's answer and prints only the new session's
+`agentium:` ref, so a plain `$(...)` captures it:
 
 ```bash
-ref=$(agentium spawn --successor --title "<title>" --wait --json --prompt-file - <<'EOF' | jq -r .session
-<the self-contained task prompt — as many lines as you like, no escaping>
-EOF
-)
+ref=$(agentium spawn --successor --title "<title>" --prompt-file <scratchpad>/handoff-prompt.md --ref)
 echo "$ref"
 ```
+
+**Never put a heredoc inside `$(...)`**, and never compose the prompt in the
+shell at all. macOS's `/bin/bash` is 3.2, which finds the end of a `$(...)` by
+matching parens and doesn't skip heredoc bodies, quoted delimiter or not. The
+first stray `)` in the prompt (a `1)` list item) or apostrophe (`don't`) ends the
+substitution. The new session gets the prompt cut there, and the rest of the
+prompt runs as shell: backticked commands in it really execute. A file read by
+`agentium` is never parsed by the shell.
 
 When the task is a headway card, `<title>` is its ref and
 `--issue-url headway:<board>/<word-id>` links it too; add
@@ -72,21 +78,38 @@ any code is written.
 names this session as `parent-session` with `relation successor`, which is how
 Dave's list and scene draw the handoff.
 
+## 3. Check the whole prompt arrived
+
+`spawn` prints a receipt on stderr, `prompt: <n> bytes, <m> lines, last line:
+"…"`. Its last line must be your file's last line. Then confirm the session got
+it:
+
+```bash
+agentium log "$ref" --role user -n 1 --no-pager
+```
+
+The message it shows must end with your prompt's last line (the host delivers it
+when the session comes up, so give a fresh session a few seconds). If the end is
+missing, send the missing lines from the file. `$(sed …)` reading a file is safe;
+only a heredoc *inside* `$(...)` is not:
+
+```bash
+agentium send "$ref" "$(sed -n '<first missing line number>,$p' <scratchpad>/handoff-prompt.md)"
+```
+
 That's the whole handoff. Notes:
 
-- Use a **quoted** heredoc delimiter (`<<'EOF'`) so the shell doesn't expand `$`
-  in the prompt body.
 - To hand off into a **different worktree**, add `--cwd /path/to/worktree` (a Dave
   host must be running on the target host to pick up the spawn).
 - If you're **not inside a Dave session** (`$AGENTIUM_SESSION` unset), there's
   nothing to inherit — pass `--host` and `--cwd` explicitly (fall back to
   `hostname` / `pwd`).
-- `--prompt-file <path>` also takes a real file if you'd rather write the prompt
-  to your scratchpad first; it's mutually exclusive with `--prompt`.
-- **Pipe the JSON straight into `jq`.** Don't add `tail -1`, `head -1`, or
-  `read -r` — you don't need them (the output is one line per record), and if you
-  ever hit an older `agentium` that pretty-prints, they turn a *successful* spawn
-  into an empty `$ref`, which looks like a failure and tempts a re-run.
+- `--ref` fails, printing nothing on stdout, when the host doesn't answer in
+  time. The spawn command and its prompt were still published, so run
+  `agentium list` before spawning again; never re-run blind.
+- An `agentium` older than `--ref` rejects it as an unknown flag. Use
+  `--wait --json` piped straight into `jq -r .session` instead (still with
+  `--prompt-file <path>`, still no heredoc).
 
 ## `autowork`: land on the `autowork` branch
 
@@ -148,7 +171,7 @@ already made. `--allow-duplicate` overrides the guard when you genuinely want a
 second session in the same worktree. Treat the guard as a backstop, not a licence
 to retry blindly — check `list` first.
 
-## 3. Report back
+## 4. Report back
 
 Tell the user the new session's ref and how to watch it:
 

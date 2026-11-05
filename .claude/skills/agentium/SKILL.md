@@ -350,15 +350,29 @@ agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky t
 agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
 agentium spawn --permission-mode plan --prompt "design the migration" --wait  # plan first
 agentium spawn --title headway:dave/<word-id> --issue-url headway:dave/<word-id> --wait  # a card's session
-agentium spawn --successor --prompt-file - <<'EOF'   # hand your work on to a fresh session
+agentium spawn --successor --prompt-file <scratchpad>/task.md --ref   # hand your work on; prints just the ref
 agentium spawn --child --prompt "check the build on mbp" --wait   # a helper that reports back to you
-agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
+agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session}
 agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
-agentium spawn --title "Fix the parser" --prompt-file - <<'EOF'   # heredoc a long first message
-Fix the parser so it handles multi-line input.
-See the failing test in crates/tokenator.
-EOF
+ref=$(agentium spawn --title "Fix the parser" --prompt-file <scratchpad>/task.md --ref)   # capture the ref
 ```
+
+**Anything longer than a short one-liner goes in a file.** Write the prompt with
+the Write tool (into your scratchpad), then pass its path to `--prompt-file`.
+Don't compose a prompt in the shell: no heredocs, no `echo`/`printf` pipelines,
+no multi-line `--prompt`. Above all, **never put a heredoc inside `$(...)`**.
+macOS's `/bin/bash` is 3.2, which finds the end of a `$(...)` by matching parens
+and doesn't skip heredoc bodies, quoted delimiter or not. The first stray `)` in
+the prompt (a `1)` list item) or apostrophe ends the substitution, the session
+gets the prompt cut there, and the rest of the prompt runs as shell, backticked
+commands included. A file that `agentium` reads is never parsed by the shell, and
+it stays behind as a record of what the session was told. To capture the ref,
+use `--ref`, so the `$(...)` holds nothing but the one command.
+
+After a spawn with a prompt, check the stderr receipt (`prompt: <n> bytes, <m>
+lines, last line: "…"`) names your file's last line, and that
+`agentium log "$ref" --role user -n 1 --no-pager` shows the message ending with
+it. The `handoff` skill has the recovery for a cut prompt.
 
 Flags:
 
@@ -384,9 +398,15 @@ Flags:
 - `--wait-timeout <secs>` — override the `--wait` bound for this run (flag beats
   `$AGENTIUM_SPAWN_WAIT` beats the 30s default). Handy when a host is known slow
   (bump it) or you want a snappier failure against a host you expect to be up.
+- `--ref` — print only the new session's `agentium:` ref on stdout, so
+  `ref=$(agentium spawn … --ref)` captures it with no `jq`. **Implies `--wait`**.
+  When the host doesn't answer in time it prints nothing on stdout and exits
+  non-zero, naming the `spawn_id`; the command (and any prompt) was still
+  published, so check `list` before spawning again. Exclusive with `--json`.
 - `--prompt <text>` — deliver `<text>` as the session's first `user` message once
-  it's up. **Implies `--wait`** (you can't send to a session that doesn't exist),
-  and also reports the message event id. Equivalent to `spawn --wait` then `send`.
+  it's up. The prompt rides the spawn command and the host delivers it, so it
+  lands even if the wait times out. **Implies `--wait`**, only to report the ref.
+  Keep it for short, plain one-liners; anything else goes in `--prompt-file`.
 - `--permission-mode <mode>` — the permission mode the new session's agent
   **starts in**, instead of the host's default: `default` (aka `manual`) | `plan`
   | `accept_edits` | `auto` | `bypass`. Aliases are normalized, so `acceptEdits`
@@ -422,23 +442,22 @@ Flags:
   `relation`), so `show` prints `parent`/`relation` lines and `list --json`/`show
   --json` carry `parent_session`/`relation`. From a plain shell no parent is
   recorded. `/handoff` and `/autowork` pass `--successor`.
-- `--prompt-file <path>` — the escaping-free alternative to `--prompt`: read the
-  first message from a file, or from stdin when `<path>` is `-`, so a long
-  multi-line prompt can heredoc in with no shell-escaping (the `/handoff` flow
-  uses `--prompt-file -`). It resolves into the same first message as `--prompt`
-  (so it likewise **implies `--wait`** and reports the message event id), trims
-  trailing whitespace (so a heredoc's closing newline doesn't ride along), and is
-  **mutually exclusive** with `--prompt`.
+- `--prompt-file <path>` — the escaping-free alternative to `--prompt`, and the
+  default for any real task prompt: read the first message from a file the Write
+  tool made (see the file rule above). It resolves into the same first message as
+  `--prompt` (so it likewise **implies `--wait`**), trims trailing whitespace, and
+  is **mutually exclusive** with `--prompt`. `-` reads stdin, which is a trap:
+  feeding stdin is how a heredoc creeps back in, so pass a path.
 - `--idempotency-key <k>` / `--allow-duplicate` — duplicate control; see
   **Retrying a spawn is safe** below. You rarely pass either: the key is derived
   for you, and `--allow-duplicate` is only for deliberately starting a second
   session the guard would refuse.
 
 Output: plain, no `--wait` → `spawn command sent to <host> (spawn <id8>…)`; with
-`--wait` → `spawned <agentium:ref> on <host> (spawn <id8>…)`, plus
-`, sent prompt (event <hex8>…)` when `--prompt` seeded a message. `--json` emits
-`{ "spawn_id", "host", "session", "event_id" }` **on one line** — `session` is null
-until `--wait` resolves it, `event_id` present only with `--prompt`. On a `--wait`
+`--wait` → `spawned <agentium:ref> on <host> (spawn <id8>…)`. `--ref` prints the
+bare `agentium:` ref. `--json` emits `{ "spawn_id", "host", "session" }` **on one
+line**; `session` is null until `--wait` resolves it. With a prompt, a receipt line
+goes to **stderr** either way: `prompt: <n> bytes, <m> lines, last line: "…"`. On a `--wait`
 timeout the command was still published, so the session may well exist; the error
 names the `spawn_id`. See **Retrying a spawn is safe** below before re-running.
 
