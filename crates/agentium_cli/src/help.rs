@@ -277,7 +277,11 @@ is refused, naming the session it would have duplicated; the host also
 answers a retried spawn with the session it already made, so re-running
 after a timeout is safe. --allow-duplicate opts out of both.
 
---json emits { spawn_id, host, session } on one line.",
+With a prompt, a stderr line gives its size and last line, so a prompt
+your shell cut short shows up at once.
+
+--json emits { spawn_id, host, session } on one line; --ref prints
+just the session's agentium: ref.",
         options: &[
             (
                 "--host <h>",
@@ -306,6 +310,10 @@ after a timeout is safe. --allow-duplicate opts out of both.
             (
                 "--wait",
                 "Block (bounded) until the host answers with the new session's state, then print its agentium: ref",
+            ),
+            (
+                "--ref",
+                "Print only the new session's agentium: ref on stdout, for `ref=$(agentium spawn … --ref)` with no jq. Implies --wait; fails, printing nothing, when the host doesn't answer in time. Exclusive with --json",
             ),
             (
                 "--wait-timeout <secs>",
@@ -348,7 +356,7 @@ after a timeout is safe. --allow-duplicate opts out of both.
         examples: &[
             "agentium spawn --title 'fix the build' --prompt 'cargo build is red'",
             "agentium spawn --child --prompt 'check the build on mbp' --host mbp --wait",
-            "agentium spawn --title headway:notedeck/x --issue-url headway:notedeck/x --wait --json --prompt-file -",
+            "agentium spawn --title headway:notedeck/x --issue-url headway:notedeck/x --prompt-file /tmp/prompt.md --ref",
         ],
     },
     CommandHelp {

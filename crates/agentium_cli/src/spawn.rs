@@ -106,16 +106,31 @@ pub(crate) struct SpawnOpts {
     /// `$AGENTIUM_SPAWN_WAIT`, else [`SPAWN_WAIT_DEFAULT`]). `None` leaves the
     /// resolution to the env/default; see [`resolve_spawn_wait`].
     pub(crate) wait_timeout: Option<u64>,
+    /// `--ref`: print only the new session's `agentium:` ref on stdout, so a
+    /// caller captures it with `ref=$(agentium spawn … --ref)` and no `jq`.
+    /// Implies `--wait`, since the ref is what it waits for.
+    pub(crate) print_ref: bool,
 }
 
 impl SpawnOpts {
-    /// Whether the spawn should wait for the host's answer: the explicit `--wait`,
-    /// or implicitly whenever `--prompt` is set. `--prompt` no longer *needs* the
+    /// Whether the spawn should wait for the host's answer: the explicit `--wait`
+    /// or `--ref`, or implicitly whenever `--prompt` is set. `--prompt` no longer *needs* the
     /// wait for delivery (the host delivers it off the command), but implying it
     /// means the common prompted spawn still reports the resolved `agentium:` ref
     /// when the host answers promptly.
     fn effective_wait(&self) -> bool {
-        self.wait || self.prompt.is_some()
+        self.wait || self.print_ref || self.prompt.is_some()
+    }
+
+    /// How [`emit_spawn`] reports the result: `--ref`, else `--json`, else text.
+    fn output(&self, as_json: bool) -> SpawnOutput {
+        if self.print_ref {
+            return SpawnOutput::Ref;
+        }
+        if as_json {
+            return SpawnOutput::Json;
+        }
+        SpawnOutput::Text
     }
 }
 
@@ -367,6 +382,7 @@ pub(crate) async fn cmd_spawn(
     use agentium_core::session_loader::load_session_states_for_author;
 
     let target = resolve_spawn_target(engine, author, opts)?;
+    let output = opts.output(as_json);
 
     // Refuse an obvious retry *before* publishing anything. Cheaper and clearer
     // than letting the host dedupe it — the caller gets the existing ref instead
@@ -435,9 +451,16 @@ pub(crate) async fn cmd_spawn(
 
     flush_publish(engine).await;
 
+    // Say what prompt rode the command, on stderr so stdout stays scriptable.
+    // A prompt the caller's shell cut short (a heredoc inside `$(...)` on bash
+    // 3.2 ends at the first stray `)`) shows up here as the wrong last line.
+    if let Some(prompt) = opts.prompt.as_deref() {
+        eprintln!("{}", prompt_receipt(prompt));
+    }
+
     // No `--wait`: only the spawn_id is known — report it and return.
     let Some(watch) = watch.as_mut() else {
-        emit_spawn(&target.host, &spawn_id, None, as_json)?;
+        emit_spawn(&target.host, &spawn_id, None, output)?;
         return Ok(());
     };
 
@@ -505,7 +528,7 @@ pub(crate) async fn cmd_spawn(
         Ok(Ok(None)) | Err(_) => {
             let short = short_id(&spawn_id);
             if opts.prompt.is_some() {
-                emit_spawn(&target.host, &spawn_id, None, as_json)?;
+                emit_spawn(&target.host, &spawn_id, None, output)?;
                 return Ok(());
             }
             return Err(format!(
@@ -520,8 +543,42 @@ pub(crate) async fn cmd_spawn(
     };
 
     let uri = state.agentium_uri();
-    emit_spawn(&target.host, &spawn_id, Some(&uri), as_json)?;
+    emit_spawn(&target.host, &spawn_id, Some(&uri), output)?;
     Ok(())
+}
+
+/// How a spawn's result is printed: the one-line text report, the `--json`
+/// object, or `--ref`'s bare `agentium:` ref.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpawnOutput {
+    Text,
+    Json,
+    Ref,
+}
+
+/// The longest stretch of a prompt's last line [`prompt_receipt`] quotes.
+const RECEIPT_LAST_LINE_CHARS: usize = 80;
+
+/// The one-line receipt for a delivered prompt: its size and its last line,
+/// e.g. `prompt: 1834 bytes, 22 lines, last line: "Previous iteration: …"`.
+/// The caller compares the last line with the one they wrote; a mismatch means
+/// their shell delivered only part of it. A last line longer than
+/// [`RECEIPT_LAST_LINE_CHARS`] keeps its *end*, since the end is what a cut
+/// loses. Pure so the wording is unit-testable.
+fn prompt_receipt(prompt: &str) -> String {
+    let lines = prompt.lines().count();
+    let last = prompt.lines().last().unwrap_or_default();
+    let chars = last.chars().count();
+    let tail = if chars > RECEIPT_LAST_LINE_CHARS {
+        let skip = chars - RECEIPT_LAST_LINE_CHARS;
+        format!("…{}", last.chars().skip(skip).collect::<String>())
+    } else {
+        last.to_string()
+    };
+    format!(
+        "prompt: {} bytes, {lines} lines, last line: {tail:?}",
+        prompt.len()
+    )
 }
 
 /// A short (8-char) prefix of an id, for the scannable one-line spawn report.
@@ -541,12 +598,32 @@ fn spawn_json(host: &str, spawn_id: &str, session: Option<&str>) -> serde_json::
 
 /// Report a spawn's result. Plain text mirrors [`cmd_send`](crate::send::cmd_send)'s style; `--json`
 /// emits `{ spawn_id, host, session }` — `session` is the sayable `agentium:` ref,
-/// `null` until `--wait` resolves it. Any `--prompt` is delivered by the host off
-/// the spawn command, so it is not reported here.
-fn emit_spawn(host: &str, spawn_id: &str, session: Option<&str>, as_json: bool) -> Result<()> {
-    if as_json {
+/// `null` until `--wait` resolves it. `--ref` prints the ref alone; with no ref
+/// (a slow host outlasted the wait) it prints nothing on stdout and fails, so
+/// `ref=$(…)` never silently captures a `spawn_id`. Any `--prompt` is delivered
+/// by the host off the spawn command, so it is not reported here.
+fn emit_spawn(
+    host: &str,
+    spawn_id: &str,
+    session: Option<&str>,
+    output: SpawnOutput,
+) -> Result<()> {
+    if output == SpawnOutput::Json {
         let obj = spawn_json(host, spawn_id, session);
         println!("{}", json_line(&obj)?);
+        return Ok(());
+    }
+    if output == SpawnOutput::Ref {
+        let Some(uri) = session else {
+            return Err(format!(
+                "no host answered on {host} in time, so there is no ref to print (spawn {}…). \
+                 The command was published and any prompt rides it, so check `agentium list` \
+                 before spawning again",
+                short_id(spawn_id),
+            )
+            .into());
+        };
+        println!("{uri}");
         return Ok(());
     }
 
@@ -580,6 +657,7 @@ mod tests {
             allow_duplicate: false,
             wait: false,
             wait_timeout: None,
+            print_ref: false,
         }
     }
 
@@ -737,6 +815,55 @@ mod tests {
         opts.wait = false;
         opts.prompt = Some("hi".into());
         assert!(opts.effective_wait());
+    }
+
+    /// `--ref` waits (the ref is what it waits for) and wins the output over
+    /// `--json`; without it `--json` picks JSON and nothing picks text.
+    #[test]
+    fn ref_implies_wait_and_picks_the_output() {
+        let mut opts = spawn_opts(Some("h"), Some("/c"), None);
+        assert_eq!(opts.output(false), SpawnOutput::Text);
+        assert_eq!(opts.output(true), SpawnOutput::Json);
+        opts.print_ref = true;
+        assert!(opts.effective_wait());
+        assert_eq!(opts.output(false), SpawnOutput::Ref);
+    }
+
+    /// `--ref` with no resolved ref fails rather than printing a `spawn_id`
+    /// (or nothing) that a `ref=$(…)` capture would take for a ref.
+    #[test]
+    fn ref_output_without_a_ref_is_an_error() {
+        let err = emit_spawn("mac", "spawn-123456789", None, SpawnOutput::Ref)
+            .expect_err("no ref to print");
+        let msg = err.to_string();
+        assert!(msg.contains("spawn spawn-12"), "{msg}");
+        assert!(msg.contains("agentium list"), "{msg}");
+    }
+
+    /// The receipt names the prompt's size and quotes its last line, so a prompt
+    /// cut short by the caller's shell is visible at a glance.
+    #[test]
+    fn prompt_receipt_quotes_the_last_line() {
+        assert_eq!(
+            prompt_receipt("Read the card.\nlast line"),
+            r#"prompt: 24 bytes, 2 lines, last line: "last line""#
+        );
+        // A cut prompt (bash 3.2 ended it at the first stray `)`) reports the
+        // line it was cut on, not the one the caller wrote last.
+        assert_eq!(
+            prompt_receipt("Steps: 1"),
+            r#"prompt: 8 bytes, 1 lines, last line: "Steps: 1""#
+        );
+    }
+
+    /// A long last line keeps its end, where a cut would show.
+    #[test]
+    fn prompt_receipt_keeps_the_end_of_a_long_last_line() {
+        let line = format!("{}END", "x".repeat(200));
+        let receipt = prompt_receipt(&line);
+        assert!(receipt.ends_with(r#"xxEND""#), "{receipt}");
+        assert!(receipt.contains("\"…x"), "{receipt}");
+        assert!(receipt.contains("203 bytes"), "{receipt}");
     }
 
     /// An unresolvable `$AGENTIUM_SESSION` still targets this machine, so a bare

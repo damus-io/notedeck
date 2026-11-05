@@ -236,6 +236,10 @@ enum Command {
         allow_duplicate: bool,
         wait: bool,
         wait_timeout: Option<u64>,
+        /// `--ref`: print only the new session's `agentium:` ref on stdout
+        /// (implies `--wait`), so a script captures it with a plain `$(...)`
+        /// and no `jq`. Already checked not to be combined with `--json`.
+        print_ref: bool,
     },
     /// Abort a session's in-flight turn on its host — the CLI companion to
     /// pressing Esc in Dave. The selector is required (a specific live session to
@@ -475,6 +479,7 @@ async fn run() -> Result<()> {
             allow_duplicate,
             wait,
             wait_timeout,
+            print_ref,
         } => {
             let opts = SpawnOpts {
                 host,
@@ -491,6 +496,7 @@ async fn run() -> Result<()> {
                 allow_duplicate,
                 wait,
                 wait_timeout,
+                print_ref,
             };
             cmd_spawn(&engine, &read_pk, &opts, cli.json).await?
         }
@@ -659,6 +665,8 @@ impl Cli {
         let mut allow_duplicate = false;
         let mut wait = false;
         let mut wait_timeout = None;
+        // `spawn --ref`: print the bare `agentium:` ref and nothing else.
+        let mut print_ref = false;
         // `approve`/`deny` flags: which pending request, the reply text, and
         // (deny only) whether to stop the turn too.
         let mut request = None;
@@ -753,6 +761,7 @@ impl Cli {
                 "--idempotency-key" => idempotency_key = Some(value("--idempotency-key")?),
                 "--allow-duplicate" => allow_duplicate = true,
                 "--wait" => wait = true,
+                "--ref" => print_ref = true,
                 "--wait-timeout" => {
                     wait_timeout = Some(
                         value("--wait-timeout")?
@@ -887,6 +896,9 @@ impl Cli {
                 (false, true) => SessionRelation::Successor,
                 (false, false) => SessionRelation::None,
             };
+            if print_ref && json {
+                return Err("--ref and --json both pick the output: pass one".into());
+            }
             Command::Spawn {
                 host: host.clone(),
                 cwd: cwd.clone(),
@@ -902,6 +914,7 @@ impl Cli {
                 allow_duplicate,
                 wait,
                 wait_timeout,
+                print_ref,
             }
         } else if name == "send" {
             Command::Send {
@@ -2199,6 +2212,22 @@ mod tests {
             Ok(_) => panic!("--wait-timeout should reject a non-integer"),
         };
         assert!(err.to_string().contains("--wait-timeout"), "{err}");
+    }
+
+    #[test]
+    fn spawn_ref_parses_and_excludes_json() {
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "spawn", "--ref"])
+            .unwrap()
+            .unwrap();
+        match cli.command {
+            Command::Spawn { print_ref, .. } => assert!(print_ref),
+            _ => panic!("expected Spawn"),
+        }
+        let err = match parse_cli(&["--nsec", TEST_NSEC, "spawn", "--ref", "--json"]) {
+            Err(e) => e,
+            Ok(_) => panic!("--ref and --json should conflict"),
+        };
+        assert!(err.to_string().contains("--ref"), "{err}");
     }
 
     #[test]

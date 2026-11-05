@@ -46,15 +46,15 @@ fn agentium_bin() -> PathBuf {
     )
 }
 
-/// A current build has `spawn --wait`: `agentium spawn --wait --help` prints that command's
-/// own help page, headed `agentium spawn —` (on stderr), where a stale sibling that
+/// A current build has `spawn --ref`: `agentium spawn --ref --help` prints that
+/// command's own help page, headed `agentium spawn —` (on stderr), where a stale sibling that
 /// predates it fails. Matched on that header, not the exit status alone: the
 /// scan also meets `deps/agentium-<hash>`, the unit-test harness, whose libtest
 /// answers `--help` with exit 0. Nor on the no-arg usage, which
 /// `--help fits one screen` reworded once already.
 fn is_current_build(bin: &Path) -> bool {
     let Ok(out) = Command::new(bin)
-        .args(["spawn", "--wait", "--help"])
+        .args(["spawn", "--ref", "--help"])
         .output()
     else {
         return false;
@@ -302,6 +302,112 @@ async fn spawn_wait_resolves_and_prompt_lands() {
                 .lines()
                 .any(|l| l.contains("relation") && l.contains("successor")),
         "show should print the session's lineage:\n{shown_out}"
+    );
+
+    relay.shutdown();
+}
+
+/// The prompt file every shell-hostile character the handoff skill used to
+/// trip on: a stray `)`, an apostrophe, backticks and `$`. On macOS's bash 3.2 a
+/// heredoc of this inside `$(...)` is cut at the `1)` and the backticks run.
+const HOSTILE_PROMPT: &str = "Steps: 1) read the card (it has the plan)\n\
+Don't switch branches; run `echo nope` with $HOME unset.\n\
+last line";
+
+/// `spawn --ref --prompt-file` is the skills' one spawn shape: stdout is the bare
+/// `agentium:` ref and nothing else (so `ref=$(…)` captures it with no `jq`),
+/// the whole file rides the command, and the stderr receipt quotes its last
+/// line so a cut prompt would show.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spawn_ref_prints_only_the_ref_and_the_whole_prompt_rides() {
+    let relay_dir = TempDir::new().expect("relay tmp");
+    let relay_ndb =
+        Ndb::new(relay_dir.path().to_str().expect("path"), &test_config()).expect("relay ndb");
+    let relay = nostrdb_net::relay::server::spawn(relay_ndb, "127.0.0.1:0".parse().expect("addr"))
+        .expect("spawn relay");
+    let url = relay.url();
+
+    let host_dir = TempDir::new().expect("host tmp");
+    let mut host =
+        Engine::open(host_dir.path().to_str().expect("path"), SECKEY).expect("host engine");
+    host.connect(&url).expect("host connect");
+
+    let cli_dir = TempDir::new().expect("cli tmp");
+    let db_path = cli_dir.path().to_str().expect("path").to_string();
+    let home = cli_dir.path().to_path_buf();
+    let prompt_path = cli_dir.path().join("prompt.md");
+    std::fs::write(&prompt_path, format!("{HOSTILE_PROMPT}\n")).expect("write prompt");
+    let bin = agentium_bin();
+
+    let cli = tokio::task::spawn_blocking(move || {
+        Command::new(&bin)
+            .args([
+                "--nsec",
+                NSEC,
+                "--db",
+                &db_path,
+                "--relay",
+                &url,
+                "spawn",
+                "--host",
+                HOST,
+                "--cwd",
+                CWD,
+                "--prompt-file",
+                prompt_path.to_str().expect("path"),
+                "--ref",
+            ])
+            .env_remove("AGENTIUM_SESSION")
+            .env("XDG_DATA_HOME", &home)
+            .env("HOME", &home)
+            .output()
+            .expect("run agentium spawn --ref")
+    });
+
+    let command = await_spawn_command(&host)
+        .await
+        .expect("host should see the spawn command");
+    let state = build_session_state_event(
+        &agentium_core::session_loader::SessionState {
+            claude_session_id: SPAWNED_SID.to_string(),
+            title: "Connecting...".into(),
+            cwd: CWD.to_string(),
+            status: "working".into(),
+            hostname: HOST.to_string(),
+            home_dir: "/home/u".into(),
+            backend: Some("claude".into()),
+            cli_session_id: Some("".into()),
+            spawn_id: Some(command.spawn_id.clone()),
+            created_at: 1_770_000_000,
+            ..Default::default()
+        },
+        &SECKEY,
+    )
+    .expect("build state");
+    host.publish_event(&state).expect("publish state");
+    let _ = tokio::time::timeout(Duration::from_secs(5), host.wait_for_sync()).await;
+
+    let out = cli.await.expect("join cli");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "nonzero exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status
+    );
+    let ref_line = stdout.strip_suffix('\n').unwrap_or(&stdout);
+    assert!(
+        ref_line.starts_with("agentium:") && !ref_line.contains([' ', '\n']),
+        "--ref should print the bare ref and nothing else: {stdout:?}"
+    );
+    assert_eq!(
+        command.prompt.as_deref(),
+        Some(HOSTILE_PROMPT),
+        "the whole file, trailing newline trimmed, should ride the command"
+    );
+    assert!(
+        stderr.contains(r#"3 lines, last line: "last line""#),
+        "the receipt should quote the prompt's last line:\n{stderr}"
     );
 
     relay.shutdown();
