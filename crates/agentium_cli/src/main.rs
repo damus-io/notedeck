@@ -870,10 +870,7 @@ impl Cli {
             }
         } else if name == "watch" {
             Command::Watch {
-                opts: WatchOpts {
-                    once,
-                    color: view.color,
-                },
+                opts: WatchOpts::new(once, view.color, view.jsonl)?,
             }
         } else if name == "config" {
             Command::Config {
@@ -1276,6 +1273,20 @@ mod tests {
             .expect("parses")
             .expect("a command");
         assert!(cli.sync);
+    }
+
+    #[test]
+    fn watch_jsonl_streams_and_refuses_once() {
+        match parse_cli(&["--nsec", TEST_NSEC, "watch", "--jsonl"])
+            .expect("parses")
+            .expect("a command")
+            .command
+        {
+            Command::Watch { opts } => assert!(opts.jsonl && !opts.once),
+            _ => panic!("expected watch"),
+        }
+        let err = parse_err(&["--nsec", TEST_NSEC, "watch", "--jsonl", "--once"]);
+        assert!(err.contains("--once and --jsonl"), "{err}");
     }
 
     #[test]

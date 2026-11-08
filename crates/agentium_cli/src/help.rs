@@ -116,7 +116,7 @@ passed. --json emits the raw session set.",
         name: "watch",
         group: SESSIONS,
         summary: "Live dashboard of every session, waiting-on-you first",
-        usage: &["watch [<filters>] [--once] [--color <when>]"],
+        usage: &["watch [<filters>] [--once | --jsonl] [--color <when>]"],
         details: "\
 One row per session: status, title, host, cwd, backend, mode and last
 activity (which counts streamed messages, not just status changes),
@@ -125,7 +125,13 @@ Ctrl-C; into a pipe, prints each changed frame. Lines clip to $COLUMNS,
 else the terminal width; piped frames are never clipped.
 
 Takes the same <filters> as `list`. --once prints one frame and exits,
-and is the only form --no-sync allows.",
+and is the only form --no-sync allows.
+
+--jsonl prints no dashboard: one JSON object per line for each session
+whose status changes while it runs, {from, to, last_activity, session},
+`session` being the `list --json` shape. Statuses at start are the
+baseline and print nothing; a session first seen mid-run has a null
+`from`.",
         options: &[
             HOST,
             STATUS,
@@ -134,10 +140,18 @@ and is the only form --no-sync allows.",
             DELETED,
             ALL,
             ("--once", "Print one frame and exit instead of following"),
+            (
+                "--jsonl",
+                "Print a JSON line per status change, no dashboard",
+            ),
             COLOR,
             NO_SYNC,
         ],
-        examples: &["agentium watch", "agentium watch --host mbp --once"],
+        examples: &[
+            "agentium watch",
+            "agentium watch --host mbp --once",
+            "agentium watch --jsonl | jq -c 'select(.to == \"done\")'",
+        ],
     },
     CommandHelp {
         name: "show",
