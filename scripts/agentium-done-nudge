@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# agentium-done-nudge: post a macOS notification (via nudge) whenever a Dave
+# session moves to done, and open the session in notedeck when it's clicked.
+#
+#   agentium-done-nudge [<agentium watch filters>...]   watch and notify
+#   agentium-done-nudge install                          add the click action
+#   agentium-done-nudge open                             the click action itself
+#
+# It follows `agentium watch --jsonl`, which prints a line per session whose
+# status changes, and notifies on each change to done from another status
+# (a session first seen already done is skipped). Filters such as --host or
+# --cwd pass through to `agentium watch`; with none it watches every session.
+#
+# The click runs `nd call open agentium:<ref>`. A notification can't carry a
+# command, so the click names the `agentium-open` action, which nudge looks
+# up in ~/.config/nudge/actions.json; `install` adds it there, pointing back
+# at this script's `open`. The ref and nd's path travel as --env values.
+#
+# $AGENTIUM picks the agentium binary (default: the one on PATH), which needs
+# `watch --jsonl`. Needs nd, nudge (with --click) and jq on PATH too.
+set -euo pipefail
+
+action=agentium-open
+actions_file=${XDG_CONFIG_HOME:-$HOME/.config}/nudge/actions.json
+
+die() {
+    echo "agentium-done-nudge: $*" >&2
+    exit 1
+}
+
+# `open`: run by Nudge.app for a click, with launchd's bare environment, so
+# nd comes from the ND the watcher passed rather than PATH.
+cmd_open() {
+    [ -n "${AGENTIUM_REF-}" ] || die "open: no AGENTIUM_REF in the environment"
+    exec "${ND:-nd}" call open "$AGENTIUM_REF"
+}
+
+# `install`: merge the click action into nudge's actions.json, keeping the
+# file's other actions.
+cmd_install() {
+    local self
+    self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+    mkdir -p "$(dirname "$actions_file")"
+    [ -s "$actions_file" ] || echo '{}' >"$actions_file"
+    local tmp
+    tmp=$(mktemp "$actions_file.XXXXXX")
+    jq --arg id "$action" --arg self "$self" \
+        '.[$id] = {label: "Open session", command: [$self, "open"]}' \
+        "$actions_file" >"$tmp"
+    mv "$tmp" "$actions_file"
+    echo "added $action to $actions_file -> $self open"
+}
+
+# One notification for one `watch --jsonl` line that went to done.
+notify() {
+    local line=$1 ref title where
+    ref=$(jq -r '.session.agentium_uri' <<<"$line")
+    title=$(jq -r '.session.custom_title // .session.title' <<<"$line")
+    where=$(jq -r '[(.session.cwd | split("/") | last), .session.hostname] | join(" · ")' <<<"$line")
+    nudge --title "Session done" --subtitle "$title" --message "$where" \
+        --group "$ref" --click "$action" \
+        --env "AGENTIUM_REF=$ref" --env "ND=$nd" ||
+        echo "agentium-done-nudge: nudge failed for $ref" >&2
+}
+
+cmd_watch() {
+    command -v nudge >/dev/null || die "nudge isn't on PATH"
+    command -v jq >/dev/null || die "jq isn't on PATH"
+    nd=$(command -v nd) || die "nd isn't on PATH"
+    jq -e --arg id "$action" 'has($id)' "$actions_file" >/dev/null 2>&1 ||
+        die "no $action action in $actions_file; run: $0 install"
+
+    # Reconnect when the stream ends (a relay restart); Ctrl-C ends both.
+    while true; do
+        "${AGENTIUM:-agentium}" watch --jsonl "$@" |
+            jq -c --unbuffered 'select(.to == "done" and .from != null)' |
+            while IFS= read -r line; do notify "$line"; done
+        echo "agentium-done-nudge: watch ended, restarting in 5s" >&2
+        sleep 5
+    done
+}
+
+case "${1-}" in
+open) cmd_open ;;
+install) cmd_install ;;
+-h | --help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+*) cmd_watch "$@" ;;
+esac
