@@ -16,8 +16,8 @@
 # up in ~/.config/nudge/actions.json; `install` adds it there, pointing back
 # at this script's `open`. The ref and nd's path travel as --env values.
 #
-# Each notification comes from "Notedeck" with the Notedeck app icon as its
-# avatar, made once from the repo's assets/app_icon.icns into ~/Library/Caches.
+# Each notification is titled with the session's title, with the Notedeck
+# app icon as its avatar, made once from the repo's assets/app_icon.icns into ~/Library/Caches.
 # $AGENTIUM_NUDGE_AVATAR names another PNG instead.
 #
 # $AGENTIUM picks the agentium binary (default: the one on PATH), which needs
@@ -82,9 +82,11 @@ notify() {
     ref=$(jq -r '.session.agentium_uri' <<<"$line")
     title=$(jq -r '.session.custom_title // .session.title' <<<"$line")
     where=$(jq -r '[(.session.cwd | split("/") | last), .session.hostname] | join(" · ")' <<<"$line")
-    nudge --title "Session done" --subtitle "$title" --message "$where" \
+    # With an avatar macOS shows only the sender and the body, so the session
+    # title is the sender (nudge's default: the title) and "Done" leads the body.
+    nudge --title "$title" --message "Done · $where" \
         --group "$ref" --click "$action" \
-        ${avatar:+--avatar "$avatar" --sender Notedeck} \
+        ${avatar:+--avatar "$avatar"} \
         --env "AGENTIUM_REF=$ref" --env "ND=$nd" ||
         echo "agentium-done-nudge: nudge failed for $ref" >&2
 }
