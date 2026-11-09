@@ -47,7 +47,7 @@ pub(crate) const RENAME_AGENT: &str = "dave_rename_agent";
 pub(crate) const DELETE_SESSION: &str = "dave_delete_session";
 /// `v`: flip between the scene and the classic view.
 pub(crate) const TOGGLE_VIEW: &str = "dave_toggle_view";
-/// `m m` / `m p` / `m e` / `m a`: set the permission mode.
+/// `m m` / `m p` / `m e` / `m a` / `m d`: set the permission mode.
 pub(crate) const SET_PERMISSION_MODE: &str = "dave_set_permission_mode";
 /// `e`: compose the message in an external editor.
 pub(crate) const EXTERNAL_EDITOR: &str = "dave_external_editor";
@@ -237,8 +237,9 @@ enum Tab {
 /// The values of [`Tab`].
 const TABS: &[&str] = &["chat", "details"];
 
-/// The permission mode `dave_set_permission_mode` sets. Bypass isn't one:
-/// Dave can't enter it mid-session, and it does no safety checking.
+/// The permission mode `dave_set_permission_mode` sets. The names are
+/// agentium's wire vocabulary for the mode, `manual` aside, which the wire
+/// calls `default`.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 enum ModeArg {
@@ -246,10 +247,13 @@ enum ModeArg {
     Plan,
     AcceptEdits,
     Auto,
+    /// Every tool call runs unasked; only a question or a plan review still
+    /// waits for the user.
+    Bypass,
 }
 
 /// The values of [`ModeArg`].
-const MODES: &[&str] = &["manual", "plan", "accept_edits", "auto"];
+const MODES: &[&str] = &["manual", "plan", "accept_edits", "auto", "bypass"];
 
 /// `dave_block_cursor`'s arguments.
 #[derive(Deserialize)]
@@ -452,8 +456,9 @@ impl DaveUiTool {
             Self::ToggleView => ("Flip between the scene view and the classic view.", vec![]),
             Self::SetPermissionMode => (
                 "Set the active session's permission mode: manual (ask before each tool \
-                 call), plan, accept_edits or auto (Claude Code's safety classifier \
-                 decides). Bypass is never offered.",
+                 call), plan, accept_edits, auto (Claude Code's safety classifier \
+                 decides) or bypass (every tool call runs unasked, with no safety \
+                 checking at all).",
                 vec![enum_arg("mode", MODES, "The mode to set.")],
             ),
             Self::ExternalEditor => (
@@ -563,6 +568,7 @@ impl DaveUiTool {
                     ModeArg::Plan => PermissionMode::Plan,
                     ModeArg::AcceptEdits => PermissionMode::AcceptEdits,
                     ModeArg::Auto => PermissionMode::Auto,
+                    ModeArg::Bypass => PermissionMode::BypassPermissions,
                 })
             }
             Self::SessionTab => {
@@ -786,6 +792,11 @@ mod tests {
                 SET_PERMISSION_MODE,
                 json!({"mode": "auto"}),
                 A::SetPermissionMode(PermissionMode::Auto),
+            ),
+            (
+                SET_PERMISSION_MODE,
+                json!({"mode": "bypass"}),
+                A::SetPermissionMode(PermissionMode::BypassPermissions),
             ),
             (EXTERNAL_EDITOR, json!({}), A::OpenExternalEditor),
             (OPEN_ISSUE, json!({}), A::OpenIssue),

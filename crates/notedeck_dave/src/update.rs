@@ -238,10 +238,10 @@ pub struct ModeCommandPublish {
     pub mode: &'static str,
 }
 
-/// Apply an explicit permission mode (Manual / Plan / AcceptEdits / Auto) to
-/// the active session.
+/// Apply an explicit permission mode (Manual / Plan / AcceptEdits / Auto /
+/// Bypass) to the active session.
 ///
-/// Shared by the `m` chords (`m m`, `m p`, `m e`, `m a`) and the mode badge's
+/// Shared by the `m` chords (`m m`, `m p`, `m e`, `m a`, `m d`) and the mode badge's
 /// menu. Local sessions apply on the backend and mark state dirty; remote
 /// sessions return a command for the caller to publish to the host.
 pub fn set_permission_mode(

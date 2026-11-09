@@ -462,18 +462,26 @@ impl AgenticSessionData {
         }
     }
 
-    /// Check if a permission request should be auto-accepted this session
-    /// because the tool matches the per-session runtime allowlist (an
-    /// "allow this command for the rest of the session" grant). This is the
-    /// single dave-side checkpoint every backend's permission requests flow
-    /// through, so it is backend-agnostic.
+    /// Check if a permission request should be auto-accepted this session:
+    /// the session is in bypass mode, or the tool matches the per-session
+    /// runtime allowlist (an "allow this command for the rest of the session"
+    /// grant). This is the single dave-side checkpoint every backend's
+    /// permission requests flow through, so it is backend-agnostic.
+    ///
+    /// Bypass is checked here as well as handed to the backend because only
+    /// Claude's CLI has a bypass mode of its own. Codex never hears of it, so
+    /// without this its approvals would keep prompting under a red BYPASS
+    /// badge; and a Claude CLI that refused the switch still runs everything.
     pub fn should_runtime_allow(&self, tool_name: &str, tool_input: &serde_json::Value) -> bool {
         // Decision-type prompts (AskUserQuestion / ExitPlanMode plan review)
         // always need a real user decision — a question set needs a selection
         // and a plan review needs approval, neither is a yes/no tool grant — so
-        // never auto-accept them.
+        // never auto-accept them, not even in bypass.
         if crate::messages::PermissionView::is_decision_tool(tool_name) {
             return false;
+        }
+        if self.permission_mode == PermissionMode::BypassPermissions {
+            return true;
         }
         self.runtime_allows
             .iter()
@@ -2642,6 +2650,25 @@ mod tests {
         assert!(
             !agentic.should_runtime_allow("Bash", &serde_json::json!({ "command": "rm -rf /" }))
         );
+    }
+
+    /// Bypass accepts every tool call with no grant on the allowlist, on any
+    /// backend, but still leaves a question or a plan review to the user.
+    #[test]
+    fn bypass_mode_accepts_every_tool_but_not_decisions() {
+        let mut agentic = AgenticSessionData::new(PathBuf::from("/tmp"));
+        let rm = serde_json::json!({ "command": "rm -rf target" });
+        assert!(!agentic.should_runtime_allow("Bash", &rm));
+
+        agentic.permission_mode = PermissionMode::BypassPermissions;
+        assert!(agentic.should_runtime_allow("Bash", &rm));
+        assert!(agentic.should_runtime_allow("Edit", &serde_json::json!({ "file_path": "/a" })));
+        assert!(!agentic.should_runtime_allow("AskUserQuestion", &serde_json::json!({})));
+        assert!(!agentic.should_runtime_allow("ExitPlanMode", &serde_json::json!({})));
+
+        // Leaving bypass prompts again; it granted nothing that outlives it.
+        agentic.permission_mode = PermissionMode::Auto;
+        assert!(!agentic.should_runtime_allow("Bash", &rm));
     }
 
     /// Revoking a grant makes the next matching request prompt again, and

@@ -1998,9 +1998,9 @@ mod tests {
         assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id(second)));
     }
 
-    /// Through the real key engine, on an agentic session: `m a` sets Auto
-    /// and `m m` Manual, `m` alone changes nothing, and normal mode keeps
-    /// the keyboard throughout.
+    /// Through the real key engine, on an agentic session: `m a` sets Auto,
+    /// `m m` Manual and `m d` Bypass, `m` alone changes nothing, and normal
+    /// mode keeps the keyboard throughout.
     #[test]
     fn m_chords_set_the_active_sessions_permission_mode() {
         let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
@@ -2035,6 +2035,15 @@ mod tests {
         harness.press_key_modifiers(Modifiers::NONE, Key::A);
         harness.run();
         assert_eq!(mode(harness.state()), Some(PermissionMode::Auto));
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::M);
+        harness.press_key_modifiers(Modifiers::NONE, Key::D);
+        harness.run();
+        assert_eq!(
+            mode(harness.state()),
+            Some(PermissionMode::BypassPermissions),
+            "m d is the dangerous mode"
+        );
         assert!(harness.state().normal_mode.is_normal());
         assert_eq!(harness.ctx.memory(|m| m.focused()), None);
     }

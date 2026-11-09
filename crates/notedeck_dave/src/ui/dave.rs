@@ -4114,7 +4114,8 @@ fn usage_bar_ui(fraction: f32, ui: &mut egui::Ui) {
 
 /// The status-bar badge for a permission mode: its label and colour, matching
 /// Claude Code's own (Manual neutral, Plan blue, Accept Edits purple, Auto
-/// yellow). Bypass is never reachable from the UI but is drawn red.
+/// yellow). Bypass is red, the only mode drawn in the error colour, so a
+/// session left in it stands out.
 pub(crate) fn permission_mode_badge(mode: PermissionMode) -> StatusBadge<'static> {
     let (label, variant) = match mode {
         PermissionMode::Default => ("MANUAL", BadgeVariant::Default),
@@ -4193,14 +4194,14 @@ fn toggle_badges_ui(
 
     // Permission mode badge. Either click opens a menu that sets a mode; there
     // is no cycle to step through by accident. In normal mode `m m`, `m p`,
-    // `m e` and `m a` set them by name.
+    // `m e`, `m a` and `m d` set them by name.
     let mode_resp = if permission_mode == PermissionMode::Default {
         quiet_button_ui(ui, "manual", ui.visuals().weak_text_color())
     } else {
         permission_mode_badge(permission_mode).show(ui)
     };
-    let mode_resp =
-        mode_resp.on_hover_text("Permission mode · click to pick (normal mode: mm / mp / me / ma)");
+    let mode_resp = mode_resp
+        .on_hover_text("Permission mode · click to pick (normal mode: mm / mp / me / ma / md)");
     notedeck_ui::context_menu::click_menu(&mode_resp, |ui| {
         ui.label(egui::RichText::new("Permission mode").small().weak());
         if ui.button("Manual").clicked() {
@@ -4224,6 +4225,22 @@ fn toggle_badges_ui(
             .clicked()
         {
             action = Some(DaveAction::SetPermissionMode(PermissionMode::Auto));
+            ui.close();
+        }
+        // Set apart and in the error colour: it does no safety checking.
+        ui.separator();
+        let bypass = egui::RichText::new("⚠ Bypass").color(ui.visuals().error_fg_color);
+        if ui
+            .button(bypass)
+            .on_hover_text(
+                "Run every tool call without asking, with no safety checking at all. \
+                 Only questions and plan reviews still wait for you.",
+            )
+            .clicked()
+        {
+            action = Some(DaveAction::SetPermissionMode(
+                PermissionMode::BypassPermissions,
+            ));
             ui.close();
         }
     });
@@ -4499,6 +4516,31 @@ mod tests {
         );
     }
 
+    /// Bypass is on the menu like the others, and its badge says so.
+    #[test]
+    fn bypass_mode_reachable_via_the_menu_and_shows_its_badge() {
+        let mut harness = badge_harness(PermissionMode::Default);
+        harness.run();
+
+        harness.get_by_label("manual").click_accesskit();
+        harness.run();
+        harness.get_by_label("⚠ Bypass").click_accesskit();
+        harness.run();
+        assert!(
+            matches!(
+                harness.state().action,
+                Some(DaveAction::SetPermissionMode(
+                    PermissionMode::BypassPermissions
+                ))
+            ),
+            "the menu's Bypass item should set bypassPermissions"
+        );
+
+        let mut harness = badge_harness(PermissionMode::BypassPermissions);
+        harness.run();
+        let _ = harness.get_by_label("BYPASS");
+    }
+
     #[test]
     fn auto_mode_shows_auto_badge() {
         // In Auto permission mode the badge reads "AUTO".
@@ -4516,10 +4558,11 @@ mod tests {
             ("Plan", PermissionMode::Plan),
             ("Accept Edits", PermissionMode::AcceptEdits),
             ("Auto", PermissionMode::Auto),
+            ("Bypass", PermissionMode::BypassPermissions),
         ];
         let mut harness = notedeck::test_harness::with_notedeck_style(
             notedeck::test_harness::lenient_builder()
-                .with_size(egui::Vec2::new(360.0, 250.0))
+                .with_size(egui::Vec2::new(360.0, 310.0))
                 .renderer(notedeck::software_renderer())
                 .build_ui(move |ui| {
                     ui.spacing_mut().item_spacing.y = 10.0;

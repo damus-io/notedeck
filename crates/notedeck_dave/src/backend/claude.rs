@@ -1321,11 +1321,22 @@ fn session_base_options(
     options
         .extra_args
         .insert(FORWARD_SUBAGENT_TEXT_FLAG.to_string(), None);
+    // Lets `m d` switch a running CLI into bypassPermissions. Without it the
+    // CLI refuses the switch (`bypass_not_launched`) unless it was started in
+    // that mode. It starts nothing in bypass by itself: the mode is still
+    // whatever the session sets.
+    options
+        .extra_args
+        .insert(ALLOW_BYPASS_FLAG.to_string(), None);
     options
 }
 
 /// The CLI flag that forwards subagent text and thinking blocks.
 const FORWARD_SUBAGENT_TEXT_FLAG: &str = "forward-subagent-text";
+
+/// The CLI flag that lets a running session be switched into
+/// bypassPermissions.
+const ALLOW_BYPASS_FLAG: &str = "allow-dangerously-skip-permissions";
 
 /// Session actor task that owns the session's Claude CLI.
 ///
@@ -3222,6 +3233,24 @@ cat > /dev/null
             options.extra_args.get(FORWARD_SUBAGENT_TEXT_FLAG),
             Some(&None),
             "passed as a bare --forward-subagent-text"
+        );
+    }
+
+    /// Every session's CLI may be switched into bypassPermissions while it
+    /// runs, so `m d` reaches a live CLI and not only the next one.
+    #[test]
+    fn session_cli_allows_a_live_switch_to_bypass() {
+        let can_use_tool: claude_agent_sdk_rs::CanUseToolCallback =
+            Arc::new(|_, _, _| Box::pin(async { unreachable!() }));
+        let options = session_base_options(can_use_tool);
+        assert_eq!(
+            options.extra_args.get(ALLOW_BYPASS_FLAG),
+            Some(&None),
+            "passed as a bare --allow-dangerously-skip-permissions"
+        );
+        assert_eq!(
+            options.permission_mode, None,
+            "the flag alone starts nothing in bypass"
         );
     }
 

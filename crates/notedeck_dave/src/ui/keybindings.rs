@@ -990,7 +990,7 @@ mod tests {
     }
 
     /// `m` then a mode's letter sets that mode by name; `m` alone only
-    /// waits for the letter, and the which-key strip offers the four.
+    /// waits for the letter, and the which-key strip offers the five.
     #[test]
     fn normal_m_chords_set_the_permission_mode_by_name() {
         let m = press(NONE, Key::M);
@@ -999,6 +999,7 @@ mod tests {
             (Key::P, PermissionMode::Plan),
             (Key::E, PermissionMode::AcceptEdits),
             (Key::A, PermissionMode::Auto),
+            (Key::D, PermissionMode::BypassPermissions),
         ] {
             assert_eq!(
                 detect_sequence(&[ESC, m, press(NONE, key)]),
@@ -1035,7 +1036,8 @@ mod tests {
                 ("m", "manual"),
                 ("p", "plan"),
                 ("e", "accept edits"),
-                ("a", "auto")
+                ("a", "auto"),
+                ("d", "bypass (dangerous)")
             ]
         );
     }

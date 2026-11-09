@@ -46,7 +46,7 @@ You can use either mode depending on your needs—simple chat for quick Nostr qu
   - Small edits (2 lines or less by default)
   - Read-only bash commands (grep, ls, cat, find, etc.)
   - Cargo commands (build, check, test, fmt, clippy)
-- **Permission Modes** - Manual, Plan, Accept Edits and Auto, set with normal mode's `m` chords or the mode badge's menu
+- **Permission Modes** - Manual, Plan, Accept Edits, Auto and Bypass, set with normal mode's `m` chords or the mode badge's menu. Bypass runs every tool call unasked (only questions and plan reviews still wait) and shows a red BYPASS badge
 - **Session Resume** - Resume previous Claude Code sessions from filesystem
 - **AskUserQuestion Support** - Answer multi-choice questions from the AI
 
@@ -77,7 +77,7 @@ what can finish a half-typed prefix like `z`.
 | `dd` | Delete the agent |
 | `v` | Toggle scene / list view |
 | `gd` / `gc` | Show the session's Details tab / back to the chat |
-| `mm` / `mp` / `me` / `ma` | Permission mode: Manual / Plan / Accept Edits / Auto |
+| `mm` / `mp` / `me` / `ma` / `md` | Permission mode: Manual / Plan / Accept Edits / Auto / Bypass (dangerous) |
 | `e` | Open the external editor (leaves normal mode) |
 | `s` | Open the issue the session works (e.g. its headway card) |
 | `S` | Stop the running turn (same as the Stop button) |
