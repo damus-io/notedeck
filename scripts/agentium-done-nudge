@@ -16,6 +16,10 @@
 # up in ~/.config/nudge/actions.json; `install` adds it there, pointing back
 # at this script's `open`. The ref and nd's path travel as --env values.
 #
+# Each notification comes from "Notedeck" with the Notedeck app icon as its
+# avatar, made once from the repo's assets/app_icon.icns into ~/Library/Caches.
+# $AGENTIUM_NUDGE_AVATAR names another PNG instead.
+#
 # $AGENTIUM picks the agentium binary (default: the one on PATH), which needs
 # `watch --jsonl`. Needs nd, nudge (with --click) and jq on PATH too.
 set -euo pipefail
@@ -51,6 +55,27 @@ cmd_install() {
     echo "added $action to $actions_file -> $self open"
 }
 
+# The avatar PNG: $AGENTIUM_NUDGE_AVATAR, else the Notedeck app icon, made
+# from the icns once and cached. Empty when neither works, so notifications
+# post with nudge's own icon instead of failing.
+find_avatar() {
+    if [ -n "${AGENTIUM_NUDGE_AVATAR-}" ]; then
+        echo "$AGENTIUM_NUDGE_AVATAR"
+        return
+    fi
+    local icns png
+    icns=$(cd "$(dirname "$0")/.." && pwd)/assets/app_icon.icns
+    png=$HOME/Library/Caches/agentium-done-nudge/notedeck.png
+    if [ ! -s "$png" ]; then
+        mkdir -p "$(dirname "$png")"
+        sips -s format png -Z 256 "$icns" --out "$png" >/dev/null 2>&1 || {
+            echo "agentium-done-nudge: no avatar from $icns; using nudge's icon" >&2
+            return
+        }
+    fi
+    echo "$png"
+}
+
 # One notification for one `watch --jsonl` line that went to done.
 notify() {
     local line=$1 ref title where
@@ -59,6 +84,7 @@ notify() {
     where=$(jq -r '[(.session.cwd | split("/") | last), .session.hostname] | join(" · ")' <<<"$line")
     nudge --title "Session done" --subtitle "$title" --message "$where" \
         --group "$ref" --click "$action" \
+        ${avatar:+--avatar "$avatar" --sender Notedeck} \
         --env "AGENTIUM_REF=$ref" --env "ND=$nd" ||
         echo "agentium-done-nudge: nudge failed for $ref" >&2
 }
@@ -67,6 +93,7 @@ cmd_watch() {
     command -v nudge >/dev/null || die "nudge isn't on PATH"
     command -v jq >/dev/null || die "jq isn't on PATH"
     nd=$(command -v nd) || die "nd isn't on PATH"
+    avatar=$(find_avatar)
     jq -e --arg id "$action" 'has($id)' "$actions_file" >/dev/null 2>&1 ||
         die "no $action action in $actions_file; run: $0 install"
 
@@ -83,6 +110,6 @@ cmd_watch() {
 case "${1-}" in
 open) cmd_open ;;
 install) cmd_install ;;
--h | --help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+-h | --help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
 *) cmd_watch "$@" ;;
 esac
