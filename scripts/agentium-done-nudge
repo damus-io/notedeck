@@ -16,7 +16,8 @@
 # up in ~/.config/nudge/actions.json; `install` adds it there, pointing back
 # at this script's `open`. The ref and nd's path travel as --env values.
 #
-# Each notification is titled with the session's title, with the Notedeck
+# Each notification is titled with the session's title (a headway card ref
+# becomes the card's title, via `nd call headway_show_card`), with the Notedeck
 # app icon as its avatar, made once from the repo's assets/app_icon.icns into ~/Library/Caches.
 # $AGENTIUM_NUDGE_AVATAR names another PNG instead.
 #
@@ -76,11 +77,24 @@ find_avatar() {
     echo "$png"
 }
 
+# A session titled with a headway card ref (headway:<board>/<word-id>) reads
+# as the card's title, asked of the running notedeck; anything else, or a
+# failed lookup, is left as it is.
+card_title() {
+    local title=$1 card
+    [[ $title =~ ^headway:[A-Za-z0-9_-]+/[a-z]+(-[a-z]+)+$ ]] || {
+        echo "$title"
+        return
+    }
+    card=$("$nd" call headway_show_card "$title" 2>/dev/null | jq -r '.title // empty' 2>/dev/null) || card=
+    echo "${card:-$title}"
+}
+
 # One notification for one `watch --jsonl` line that went to done.
 notify() {
     local line=$1 ref title where
     ref=$(jq -r '.session.agentium_uri' <<<"$line")
-    title=$(jq -r '.session.custom_title // .session.title' <<<"$line")
+    title=$(card_title "$(jq -r '.session.custom_title // .session.title' <<<"$line")")
     where=$(jq -r '[(.session.cwd | split("/") | last), .session.hostname] | join(" · ")' <<<"$line")
     # With an avatar macOS shows only the sender and the body, so the session
     # title is the sender (nudge's default: the title) and "Done" leads the body.
@@ -112,6 +126,6 @@ cmd_watch() {
 case "${1-}" in
 open) cmd_open ;;
 install) cmd_install ;;
--h | --help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
+-h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
 *) cmd_watch "$@" ;;
 esac
