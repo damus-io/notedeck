@@ -98,8 +98,11 @@ notify() {
     where=$(jq -r '[(.session.cwd | split("/") | last), .session.hostname] | join(" · ")' <<<"$line")
     # With an avatar macOS shows only the sender and the body, so the session
     # title is the sender (nudge's default: the title) and "Done" leads the body.
+    # --group is per session, so a session done again replaces its last one;
+    # --thread is shared, so they all stack as one in Notification Center
+    # rather than burying other nudge posts.
     nudge --title "$title" --message "Done · $where" \
-        --group "$ref" --click "$action" \
+        --group "$ref" --thread agentium --click "$action" \
         ${avatar:+--avatar "$avatar"} \
         --env "AGENTIUM_REF=$ref" --env "ND=$nd" ||
         echo "agentium-done-nudge: nudge failed for $ref" >&2
