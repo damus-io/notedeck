@@ -1,5 +1,8 @@
 //! The chrome's end of notedeck's socket (see [`notedeck_ipc`]): `nd` lists
-//! the running apps' tools and calls them.
+//! the apps' tools and calls them. Every installed app's data tools are
+//! listed, running or not, and a call to one of a stopped app's starts it
+//! (see [`Chrome::start_tool_owner`]); a UI tool is listed only while its app
+//! runs, unless it [starts the app](ToolSpec::starts_app).
 //!
 //! The chrome owns the socket, not an app, because only the chrome can both
 //! dispatch a tool to the app that owns it and carry out the intent a tool
@@ -155,10 +158,9 @@ fn call_tool(
         Ok(key) => key,
         Err(err) => return Served::Reply(Response::error(err)),
     };
-    #[cfg(feature = "dave")]
-    if name == notedeck_dave::SPAWN_SESSION {
-        return Served::Reply(spawn_session(chrome, ctx, args));
-    }
+    // A stopped app's data tools are listed too, and its app starters; a
+    // call to one starts its app, which updates from this tick on.
+    chrome.start_tool_owner(&ctx.registries.tools, name);
     // A person reads what nd prints, so ask a data tool for its text too.
     let notedeck::Rendered { outcome, text } =
         ctx.call_tool_rendered(name, args, comment_signer.as_ref());
@@ -192,30 +194,6 @@ fn comment_key(signer: &Signer) -> Result<FullKeypair, String> {
              secret key); refusing to sign as the account instead"
                 .to_owned()
         })
-}
-
-/// Serve `nd spawn`'s call of Dave's
-/// [`SPAWN_SESSION`](notedeck_dave::SPAWN_SESSION): start Dave if it isn't
-/// running, then call it. Every other tool must already be running to be
-/// called, but a spawn is how a terminal starts Dave, so this one opens it.
-#[cfg(feature = "dave")]
-fn spawn_session(chrome: &mut Chrome, ctx: &mut AppContext, args: &serde_json::Value) -> Response {
-    let Some(slot) = chrome
-        .apps
-        .iter()
-        .position(|app| matches!(app, crate::app::NotedeckApp::Dave(_)))
-    else {
-        return Response::error("this notedeck runs no Dave");
-    };
-    // The registry only names a running app's tools, and not until the next
-    // frame, so call Dave by its slot.
-    chrome.set_opened(slot);
-    use notedeck::App;
-    match chrome.apps[slot].call_ui_tool(ctx, notedeck_dave::SPAWN_SESSION, args) {
-        ToolOutcome::Data(result) => Response::ok(Reply::Result { result, text: None }),
-        ToolOutcome::Error(err) => Response::error(err),
-        ToolOutcome::Intent(_) => Response::error("Dave answered a spawn with an intent"),
-    }
 }
 
 /// `spec` as `list_tools` lists it.
@@ -333,6 +311,63 @@ mod tests {
         }
     }
 
+    /// [`IdleApp`]'s data tool.
+    const IDLE_ECHO: &str = "test_idle_echo";
+    /// [`IdleApp`]'s UI tool, listed only while it runs.
+    const IDLE_PEEK: &str = "test_idle_peek";
+    /// [`IdleApp`]'s UI tool that [starts it](ToolSpec::starts_app).
+    const IDLE_START: &str = "test_idle_start";
+
+    struct IdleEcho;
+
+    impl AppTool for IdleEcho {
+        type Args = Value;
+        type Output = Value;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new(IDLE_ECHO, "Answers with its args", Vec::new())
+        }
+
+        fn call(&self, _cx: &mut ToolContext, args: Value) -> Result<Value, String> {
+            Ok(args)
+        }
+    }
+
+    /// An app the fixture installs but never opens, with a data tool, a UI
+    /// tool and an app starter.
+    struct IdleApp;
+
+    impl notedeck::App for IdleApp {
+        fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
+            AppResponse::none()
+        }
+
+        fn tools(&self) -> Vec<RegisteredTool> {
+            vec![RegisteredTool::new(IdleEcho)]
+        }
+
+        fn ui_tools(&self) -> Vec<ToolSpec> {
+            vec![
+                ToolSpec::new(IDLE_PEEK, "a test tool", Vec::new()).ui(),
+                ToolSpec::new(IDLE_START, "a test tool", Vec::new())
+                    .ui()
+                    .starts_app(),
+            ]
+        }
+
+        fn call_ui_tool(
+            &mut self,
+            _ctx: &mut AppContext<'_>,
+            name: &str,
+            _args: &Value,
+        ) -> ToolOutcome {
+            ToolOutcome::Data(json!({ "ran": name }))
+        }
+    }
+
+    /// The slot the fixture installs [`IdleApp`] in.
+    const IDLE_SLOT: usize = 1;
+
     struct Fixture {
         _dir: tempfile::TempDir,
         notedeck: Notedeck,
@@ -340,8 +375,9 @@ mod tests {
         calls: Rc<RefCell<Vec<String>>>,
     }
 
-    /// A chrome running only [`ToolApp`], its tools registered. It never
-    /// serves the socket.
+    /// A chrome running only [`ToolApp`], with [`IdleApp`] installed behind
+    /// it and never opened, the tools registered. It never serves the
+    /// socket.
     fn fixture() -> Fixture {
         let dir = tempfile::TempDir::new().expect("tmp dir");
         let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
@@ -349,12 +385,15 @@ mod tests {
         let calls = Rc::default();
         let mut chrome = Chrome::new_headless_with_apps(
             &mut notedeck,
-            [crate::app::NotedeckApp::Other(
-                "test".to_owned(),
-                Box::new(ToolApp {
-                    calls: Rc::clone(&calls),
-                }),
-            )],
+            [
+                crate::app::NotedeckApp::Other(
+                    "test".to_owned(),
+                    Box::new(ToolApp {
+                        calls: Rc::clone(&calls),
+                    }),
+                ),
+                crate::app::NotedeckApp::Other("idle".to_owned(), Box::new(IdleApp)),
+            ],
         );
         let update = notedeck::App::take_tool_update(&mut chrome).expect("running set changed");
         notedeck.apply_tool_update(update);
@@ -387,6 +426,24 @@ mod tests {
             }),
         };
         reply(serve(&mut f.chrome, &mut ctx, request))
+    }
+
+    /// The names `list_tools` answers with.
+    fn listed(f: &mut Fixture) -> Vec<String> {
+        let mut ctx = f.notedeck.app_context();
+        let Outcome::Ok(Reply::Tools { tools }) =
+            reply(serve(&mut f.chrome, &mut ctx, Request::ListTools))
+        else {
+            panic!("expected the tool list");
+        };
+        tools.into_iter().map(|tool| tool.name).collect()
+    }
+
+    /// Apply the registry update the chrome has, as the next frame would.
+    fn next_frame(f: &mut Fixture) {
+        if let Some(update) = notedeck::App::take_tool_update(&mut f.chrome) {
+            f.notedeck.apply_tool_update(update);
+        }
     }
 
     fn reply(served: Served) -> Outcome {
@@ -476,6 +533,68 @@ mod tests {
         assert!(!accepts(ECHO));
     }
 
+    /// An app that isn't running lists its data tool and its app starter,
+    /// not its other UI tools, and the list is rebuilt only when something
+    /// changed.
+    #[tokio::test]
+    async fn a_stopped_app_lists_its_data_tools_and_starters() {
+        let mut f = fixture();
+        assert!(!f.chrome.is_running(IDLE_SLOT));
+        let names = listed(&mut f);
+        assert!(names.iter().any(|n| n == IDLE_ECHO), "{names:?}");
+        assert!(names.iter().any(|n| n == IDLE_START), "{names:?}");
+        assert!(!names.iter().any(|n| n == IDLE_PEEK), "{names:?}");
+        assert!(
+            notedeck::App::take_tool_update(&mut f.chrome).is_none(),
+            "nothing changed, so nothing is rebuilt"
+        );
+    }
+
+    /// A call to a stopped app's data tool starts the app and answers at
+    /// once; from the next frame its UI tools are listed too.
+    #[tokio::test]
+    async fn a_data_tool_call_starts_its_app() {
+        let mut f = fixture();
+        assert_eq!(
+            reply(call(&mut f, IDLE_ECHO, json!({"b": 2}))),
+            Outcome::Ok(Reply::Result {
+                result: json!({"b": 2}),
+                text: None,
+            })
+        );
+        assert!(f.chrome.is_running(IDLE_SLOT), "the call started its app");
+
+        next_frame(&mut f);
+        let names = listed(&mut f);
+        assert!(names.iter().any(|n| n == IDLE_PEEK), "{names:?}");
+    }
+
+    /// A call to a stopped app's app starter starts the app and runs there.
+    #[tokio::test]
+    async fn an_app_starter_starts_its_app_and_runs_there() {
+        let mut f = fixture();
+        assert_eq!(
+            reply(call(&mut f, IDLE_START, Value::Null)),
+            Outcome::Ok(Reply::Result {
+                result: json!({ "ran": IDLE_START }),
+                text: None,
+            })
+        );
+        assert!(f.chrome.is_running(IDLE_SLOT));
+    }
+
+    /// A stopped app's other UI tools aren't there to call, and calling one
+    /// leaves the app stopped.
+    #[tokio::test]
+    async fn a_stopped_apps_ui_tool_is_unknown() {
+        let mut f = fixture();
+        assert!(matches!(
+            reply(call(&mut f, IDLE_PEEK, Value::Null)),
+            Outcome::Error { .. }
+        ));
+        assert!(!f.chrome.is_running(IDLE_SLOT));
+    }
+
     #[tokio::test]
     async fn a_ui_tool_runs_in_its_app_and_answers_with_its_data() {
         let mut f = fixture();
@@ -521,7 +640,8 @@ mod tests {
     }
 
     /// A call of `dave_spawn_session`, as `nd spawn` sends it, starts Dave,
-    /// unopened until now, and opens a session in the directory it names.
+    /// unopened until now, and opens a session in the directory it names:
+    /// the spawn is an [app starter](ToolSpec::starts_app).
     #[cfg(feature = "dave")]
     #[tokio::test]
     async fn spawn_session_starts_dave_and_opens_a_session() {
@@ -535,6 +655,8 @@ mod tests {
             .position(|app| matches!(app, crate::app::NotedeckApp::Dave(_)))
             .expect("dave in the roster");
         assert!(!chrome.is_running(dave), "Dave starts closed");
+        let update = notedeck::App::take_tool_update(&mut chrome).expect("a first registry");
+        notedeck.apply_tool_update(update);
 
         let mut ctx = notedeck.app_context();
         let spawn = |chrome: &mut Chrome, ctx: &mut AppContext, cwd: std::path::PathBuf| {

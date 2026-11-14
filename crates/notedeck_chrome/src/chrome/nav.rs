@@ -706,7 +706,7 @@ impl Chrome {
             opened: [0u16; MAX_APPS / 16],
             app_focus: Default::default(),
             prev_active: 0,
-            tools_snapshot: [0u16; MAX_APPS / 16],
+            tools_snapshot: Default::default(),
             soft_kb_anim_state: Default::default(),
             repaint_causes: Default::default(),
             nav: Default::default(),

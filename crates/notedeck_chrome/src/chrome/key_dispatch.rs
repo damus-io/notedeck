@@ -74,7 +74,10 @@ impl Chrome {
             Some(KeyTarget::Chrome(invocation) | KeyTarget::Ui(invocation)) => {
                 Some(AppAction::CallTool(invocation))
             }
-            Some(KeyTarget::Data(invocation)) => call_data_tool(ctx, &invocation),
+            Some(KeyTarget::Data(invocation)) => {
+                self.start_tool_owner(&ctx.registries.tools, &invocation.name);
+                call_data_tool(ctx, &invocation)
+            }
             Some(KeyTarget::Macro(name)) => return self.start_macro(ctx, name, ui),
         };
         if let Some(action) = action {
@@ -247,6 +250,7 @@ impl Chrome {
         ui: &mut egui::Ui,
     ) -> Result<serde_json::Value, String> {
         let outcome = if is_data_tool(&ctx.registries.tools, &invocation.name) {
+            self.start_tool_owner(&ctx.registries.tools, &invocation.name);
             ctx.call_tool(&invocation.name, &invocation.args)
         } else {
             self.call_ui_tool(ctx, invocation)
@@ -273,8 +277,9 @@ impl Chrome {
         let owner_active = match tools.ui_owner(tool) {
             Some(ToolOwner::App(owner)) => self.active_slot() == Some(owner.slot()),
             Some(ToolOwner::Shell) => true,
-            // A data tool runs here, whichever app is in front; one no
-            // running app has registered yet waits for its app to start.
+            // A data tool runs here, whichever app is in front, and starts
+            // its app if it isn't running; every installed app's is
+            // registered.
             None => is_data_tool(tools, tool),
         };
         Settle {
@@ -296,9 +301,9 @@ impl Chrome {
     }
 
     /// Whether some app has a tool called `name`, running or not, or it is
-    /// the chrome's own. An app that isn't running has no tools in the
-    /// registry yet, so this asks the apps themselves, which allocates: for a
-    /// macro starting and a keymap loading, not for every frame.
+    /// the chrome's own. An app that isn't running has only its data tools
+    /// in the registry, so this asks the apps themselves, which allocates:
+    /// for a macro starting and a keymap loading, not for every frame.
     pub(super) fn tool_known(&self, ctx: &AppContext, name: &str) -> bool {
         self.chrome_tool_available(name).is_some()
             || ctx.registries.tools.contains(name)

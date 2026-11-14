@@ -393,15 +393,20 @@ impl UiToolEntry {
 }
 
 /// A fresh set of app-contributed tools for the host's [`ToolRegistry`], built
-/// by the shell from its running apps (see
+/// by the shell from its apps (see
 /// [`App::take_tool_update`](crate::App::take_tool_update)) and applied with
 /// [`ToolRegistry::reset`].
 #[derive(Default)]
 pub struct ToolUpdate {
-    /// Data tools, from each running app's [`App::tools`](crate::App::tools).
+    /// Data tools, from every installed app's
+    /// [`App::tools`](crate::App::tools), running or not: a caller that
+    /// calls one of a stopped app's has the shell start the app.
     pub tools: Vec<RegisteredTool>,
     /// UI tools, from each running app's
-    /// [`App::ui_tools`](crate::App::ui_tools), tagged with the app's slot.
+    /// [`App::ui_tools`](crate::App::ui_tools), tagged with the app's slot,
+    /// and the [app starters](ToolSpec::starts_app) of the apps that aren't
+    /// running. A UI tool acts on its app's view, which a stopped app hasn't
+    /// got.
     pub ui_tools: Vec<UiToolEntry>,
 }
 
@@ -427,7 +432,7 @@ enum ToolSlot {
 /// A set of app-contributed tools, data and UI, indexed by one shared name
 /// space.
 ///
-/// Rebuilt by the shell from its running apps and exposed read-only on
+/// Rebuilt by the shell from its apps and exposed read-only on
 /// [`AppContext`](crate::AppContext), so a backend can advertise
 /// ([`specs`](Self::specs)) and dispatch ([`call`](Self::call)) app tools
 /// uniformly. Mirrors [`KindRendererRegistry`](crate::KindRendererRegistry).
@@ -468,9 +473,10 @@ impl ToolRegistry {
 
     /// Replace the whole registry with `update`, data tools first, keeping the
     /// duplicate-skipping rules of [`register`](Self::register). The chrome shell
-    /// calls this to re-derive the app-tool set from the currently-running apps
-    /// when that set changes, so a backend only ever sees tools whose app is live
-    /// (and therefore syncing its data).
+    /// calls this to re-derive the app-tool set when the running apps change:
+    /// every installed app's data tools, whose call starts the app if it isn't
+    /// running, and the running apps' UI tools (see
+    /// [`ToolUpdate`]).
     pub fn reset(&mut self, update: ToolUpdate) {
         self.tools.clear();
         self.ui_tools.clear();
@@ -505,6 +511,20 @@ impl ToolRegistry {
             owner: Some(entry.owner),
         });
         data.chain(ui)
+    }
+
+    /// The tool registered as `name`, of either kind, with its owner.
+    pub fn entry(&self, name: &str) -> Option<ToolEntry<'_>> {
+        Some(match *self.by_name.get(name)? {
+            ToolSlot::Data(idx) => ToolEntry {
+                spec: self.tools[idx].spec(),
+                owner: self.tools[idx].owner.map(ToolOwner::App),
+            },
+            ToolSlot::Ui(idx) => ToolEntry {
+                spec: self.ui_tools[idx].spec(),
+                owner: Some(self.ui_tools[idx].owner),
+            },
+        })
     }
 
     /// Whether a tool with `name` is registered, of either kind.

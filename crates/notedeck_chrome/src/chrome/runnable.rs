@@ -1,8 +1,9 @@
 //! What a person can run now, for a command bar: every registered tool that
 //! would do something if called this moment, with its keys.
 //!
-//! The registry ([`notedeck::ToolRegistry`]) lists every running app's tools
-//! and the chrome's own. [`Chrome::runnable_tools`] narrows that to the ones
+//! The registry ([`notedeck::ToolRegistry`]) lists every installed app's data
+//! tools, every running app's UI tools and the chrome's own.
+//! [`Chrome::runnable_tools`] narrows that to the ones
 //! that are available, by the same tests a key binding uses
 //! ([`Chrome::key_tool_available`]), and orders them for listing: the active
 //! app's first, then the chrome's, then the other running apps'.

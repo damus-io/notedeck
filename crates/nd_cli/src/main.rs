@@ -405,8 +405,9 @@ fn send_call(
 const SPAWN_SESSION: &str = "dave_spawn_session";
 
 /// `nd spawn`: open a Dave session in `dir` (the working directory when
-/// absent) and print its id. The chrome starts Dave for this call if it isn't
-/// running, so unlike `nd call` this doesn't look the tool up first.
+/// absent) and print its id. The chrome lists the tool and starts Dave for
+/// the call even while Dave isn't running (the spec's `starts_app`), so this
+/// calls it straight away rather than looking it up first.
 fn spawn(reach: &Reach, json: bool, dir: Option<&str>) -> Result<(), Failure> {
     let cwd = spawn_dir(dir)?;
     let request = Request::CallTool {

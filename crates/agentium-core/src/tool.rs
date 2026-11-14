@@ -282,6 +282,9 @@ pub struct ToolSpec {
     /// Whether a caller's comment key may sign what it writes (see
     /// [`accepts_comment_signer`](ToolSpec::accepts_comment_signer)).
     comment_signer: bool,
+    /// Whether a UI tool is listed, and starts its app when called, while
+    /// its app isn't running (see [`starts_app`](ToolSpec::starts_app)).
+    starts_app: bool,
 }
 
 impl ToolSpec {
@@ -298,6 +301,7 @@ impl ToolSpec {
             read_only: false,
             command: &[],
             comment_signer: false,
+            starts_app: false,
         }
     }
 
@@ -363,6 +367,21 @@ impl ToolSpec {
     /// [`accepts_comment_signer`](Self::accepts_comment_signer)).
     pub fn takes_comment_signer(&self) -> bool {
         self.comment_signer
+    }
+
+    /// List this UI tool while its app isn't running, and start the app
+    /// when it is called: a tool that is how a caller opens the app, like
+    /// Dave's spawn. A UI tool without it exists only while its app runs. A
+    /// data tool needs no flag: every installed app's is listed, and a call
+    /// starts its app.
+    pub fn starts_app(mut self) -> Self {
+        self.starts_app = true;
+        self
+    }
+
+    /// Whether a call starts its app (see [`starts_app`](Self::starts_app)).
+    pub fn is_app_starter(&self) -> bool {
+        self.starts_app
     }
 
     /// Its command line (see [`command`](Self::command)), empty when it has

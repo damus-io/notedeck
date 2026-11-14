@@ -104,6 +104,9 @@ pub(crate) fn spawn_session_spec() -> ToolSpec {
     .ui()
     .titled("Spawn session in directory")
     .filed_under(TOOL_CATEGORY)
+    // A spawn is how a terminal opens Dave (`nd spawn`), so it is listed,
+    // and starts Dave, while Dave isn't running.
+    .starts_app()
 }
 
 /// The `cwd` a [`SPAWN_SESSION`] call names.

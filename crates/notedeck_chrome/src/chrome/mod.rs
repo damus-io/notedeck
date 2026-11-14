@@ -80,12 +80,23 @@ use update::poll_updater;
 use user_keymap::UserKeymap;
 
 /// Upper bound on the number of apps the running-app bitset can track. One bit
-/// per app index; see [`Chrome::tools_snapshot`].
+/// per app index; see [`ToolsSnapshot`].
 const MAX_APPS: usize = 256;
 
 /// What the chrome's own tools are filed under in a command bar
 /// ([`notedeck::ToolSpec::category`]).
 const TOOL_CATEGORY: &str = "Chrome";
+
+/// What the tool registry is built from: which apps run, and how many are
+/// installed. Every installed app lists its data tools, only a running one
+/// its UI tools, so either changing rebuilds it.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct ToolsSnapshot {
+    /// Running-app mask (`all_active || opened[i]`), one bit per app index.
+    running: [u16; MAX_APPS / 16],
+    /// How many apps are installed.
+    apps: usize,
+}
 
 pub struct Chrome {
     active: i32,
@@ -103,10 +114,9 @@ pub struct Chrome {
     /// The active app index from the previous frame, used to detect switches.
     prev_active: i32,
 
-    /// Running-app mask (`all_active || opened[i]`, one bit per app index) the
-    /// agent-tool registry was last built from. When it changes we re-aggregate
-    /// the running apps' tools; see the `App::take_tool_update` impl.
-    tools_snapshot: [u16; MAX_APPS / 16],
+    /// The apps the agent-tool registry was last built from. When it changes
+    /// we re-aggregate the apps' tools; see the `App::take_tool_update` impl.
+    tools_snapshot: ToolsSnapshot,
 
     /// The state of the soft keyboard animation
     soft_kb_anim_state: AnimState,
@@ -386,7 +396,7 @@ impl Chrome {
             opened: [0u16; MAX_APPS / 16],
             app_focus: AppFocus::default(),
             prev_active: 0,
-            tools_snapshot: [0u16; MAX_APPS / 16],
+            tools_snapshot: ToolsSnapshot::default(),
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
@@ -493,32 +503,34 @@ impl Chrome {
 }
 
 impl notedeck::App for Chrome {
-    /// Re-derive the host's tool registry from the currently-running apps
-    /// whenever that set changes, so a backend (dave, `notedeck --mcp`) only
-    /// sees tools whose app is live and syncing its data. Each app's UI tools
-    /// are tagged with its slot, so a call to one reaches the right app (see
-    /// [`Chrome::call_ui_tool`]). Called by the host on the top app each frame
-    /// (see `App::take_tool_update`); returns `None` when the running set is
-    /// unchanged so no per-frame allocation happens.
+    /// Re-derive the host's tool registry whenever the running apps change:
+    /// every installed app's data tools, running or not, and the running
+    /// apps' UI tools, with a stopped app's [app starters](notedeck::ToolSpec::starts_app).
+    /// A call through the socket, a key or a macro to a stopped app's tool
+    /// starts the app first (see [`Chrome::start_tool_owner`]). Each tool is
+    /// tagged with its app's slot, so a call to a UI tool reaches the right
+    /// app (see [`Chrome::call_ui_tool`]) and a command bar lists a data tool
+    /// only while its app runs. Called by the host on the top app each frame
+    /// (see `App::take_tool_update`); returns `None` when nothing changed so
+    /// no per-frame allocation happens.
     fn take_tool_update(&mut self) -> Option<notedeck::ToolUpdate> {
-        let mut running = [0u16; MAX_APPS / 16];
+        let mut snapshot = ToolsSnapshot {
+            running: [0u16; MAX_APPS / 16],
+            apps: self.apps.len(),
+        };
         for i in 0..self.apps.len().min(MAX_APPS) {
             if self.is_running(i) {
-                bitset_set(&mut running, i as u16);
+                bitset_set(&mut snapshot.running, i as u16);
             }
         }
 
-        if running == self.tools_snapshot {
+        if snapshot == self.tools_snapshot {
             return None;
         }
-        self.tools_snapshot = running;
+        self.tools_snapshot = snapshot;
 
-        let running_apps = || {
-            self.apps
-                .iter()
-                .enumerate()
-                .filter(move |(i, _)| bitset_get(&running, *i as u16))
-        };
+        let running = snapshot.running;
+        let apps = || self.apps.iter().enumerate().take(MAX_APPS);
         // The chrome's own UI tools go first, so no app can take their names.
         let chrome_tools = key_hints::chrome_ui_tools()
             .into_iter()
@@ -529,7 +541,7 @@ impl notedeck::App for Chrome {
             .chain(open_tool::open_tools())
             .map(|spec| notedeck::UiToolEntry::shell(spec.filed_under(TOOL_CATEGORY)));
         Some(notedeck::ToolUpdate {
-            tools: running_apps()
+            tools: apps()
                 .flat_map(|(i, app)| {
                     app.tools()
                         .into_iter()
@@ -537,9 +549,11 @@ impl notedeck::App for Chrome {
                 })
                 .collect(),
             ui_tools: chrome_tools
-                .chain(running_apps().flat_map(|(i, app)| {
+                .chain(apps().flat_map(|(i, app)| {
+                    let is_running = bitset_get(&running, i as u16);
                     app.ui_tools()
                         .into_iter()
+                        .filter(move |spec| is_running || spec.is_app_starter())
                         .map(move |spec| notedeck::UiToolEntry::new(spec, notedeck::AppId(i)))
                 }))
                 .collect(),

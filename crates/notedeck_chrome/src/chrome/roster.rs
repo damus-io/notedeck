@@ -32,7 +32,7 @@ impl Chrome {
 
     /// Whether the app at index `i` is running: opened, or every app is kept
     /// active (`--all-apps-active`). Only running apps get `update()` calls and
-    /// contribute tools.
+    /// contribute UI tools.
     pub(super) fn is_running(&self, i: usize) -> bool {
         self.options.contains(ChromeOptions::AllAppsActive) || self.is_opened(i)
     }
@@ -42,6 +42,31 @@ impl Chrome {
         if i < MAX_APPS {
             bitset_set(&mut self.opened, i as u16);
         }
+    }
+
+    /// Start the app that owns the tool `name` in `tools`, if it isn't
+    /// running and a call is meant to start it: any data tool's app, and a UI
+    /// tool's that [starts it](notedeck::ToolSpec::starts_app). A stopped
+    /// app's other UI tools are only in `tools` for the frame after it
+    /// closed, and leave it closed. The app updates from the next
+    /// `update()` on, so it starts syncing; the call itself runs at once,
+    /// which a tool that reads the db answers. Doesn't allocate.
+    pub(super) fn start_tool_owner(&mut self, tools: &notedeck::ToolRegistry, name: &str) {
+        let Some(entry) = tools.entry(name) else {
+            return;
+        };
+        let Some(notedeck::ToolOwner::App(owner)) = entry.owner else {
+            return;
+        };
+        let slot = owner.slot();
+        if self.is_running(slot) {
+            return;
+        }
+        if entry.spec.kind() == notedeck::ToolKind::Ui && !entry.spec.is_app_starter() {
+            return;
+        }
+        tracing::info!("starting the app in slot {slot} for a call of '{name}'");
+        self.set_opened(slot);
     }
 
     /// Mark the app at index `i` as closed.

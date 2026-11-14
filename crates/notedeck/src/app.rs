@@ -270,18 +270,22 @@ pub trait App {
     }
 
     /// Agent tools this app contributes over its nostr-backed data, for AI
-    /// backends (Dave's OpenAI loop, a future `notedeck --mcp`). The shell
-    /// collects these from its *running* apps (see [`take_tool_update`](Self::take_tool_update)),
-    /// so a tool is only advertised while its app is live and syncing its data.
-    /// Defaults to none. See [`AppTool`](crate::AppTool)/[`RegisteredTool`](crate::RegisteredTool).
+    /// backends (Dave's OpenAI loop, a future `notedeck --mcp`) and `nd`. The
+    /// shell collects these from every installed app, running or not (see
+    /// [`take_tool_update`](Self::take_tool_update)), and starts a stopped
+    /// app when one of its tools is called through it, so the app syncs its
+    /// data from then on. A tool must therefore answer from what's in the db
+    /// without the app's [`update`](Self::update) having run. Defaults to
+    /// none. See [`AppTool`](crate::AppTool)/[`RegisteredTool`](crate::RegisteredTool).
     fn tools(&self) -> Vec<crate::RegisteredTool> {
         Vec::new()
     }
 
     /// UI tools this app runs against its own state — move a cursor, open a
     /// pane — for key bindings, macros and (opted-in) agents to call. The shell
-    /// collects these from its running apps when that set changes, like
-    /// [`tools`](Self::tools), never per frame, and routes each call back here
+    /// collects these from its running apps when that set changes, never per
+    /// frame, and from a stopped app only the ones that
+    /// [start it](crate::ToolSpec::starts_app); it routes each call back here
     /// through [`call_ui_tool`](Self::call_ui_tool). Names are globally unique,
     /// snake_case and prefixed with the app (`headway_cursor_down`). The specs
     /// are marked [`ToolKind::Ui`](crate::ToolKind) on registration. Defaults to
