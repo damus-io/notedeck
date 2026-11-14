@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::cursor::{self, MoveTarget, Side, Vertical};
 
+mod board;
 mod review;
 use crate::teams;
 use crate::ui::ViewFilter;
@@ -32,7 +33,7 @@ use headway::query::IssueFilter;
 pub fn tools() -> Vec<RegisteredTool> {
     vec![
         // Read.
-        RegisteredTool::new(ListBoards),
+        RegisteredTool::new(board::ListBoards),
         RegisteredTool::new(ShowBoard),
         RegisteredTool::new(ShowCard),
         RegisteredTool::new(ReadyItems),
@@ -61,17 +62,16 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(RestoreCard),
         RegisteredTool::new(DeleteCard),
         RegisteredTool::new(RenameBoard),
+        RegisteredTool::new(board::SeedBoard),
+        RegisteredTool::new(board::TombstoneTool(board::Tombstone::Delete)),
+        RegisteredTool::new(board::TombstoneTool(board::Tombstone::Restore)),
+        RegisteredTool::new(board::CrossBoardTool(board::CrossBoard::Link)),
+        RegisteredTool::new(board::CrossBoardTool(board::CrossBoard::Move)),
+        RegisteredTool::new(board::MigrateBoard),
+        RegisteredTool::new(board::ShareBoard),
         RegisteredTool::new(SaveView),
         RegisteredTool::new(DeleteView),
     ]
-}
-
-/// Fold the selected account's boards, or `Err` when the db can't be opened.
-/// A `None` reducer (no boards yet) is left for the caller to treat as empty.
-fn fold(cx: &ToolContext) -> Result<Option<event::BoardReducer>, String> {
-    let author = *cx.accounts.selected_account_pubkey();
-    let txn = Transaction::new(cx.ndb).map_err(|e| format!("failed to open db: {e}"))?;
-    Ok(event::fold_board(cx.ndb, &txn, &author))
 }
 
 /// The board `board_id` as the edit tools see it ([`resolve_target`]): an
@@ -88,77 +88,6 @@ fn board_view(cx: &ToolContext, board_id: &str) -> Result<BoardView, String> {
 /// The variable a command line falls back to for a tool's `board`, as the
 /// `headway` CLI reads it: the caller's board, which the app can't see.
 const BOARD_ENV: &str = "HEADWAY_BOARD";
-
-/// `headway_list_boards`: the boards for the current account.
-struct ListBoards;
-
-/// One entry in [`ListBoards`]' output.
-#[derive(Serialize)]
-struct BoardSummary {
-    /// The board's stable id (slug), as used to address it in other tools.
-    id: String,
-    title: String,
-    /// The number of live (non-archived) cards across all columns.
-    card_count: usize,
-}
-
-/// `headway_list_boards` takes no arguments.
-#[derive(Deserialize)]
-struct ListBoardsArgs {}
-
-impl AppTool for ListBoards {
-    type Args = ListBoardsArgs;
-    type Output = Vec<BoardSummary>;
-
-    fn spec(&self) -> ToolSpec {
-        ToolSpec::new(
-            "headway_list_boards",
-            "List the headway boards for the current account: each board's id (slug), title, and live card count.",
-            vec![],
-        )
-.titled("List boards")
-.read_only()
-.command(&["headway", "board"])
-.filed_under(crate::TOOL_CATEGORY)
-    }
-
-    fn call(&self, cx: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, String> {
-        let Some(reducer) = fold(cx)? else {
-            return Ok(Vec::new());
-        };
-        Ok(reducer
-            .finalize()
-            .into_iter()
-            // A deleted board still folds (so the CLI can restore it), but it is
-            // no longer one of the account's boards.
-            .filter(|board| !board.deleted)
-            .map(|board| BoardSummary {
-                card_count: board.columns.iter().map(|c| c.cards.len()).sum(),
-                id: board.id,
-                title: board.title,
-            })
-            .collect())
-    }
-
-    fn render(&self, out: &Self::Output) -> Option<String> {
-        Some(
-            out.iter()
-                .map(|board| {
-                    render::board_row(
-                        render::BoardRow {
-                            mark: ' ',
-                            id: &board.id,
-                            title: &board.title,
-                            cards: board.card_count,
-                            owner: None,
-                        },
-                        true,
-                    )
-                })
-                .collect(),
-        )
-    }
-}
 
 /// `headway_show_board`: a board's columns and cards.
 struct ShowBoard;
@@ -1034,6 +963,22 @@ impl store::Publisher for RelayFanout<'_, '_> {
     }
 }
 
+/// A [`RelayFanout`] to the selected account's private relays through `cx`'s
+/// publisher, or an error in a read-only context, so a write is never
+/// silently dropped.
+fn publisher<'x, 'a>(cx: &'x mut ToolContext<'a>) -> Result<RelayFanout<'x, 'a>, String> {
+    let targets = cx.accounts.selected_account_private_relay_set().targets();
+    let api = cx
+        .publish
+        .as_mut()
+        .ok_or("publishing is unavailable in this context")?;
+    Ok(RelayFanout {
+        api,
+        targets,
+        sent: 0,
+    })
+}
+
 /// What an edit tool answers: the ack `headway <edit> --json` prints,
 /// `{ok, events}`, plus the new card's `card` and `ref` after an add, or
 /// `noop` when the card was already as asked and nothing was written. The
@@ -1217,7 +1162,6 @@ fn mutate(
     build: impl FnOnce(&BoardView) -> Result<BoardAction, String>,
 ) -> Result<EditAck, String> {
     let author = *cx.accounts.selected_account_pubkey();
-    let targets = cx.accounts.selected_account_private_relay_set().targets();
 
     // Resolve the board and its channel first, so a bad card/column ref reports the
     // specific resolution error rather than a generic capability error. The roster
@@ -1246,16 +1190,10 @@ fn mutate(
         board_id,
     )?;
 
-    let Some(api) = cx.publish.as_mut() else {
-        return Err("publishing is unavailable in this context".to_string());
-    };
-    let mut publisher = RelayFanout {
-        api,
-        targets,
-        sent: 0,
-    };
+    let ndb = cx.ndb;
+    let mut publisher = publisher(cx)?;
     let store::ApplyOutcome { declined, created } = store::apply_outcome(
-        cx.ndb,
+        ndb,
         board_id,
         &view,
         &author,
@@ -1286,11 +1224,6 @@ fn mutate(
         card_ref: created.map(|id| render::plain_ref(&view, &id)),
         noop: None,
     })
-}
-
-/// The board a mutation targets: the `board` argument, or the primary board.
-fn board_of(board: &Option<String>) -> &str {
-    board.as_deref().unwrap_or(store::BOARD_ID)
 }
 
 /// Which board a card tool runs on, from the two arguments every card tool
@@ -2526,8 +2459,8 @@ struct RenameBoard;
 #[derive(Deserialize)]
 struct RenameBoardArgs {
     title: String,
-    #[serde(default)]
-    board: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for RenameBoard {
@@ -2539,20 +2472,29 @@ impl AppTool for RenameBoard {
             "headway_rename_board",
             "Rename a headway board's display title. Its slug is unchanged, so existing card refs keep working.",
             vec![
-                ToolArg::new("title", ToolArgType::String, "The new board title.").required(true),
+                ToolArg::new("title", ToolArgType::String, "The new board title.")
+                    .required(true)
+                    .rest(),
                 board_arg(),
+                default_board_arg(),
             ],
         )
-.titled("Rename board")
-.filed_under(crate::TOOL_CATEGORY)
+        .titled("Rename board")
+        .command(&["headway", "rename"])
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |_view| {
+        let board = args.route.board([])?;
+        mutate(cx, &board, |_view| {
             Ok(BoardAction::RenameBoard {
                 title: args.title.clone(),
             })
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -2744,6 +2686,7 @@ fn due_arg(description: &'static str) -> ToolArg {
 
 #[cfg(test)]
 mod tests {
+    mod board;
     mod edits;
     mod live;
     mod review;
@@ -2957,10 +2900,11 @@ mod tests {
         } = seeded_env();
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
 
-        let out = ListBoards.call(&mut cx, ListBoardsArgs {}).unwrap();
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].id, store::BOARD_ID);
-        assert_eq!(out[0].card_count, 7);
+        let out = call_registered(&mut cx, "headway_list_boards", json!({})).unwrap();
+        assert_eq!(
+            out,
+            json!([{ "id": store::BOARD_ID, "title": "Headway", "card_count": 7 }])
+        );
     }
 
     #[test]

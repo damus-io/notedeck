@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(super) struct Live {
     _dir: TempDir,
     pub(super) notedeck: notedeck::Notedeck,
-    account: FullKeypair,
+    pub(super) account: FullKeypair,
 }
 
 /// [`Live`], ready to edit.
