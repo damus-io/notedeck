@@ -50,7 +50,70 @@ fn tools() -> Vec<ToolInfo> {
             },
             "required": ["reference"],
         }),
+        command: Vec::new(),
     }]
+}
+
+/// Tools that declare command lines, shaped as headway's read tools write
+/// them: two sharing `headway show`, one with a long, a short and an env
+/// flag.
+fn app_tools() -> Vec<ToolInfo> {
+    let tool = |name: &str, title: &str, verb: &str, schema: Value| ToolInfo {
+        name: name.to_owned(),
+        title: title.to_owned(),
+        description: format!("{title}."),
+        category: Some("Headway".to_owned()),
+        kind: ToolKind::Data,
+        read_only: true,
+        input_schema: schema,
+        command: vec!["headway".to_owned(), verb.to_owned()],
+    };
+    vec![
+        tool(
+            "headway_show_board",
+            "Show board",
+            "show",
+            json!({
+                "type": "object",
+                "properties": {"board": {"type": "string", "description": "The board."}},
+                "required": [],
+                "x-nd-order": ["board"],
+            }),
+        ),
+        tool(
+            "headway_show_card",
+            "Show card",
+            "show",
+            json!({
+                "type": "object",
+                "properties": {
+                    "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
+                    "board": {"type": "string", "description": "The board."},
+                },
+                "required": ["card"],
+                "x-nd-order": ["card", "board"],
+            }),
+        ),
+        tool(
+            "headway_ready_items",
+            "List ready cards",
+            "next",
+            json!({
+                "type": "object",
+                "properties": {
+                    "container": {"type": "string", "description": "Where.", "x-nd-long": "in"},
+                    "limit": {"type": "integer", "description": "How many.", "x-nd-short": "n"},
+                    "board": {"type": "string", "description": "The board.", "x-nd-env": "HEADWAY_BOARD"},
+                },
+                "required": [],
+                "x-nd-order": ["container", "limit", "board"],
+            }),
+        ),
+    ]
+}
+
+fn app_list() -> Response {
+    Response::ok(Reply::Tools { tools: app_tools() })
 }
 
 /// A fake notedeck serving scripted answers.
@@ -385,4 +448,118 @@ fn spawn_rejects_a_missing_dir_without_connecting() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn an_app_command_calls_the_tool_it_names() {
+    let dir = socket_dir();
+    let result = Response::ok(Reply::Result {
+        result: json!({"ref": "headway:notedeck/a-b-c"}),
+    });
+    let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
+    let out = nd(
+        &socket,
+        &["headway", "show", "headway:notedeck/a-b-c", "--json"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let printed: Value = serde_json::from_str(&stdout(&out)).expect("JSON on stdout");
+    assert_eq!(printed, json!({"ref": "headway:notedeck/a-b-c"}));
+    let seen = server.join().unwrap();
+    assert_eq!(
+        seen[1],
+        Request::CallTool {
+            name: "headway_show_card".to_owned(),
+            args: json!({"card": "headway:notedeck/a-b-c"}),
+        }
+    );
+}
+
+#[test]
+fn an_app_command_reads_flags_and_the_callers_env() {
+    let dir = socket_dir();
+    let result = Response::ok(Reply::Result { result: json!([]) });
+    let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
+    let out = Command::new(nd_bin())
+        .args([
+            "headway",
+            "next",
+            "--in",
+            "headway:notedeck/keen-ranch-hotel",
+            "-n",
+            "1",
+        ])
+        .env("NOTEDECK_SOCKET", &socket)
+        .env("HEADWAY_BOARD", "notedeck")
+        .output()
+        .expect("run nd");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let seen = server.join().unwrap();
+    assert_eq!(
+        seen[1],
+        Request::CallTool {
+            name: "headway_ready_items".to_owned(),
+            args: json!({
+                "container": "headway:notedeck/keen-ranch-hotel",
+                "limit": 1,
+                "board": "notedeck",
+            }),
+        }
+    );
+}
+
+#[test]
+fn an_app_namespace_lists_its_commands() {
+    let dir = socket_dir();
+    let Fake { socket, server } = serve(&dir, vec![app_list(), app_list()]);
+    let out = nd(&socket, &["headway", "--help"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stderr(&out);
+    assert!(
+        page.contains("    next              List ready cards\n"),
+        "{page}"
+    );
+    assert!(
+        page.contains("    show              Show card / Show board\n"),
+        "{page}"
+    );
+
+    let out = nd(&socket, &["help", "headway", "show"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("    nd headway show <card> [OPTIONS]\n"),
+        "{}",
+        stderr(&out)
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn a_wrong_app_command_fails_before_the_call_is_sent() {
+    let dir = socket_dir();
+    let Fake { socket, server } = serve(&dir, vec![app_list(), app_list()]);
+    let out = nd(&socket, &["notebook", "show"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("unknown command 'notebook': the running notedeck's are headway"),
+        "{}",
+        stderr(&out)
+    );
+    let out = nd(&socket, &["headway", "show", "--bogus"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("unknown flag '--bogus' (see `nd headway show --help`)"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        server.join().unwrap(),
+        [Request::ListTools, Request::ListTools]
+    );
+}
+
+#[test]
+fn an_app_command_without_notedeck_exits_2() {
+    let dir = socket_dir();
+    let out = nd(&dir.path().join("absent.sock"), &["headway", "show"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
 }

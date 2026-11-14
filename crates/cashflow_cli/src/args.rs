@@ -22,7 +22,7 @@ pub enum Invocation {
     /// `cashflow`, or `cashflow --help`: the command list.
     Usage,
     /// `cashflow <cmd> --help` or `cashflow help <cmd>`.
-    CommandHelp(&'static CommandHelp),
+    CommandHelp(&'static CommandHelp<'static>),
     /// `cashflow help options`.
     Options,
 }

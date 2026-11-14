@@ -100,8 +100,8 @@ impl Chrome {
         let values = match arg.typ() {
             ToolArgType::Enum(values) => values.iter().map(|&v| Value::from(v)).collect(),
             ToolArgType::Boolean => vec![Value::from(true), Value::from(false)],
-            ToolArgType::String | ToolArgType::Number => {
-                let number = matches!(arg.typ(), ToolArgType::Number);
+            ToolArgType::String | ToolArgType::Number | ToolArgType::Integer => {
+                let number = matches!(arg.typ(), ToolArgType::Number | ToolArgType::Integer);
                 let arg = TextArg {
                     invocation: invocation.clone(),
                     arg: arg.name(),
@@ -241,7 +241,9 @@ fn asks_for(arg: &ToolArg, args: &Value) -> bool {
     }
     match arg.typ() {
         ToolArgType::Enum(_) => true,
-        ToolArgType::Boolean | ToolArgType::String | ToolArgType::Number => arg.is_required(),
+        ToolArgType::Boolean | ToolArgType::String | ToolArgType::Number | ToolArgType::Integer => {
+            arg.is_required()
+        }
     }
 }
 

@@ -969,7 +969,7 @@ relay's NIP-42 AUTH with --nsec, and the member's runs pass the same
 
 /// The help entry for a command name, or `None` when the CLI has no such
 /// command.
-pub fn lookup(name: &str) -> Option<&'static CommandHelp> {
+pub fn lookup(name: &str) -> Option<&'static CommandHelp<'static>> {
     CLI.lookup(name)
 }
 

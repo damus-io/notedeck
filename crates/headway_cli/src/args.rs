@@ -545,7 +545,7 @@ pub(crate) enum Invocation {
     /// `headway` with no command, or `headway --help`: the grouped overview.
     Usage,
     /// `headway <cmd> --help` or `headway help <cmd>`: one command's own page.
-    CommandHelp(&'static cli_term::help::CommandHelp),
+    CommandHelp(&'static cli_term::help::CommandHelp<'static>),
     /// `headway help options`: the options every command takes, in full.
     Options,
 }

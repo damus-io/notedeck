@@ -63,6 +63,10 @@ fn fold(cx: &ToolContext) -> Result<Option<event::BoardReducer>, String> {
     Ok(event::fold_board(cx.ndb, &txn, &author))
 }
 
+/// The variable a command line falls back to for a tool's `board`, as the
+/// `headway` CLI reads it: the caller's board, which the app can't see.
+const BOARD_ENV: &str = "HEADWAY_BOARD";
+
 /// `headway_list_boards`: the boards for the current account.
 struct ListBoards;
 
@@ -92,6 +96,7 @@ impl AppTool for ListBoards {
         )
 .titled("List boards")
 .read_only()
+.command(&["headway", "board"])
 .filed_under(crate::TOOL_CATEGORY)
     }
 
@@ -137,10 +142,12 @@ impl AppTool for ShowBoard {
                 "board",
                 ToolArgType::String,
                 "The board id (slug) to show. Defaults to the primary board when omitted.",
-            )],
+            )
+            .env(BOARD_ENV)],
         )
 .titled("Show board")
 .read_only()
+.command(&["headway", "show"])
 .filed_under(crate::TOOL_CATEGORY)
     }
 
@@ -186,12 +193,14 @@ impl AppTool for ShowCard {
                     ToolArgType::String,
                     "The card ref: `headway:<board>/<word-id>` (or `<board>/<word-id>`) or a hex id prefix.",
                 )
-                .required(true),
+                .required(true)
+                .positional(),
                 card_board_arg(),
             ],
         )
 .titled("Show card")
 .read_only()
+.command(&["headway", "show"])
 .filed_under(crate::TOOL_CATEGORY)
     }
 
@@ -255,17 +264,20 @@ impl AppTool for ReadyItems {
                     "container",
                     ToolArgType::String,
                     "Scope the frontier to a container: a card ref (`headway:<board>/<word-id>`) for its subtree, or the board id for the whole board. Defaults to the board root.",
-                ),
+                )
+                .long("in"),
                 ToolArg::new(
                     "limit",
-                    ToolArgType::Number,
+                    ToolArgType::Integer,
                     "Cap the number of items returned. Defaults to the whole ready frontier.",
-                ),
-                board_arg(),
+                )
+                .short('n'),
+                board_arg().env(BOARD_ENV),
             ],
         )
 .titled("List ready cards")
 .read_only()
+.command(&["headway", "next"])
 .filed_under(crate::TOOL_CATEGORY)
     }
 

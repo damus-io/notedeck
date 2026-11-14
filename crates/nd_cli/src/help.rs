@@ -27,6 +27,15 @@ pub const GLOBALS: &[GlobalOption] = &[GlobalOption {
     details: "Print nd's own version and, when a notedeck is listening, the version it answers with",
 }];
 
+/// What `nd --help` prints after the overview: the commands that come from
+/// the running notedeck's tools, which a page printed without asking it can't
+/// list.
+pub const APPS_HINT: &str = "\
+App commands: `nd <app> <command>` runs a tool that declares one, e.g.
+`nd headway show <card>`; `nd <app> --help` lists an app's, from the running
+notedeck.
+";
+
 /// What `nd help options` prints after the flags: the exit codes and the
 /// socket, which hold for every command.
 pub const OPTIONS_FOOTER: &str = "\

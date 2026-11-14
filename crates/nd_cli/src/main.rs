@@ -4,12 +4,15 @@
 //! socket ([`notedeck_ipc`]), so `nd` carries no copy of the tool names and
 //! never goes stale against the app. `nd call` uses that list's schemas to
 //! read `key=value` pairs as the right types and to reject a wrong key before
-//! anything is sent.
+//! anything is sent. A tool that declares a command path is also a
+//! subcommand, `nd headway show <card>`, built from that same list
+//! ([`commands`]).
 //!
 //! Exit codes: 0 when it worked, 1 for a tool error or a bad command line, and
 //! 2 when no notedeck is listening, so a script can tell "not running" apart
 //! from "the tool said no".
 
+mod commands;
 mod help;
 mod listing;
 mod mcp;
@@ -27,7 +30,7 @@ enum Invocation {
     /// `nd`, or `nd --help`: the command list.
     Usage,
     /// `nd <cmd> --help` or `nd help <cmd>`.
-    CommandHelp(&'static CommandHelp),
+    CommandHelp(&'static CommandHelp<'static>),
     /// `nd help options`.
     Options,
     /// `nd --version`.
@@ -49,6 +52,9 @@ enum Command {
     Mcp { exposure: mcp::Exposure },
     /// `nd spawn [--json] [<dir>]`.
     Spawn { json: bool, dir: Option<String> },
+    /// `nd <ns> <verb> …`: a command a tool declares, read against the tool
+    /// list once it's fetched. `help` is set for `nd help <ns> …`.
+    App { words: Vec<String>, help: bool },
 }
 
 /// Where `nd call`'s argument object comes from, besides the pairs.
@@ -95,7 +101,7 @@ fn main() -> ExitCode {
     };
     let result = match invocation {
         Invocation::Usage => {
-            eprint!("{}", help::CLI.overview(help::GLOBALS));
+            eprint!("{}{}", help::CLI.overview(help::GLOBALS), help::APPS_HINT);
             Ok(())
         }
         Invocation::CommandHelp(cmd) => {
@@ -158,7 +164,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
         return Ok(Invocation::Options);
     }
     let Some(cmd) = help::CLI.lookup(&name) else {
-        return Err(format!("unknown command '{name}' (try `nd --help`)"));
+        // Not one of nd's own, so maybe an app's: only the tool list can say.
+        let words = std::iter::once(name).chain(args).collect();
+        return Ok(Invocation::Run(Command::App {
+            words,
+            help: want_help,
+        }));
     };
 
     let mut flags: Vec<String> = Vec::new();
@@ -255,6 +266,21 @@ fn run(command: Command) -> Result<(), Failure> {
         Command::Call { name, pairs, base } => call(&name, &pairs, base),
         Command::Mcp { exposure } => mcp::serve(exposure, &mut answer),
         Command::Spawn { json, dir } => spawn(json, dir.as_deref()),
+        Command::App { words, help } => app(&words, help),
+    }
+}
+
+/// `nd <ns> <verb> …`: resolve the line against the running notedeck's
+/// tools, then call the one it names, or print the page it asks for.
+fn app(words: &[String], help: bool) -> Result<(), Failure> {
+    let tools = list_tools()?;
+    let env = |var: &str| std::env::var(var).ok();
+    match commands::resolve(&tools, words, help, &env)? {
+        commands::Action::Help(page) => {
+            eprint!("{page}");
+            Ok(())
+        }
+        commands::Action::Call { tool, args } => send_call(tool, args),
     }
 }
 
@@ -297,12 +323,13 @@ fn call(name: &str, pairs: &[String], base: Option<JsonSource>) -> Result<(), Fa
         )));
     };
     let args = schema::build(name, &tool.input_schema, base, pairs)?;
+    send_call(name.to_owned(), args)
+}
 
-    let request = Request::CallTool {
-        name: name.to_owned(),
-        args,
-    };
-    match answer(request)? {
+/// Call tool `name` with `args`, already checked against its schema, and
+/// print what it answers.
+fn send_call(name: String, args: Value) -> Result<(), Failure> {
+    match answer(Request::CallTool { name, args })? {
         Reply::Result { result } => print_json(&result),
         Reply::Intent { .. } => {}
         Reply::Tools { .. } => {
@@ -525,15 +552,40 @@ mod tests {
     }
 
     #[test]
-    fn unknown_commands_and_flags_are_rejected() {
-        let err = err_of(&["frob"]);
-        assert!(err.contains("unknown command 'frob'"), "{err}");
+    fn unknown_flags_are_rejected() {
         let err = err_of(&["tools", "--json-file", "x"]);
         assert!(err.contains("`tools` doesn't take --json-file"), "{err}");
         let err = err_of(&["--bogus", "tools"]);
         assert!(err.contains("unknown flag '--bogus'"), "{err}");
-        let err = err_of(&["options", "--help"]);
-        assert!(err.contains("unknown command 'options'"), "{err}");
+    }
+
+    /// A name that isn't one of nd's commands is kept whole for the tool
+    /// list to read, `help` spelling and all.
+    #[test]
+    fn any_other_command_is_an_apps() {
+        let words = |line: &[&str]| line.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            command_of(&["headway", "show", "--board", "x"]),
+            Command::App {
+                words: words(&["headway", "show", "--board", "x"]),
+                help: false,
+            }
+        );
+        assert_eq!(
+            command_of(&["help", "headway", "next"]),
+            Command::App {
+                words: words(&["headway", "next"]),
+                help: true,
+            }
+        );
+        // `options` is a page only through `help`.
+        assert_eq!(
+            command_of(&["options", "--help"]),
+            Command::App {
+                words: words(&["options", "--help"]),
+                help: false,
+            }
+        );
     }
 
     #[test]

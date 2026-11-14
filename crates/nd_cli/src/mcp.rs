@@ -282,6 +282,7 @@ mod tests {
             kind,
             read_only,
             input_schema: json!({"type": "object", "properties": {}}),
+            command: Vec::new(),
         }
     }
 

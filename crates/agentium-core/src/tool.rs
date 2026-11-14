@@ -17,6 +17,8 @@ use serde_json::Value;
 pub enum ToolArgType {
     String,
     Number,
+    /// A whole number (JSON Schema `integer`), e.g. a count or a limit.
+    Integer,
     /// `true` or `false`.
     Boolean,
     /// A string constrained to a fixed set of values (rendered as JSON `enum`).
@@ -29,15 +31,46 @@ impl ToolArgType {
         match self {
             Self::String => "string",
             Self::Number => "number",
+            Self::Integer => "integer",
             Self::Boolean => "boolean",
             Self::Enum(_) => "string",
         }
     }
 }
 
+/// Where an argument goes on a command line, when it isn't a `--flag`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Positional {
+    /// The next bare word, in the order the spec declares its positionals.
+    Slot,
+    /// Every bare word left after the slots, joined with spaces: a title or
+    /// a comment body typed without quotes. Only the last positional may be
+    /// one.
+    Rest,
+}
+
+/// How an argument reads on a command line (`nd <ns> <verb>`), set with the
+/// [`ToolArg`] builders [`positional`](ToolArg::positional),
+/// [`rest`](ToolArg::rest), [`short`](ToolArg::short),
+/// [`long`](ToolArg::long) and [`env`](ToolArg::env). The default is a
+/// `--<name>` flag with no short form and no env fallback.
+#[derive(Debug, Clone, Default)]
+pub struct ArgCli {
+    /// A bare word rather than a flag, when set.
+    pub positional: Option<Positional>,
+    /// A one-letter `-x` spelling of the flag.
+    pub short: Option<char>,
+    /// The flag's name when it isn't the argument's, e.g. `--in` for
+    /// `container`.
+    pub long: Option<&'static str>,
+    /// The environment variable read when the argument isn't given.
+    pub env: Option<&'static str>,
+}
+
 /// One argument in a [`ToolSpec`]: its name, JSON type, docs, and whether it is
 /// required. Built with [`ToolArg::new`] plus the [`required`](Self::required)
-/// and [`default`](Self::default) builders.
+/// and [`default`](Self::default) builders, and the command-line ones
+/// described on [`ArgCli`].
 #[derive(Debug, Clone)]
 pub struct ToolArg {
     name: &'static str,
@@ -48,6 +81,8 @@ pub struct ToolArg {
     /// Whether it names what the app's view is on (see
     /// [`from_current`](ToolArg::from_current)).
     from_current: bool,
+    /// How it reads on a command line.
+    cli: ArgCli,
 }
 
 impl ToolArg {
@@ -61,6 +96,7 @@ impl ToolArg {
             required: false,
             default: None,
             from_current: false,
+            cli: ArgCli::default(),
         }
     }
 
@@ -70,8 +106,8 @@ impl ToolArg {
         self
     }
 
-    /// Set a default value, appended to the argument's description in the schema
-    /// so the model sees it.
+    /// Set a default value: the schema's `default`, and appended to the
+    /// argument's description so a model that reads only the text sees it.
     pub fn default(mut self, default: Value) -> Self {
         self.default = Some(default);
         self
@@ -86,8 +122,48 @@ impl ToolArg {
         self
     }
 
+    /// Take this argument as the next bare word on a command line rather than
+    /// a `--flag`. Positionals fill in the order the spec declares them.
+    pub fn positional(mut self) -> Self {
+        self.cli.positional = Some(Positional::Slot);
+        self
+    }
+
+    /// Take every bare word left after the other positionals, joined with
+    /// spaces, as this argument. Only the last positional may be one.
+    pub fn rest(mut self) -> Self {
+        self.cli.positional = Some(Positional::Rest);
+        self
+    }
+
+    /// Give the argument's flag a one-letter `-c` spelling.
+    pub fn short(mut self, short: char) -> Self {
+        self.cli.short = Some(short);
+        self
+    }
+
+    /// Spell the argument's flag `--<long>` instead of `--<name>`, when the
+    /// name a model sees reads badly typed, e.g. `--in` for `container`.
+    pub fn long(mut self, long: &'static str) -> Self {
+        self.cli.long = Some(long);
+        self
+    }
+
+    /// Fill the argument from the environment variable `var` when a command
+    /// line leaves it out. The variable is the caller's, so the client reads
+    /// it; the tool never does.
+    pub fn env(mut self, var: &'static str) -> Self {
+        self.cli.env = Some(var);
+        self
+    }
+
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// How it reads on a command line.
+    pub fn cli(&self) -> &ArgCli {
+        &self.cli
     }
 
     /// Its JSON type.
@@ -152,6 +228,9 @@ pub struct ToolSpec {
     /// Whether it only answers, changing nothing (see
     /// [`read_only`](ToolSpec::read_only)).
     read_only: bool,
+    /// The command line that runs it, e.g. `["headway", "show"]`; empty for
+    /// none (see [`command`](ToolSpec::command)).
+    command: &'static [&'static str],
 }
 
 impl ToolSpec {
@@ -166,6 +245,7 @@ impl ToolSpec {
             title: None,
             category: None,
             read_only: false,
+            command: &[],
         }
     }
 
@@ -206,6 +286,21 @@ impl ToolSpec {
     pub fn read_only(mut self) -> Self {
         self.read_only = true;
         self
+    }
+
+    /// Give the tool a command line, a namespace then a verb:
+    /// `["headway", "show"]` is `nd headway show`. Two tools may share one;
+    /// the client tells them apart by how many positionals each requires.
+    /// A tool without one is still reachable as `nd call <name>`.
+    pub fn command(mut self, path: &'static [&'static str]) -> Self {
+        self.command = path;
+        self
+    }
+
+    /// Its command line (see [`command`](Self::command)), empty when it has
+    /// none.
+    pub fn command_path(&self) -> &'static [&'static str] {
+        self.command
     }
 
     /// Whether it only answers, changing nothing (see
@@ -258,7 +353,19 @@ impl ToolSpec {
     /// The JSON Schema object describing this tool's arguments — the `parameters`
     /// payload for an OpenAI `FunctionObject` and the `inputSchema` for an MCP
     /// tool entry. Required args are listed in `required`; each property carries
-    /// its type, description (with any default appended), and `enum` constraint.
+    /// its type, description (with any default appended), `default`, and `enum`
+    /// constraint.
+    ///
+    /// A tool with a [`command`](Self::command) also carries what a command
+    /// line needs, as `x-nd-` keys a model ignores:
+    ///
+    /// - `x-nd-order`, on the object: the argument names in declaration order.
+    ///   A client parsing `properties` into a sorted map (`serde_json` without
+    ///   `preserve_order`, as `nd` builds) would otherwise read positionals
+    ///   alphabetically.
+    /// - On a property: `x-nd-positional` (its slot index, or `"rest"`),
+    ///   `x-nd-short` (one letter), `x-nd-long` (the flag's name) and
+    ///   `x-nd-env` (the variable to fall back to).
     pub fn json_schema(&self) -> Value {
         let required_args: Vec<Value> = self
             .arguments
@@ -268,6 +375,7 @@ impl ToolSpec {
             .collect();
 
         let mut properties = serde_json::Map::new();
+        let mut slots = 0;
         for arg in &self.arguments {
             let mut props = serde_json::Map::new();
             props.insert(
@@ -282,6 +390,10 @@ impl ToolSpec {
             };
             props.insert("description".to_string(), Value::String(description));
 
+            if let Some(default) = &arg.default {
+                props.insert("default".to_string(), default.clone());
+            }
+
             if let ToolArgType::Enum(variants) = &arg.typ {
                 props.insert(
                     "enum".to_string(),
@@ -294,6 +406,10 @@ impl ToolSpec {
                 );
             }
 
+            if !self.command.is_empty() {
+                insert_cli_keys(&mut props, &arg.cli, &mut slots);
+            }
+
             properties.insert(arg.name.to_owned(), Value::Object(props));
         }
 
@@ -302,7 +418,102 @@ impl ToolSpec {
         parameters.insert("required".to_string(), Value::Array(required_args));
         parameters.insert("additionalProperties".to_string(), Value::Bool(false));
         parameters.insert("properties".to_string(), Value::Object(properties));
+        if !self.command.is_empty() {
+            let order = self
+                .arguments
+                .iter()
+                .map(|arg| Value::String(arg.name.to_owned()))
+                .collect();
+            parameters.insert("x-nd-order".to_string(), Value::Array(order));
+        }
 
         Value::Object(parameters)
+    }
+}
+
+/// Write `cli`'s `x-nd-` keys onto one property of
+/// [`ToolSpec::json_schema`]. `slots` counts the positional slots handed out
+/// so far, so each gets the next index.
+fn insert_cli_keys(props: &mut serde_json::Map<String, Value>, cli: &ArgCli, slots: &mut u64) {
+    match cli.positional {
+        Some(Positional::Slot) => {
+            props.insert("x-nd-positional".to_string(), Value::from(*slots));
+            *slots += 1;
+        }
+        Some(Positional::Rest) => {
+            props.insert("x-nd-positional".to_string(), Value::from("rest"));
+        }
+        None => {}
+    }
+    if let Some(short) = cli.short {
+        props.insert("x-nd-short".to_string(), Value::String(short.to_string()));
+    }
+    if let Some(long) = cli.long {
+        props.insert("x-nd-long".to_string(), Value::from(long));
+    }
+    if let Some(env) = cli.env {
+        props.insert("x-nd-env".to_string(), Value::from(env));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A tool with a command line writes its argument order and each
+    /// argument's command-line keys; a default lands as `default` beside the
+    /// description text that still carries it.
+    #[test]
+    fn a_command_tool_writes_its_cli_keys() {
+        let spec = ToolSpec::new(
+            "demo_add",
+            "Add a thing.",
+            vec![
+                ToolArg::new("card", ToolArgType::String, "The card.")
+                    .required(true)
+                    .positional(),
+                ToolArg::new("title", ToolArgType::String, "The title.").rest(),
+                ToolArg::new("container", ToolArgType::String, "Where.").long("in"),
+                ToolArg::new("limit", ToolArgType::Integer, "How many.")
+                    .short('n')
+                    .default(json!(5)),
+                ToolArg::new("board", ToolArgType::String, "The board.").env("DEMO_BOARD"),
+            ],
+        )
+        .command(&["demo", "add"]);
+        let schema = spec.json_schema();
+
+        assert_eq!(
+            schema["x-nd-order"],
+            json!(["card", "title", "container", "limit", "board"])
+        );
+        let props = &schema["properties"];
+        assert_eq!(props["card"]["x-nd-positional"], json!(0));
+        assert_eq!(props["title"]["x-nd-positional"], json!("rest"));
+        assert_eq!(props["container"]["x-nd-long"], json!("in"));
+        assert_eq!(props["limit"]["type"], json!("integer"));
+        assert_eq!(props["limit"]["x-nd-short"], json!("n"));
+        assert_eq!(props["limit"]["default"], json!(5));
+        assert_eq!(
+            props["limit"]["description"],
+            json!("How many. (Default: 5)")
+        );
+        assert_eq!(props["board"]["x-nd-env"], json!("DEMO_BOARD"));
+        assert!(props["board"].get("x-nd-positional").is_none());
+        assert_eq!(spec.command_path(), ["demo", "add"]);
+    }
+
+    /// A tool with no command line keeps a model's schema free of `x-nd-`
+    /// keys, even on arguments that declare them.
+    #[test]
+    fn a_tool_without_a_command_writes_no_cli_keys() {
+        let spec = ToolSpec::new(
+            "demo_show",
+            "Show a thing.",
+            vec![ToolArg::new("card", ToolArgType::String, "The card.").positional()],
+        );
+        let schema = spec.json_schema().to_string();
+        assert!(!schema.contains("x-nd-"), "{schema}");
     }
 }

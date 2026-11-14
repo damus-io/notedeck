@@ -227,6 +227,11 @@ pub struct ToolInfo {
     pub read_only: bool,
     /// A JSON Schema object for `args`.
     pub input_schema: Value,
+    /// The command line that runs it, a namespace then a verb:
+    /// `["headway", "show"]` is `nd headway show`. Empty for a tool reachable
+    /// only by name; absent on the wire then, and from an older notedeck.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
 }
 
 #[cfg(test)]
@@ -243,7 +248,21 @@ mod tests {
             kind: ToolKind::Ui,
             read_only: false,
             input_schema: json!({"type": "object", "properties": {}}),
+            command: vec!["headway".to_owned(), "review".to_owned()],
         }
+    }
+
+    /// A tool without a command line leaves `command` off the wire, and a
+    /// tool list from a notedeck that predates the field still parses.
+    #[test]
+    fn command_is_optional_on_the_wire() {
+        let bare = ToolInfo {
+            command: Vec::new(),
+            ..tool()
+        };
+        let line = serde_json::to_string(&bare).unwrap();
+        assert!(!line.contains("command"), "{line}");
+        assert_eq!(serde_json::from_str::<ToolInfo>(&line).unwrap(), bare);
     }
 
     #[test]

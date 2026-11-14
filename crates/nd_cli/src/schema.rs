@@ -5,7 +5,10 @@
 //! The schema is whatever `agentium_core`'s `ToolSpec::json_schema` wrote — an object with
 //! `properties` (each a `type`, a `description` and maybe an `enum`) and a
 //! `required` list — but nothing here assumes more than JSON Schema does, so a
-//! tool that hand-writes its schema reads the same.
+//! tool that hand-writes its schema reads the same. The `x-nd-` keys a tool
+//! with a command line adds (its argument order, and each argument's
+//! positional slot, short and long flag, and env fallback) are read when
+//! present and default to a plain `--<name>` flag when not.
 
 use serde_json::{Map, Number, Value};
 
@@ -18,16 +21,59 @@ pub struct Arg<'a> {
     pub description: &'a str,
     /// The values an `enum` argument is limited to.
     pub choices: Option<&'a [Value]>,
+    /// Its bare-word slot on a command line (`x-nd-positional`), when it
+    /// isn't a flag.
+    pub positional: Option<Slot>,
+    /// Its one-letter flag (`x-nd-short`).
+    pub short: Option<char>,
+    /// Its flag's name when that isn't its own (`x-nd-long`).
+    pub long: Option<&'a str>,
+    /// The environment variable a command line falls back to (`x-nd-env`).
+    pub env: Option<&'a str>,
 }
 
-/// Every argument `schema` declares, in the order its `properties` list them.
+/// Where a positional argument sits on a command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Slot {
+    /// The `n`th bare word.
+    Index(u64),
+    /// Every bare word after the indexed ones, joined with spaces.
+    Rest,
+}
+
+impl Arg<'_> {
+    /// The flag a command line spells it with, without the dashes: its
+    /// `x-nd-long`, else its name with `_` read as `-` (`group_by` is
+    /// `--group-by`).
+    pub fn flag(&self) -> String {
+        match self.long {
+            Some(long) => long.to_owned(),
+            None => self.name.replace('_', "-"),
+        }
+    }
+
+    /// Whether a command line gives it as a bare switch, with no value.
+    pub fn is_switch(&self) -> bool {
+        self.kind == Some("boolean")
+    }
+}
+
+/// Every argument `schema` declares: in its `x-nd-order` when it has one,
+/// else in the order its `properties` list them (alphabetical, to an `nd`
+/// built without `serde_json`'s `preserve_order`).
 pub fn args(schema: &Value) -> Vec<Arg<'_>> {
     let required = schema["required"].as_array();
     let is_required = |name: &str| required.is_some_and(|r| r.iter().any(|v| v == name));
     let Some(properties) = schema["properties"].as_object() else {
         return Vec::new();
     };
-    properties
+    let order = schema["x-nd-order"].as_array();
+    let rank = |name: &str| {
+        order
+            .and_then(|order| order.iter().position(|v| v == name))
+            .unwrap_or(usize::MAX)
+    };
+    let mut args: Vec<Arg> = properties
         .iter()
         .map(|(name, prop)| Arg {
             name,
@@ -35,8 +81,19 @@ pub fn args(schema: &Value) -> Vec<Arg<'_>> {
             required: is_required(name),
             description: prop["description"].as_str().unwrap_or(""),
             choices: prop["enum"].as_array().map(Vec::as_slice),
+            positional: match &prop["x-nd-positional"] {
+                Value::String(rest) if rest == "rest" => Some(Slot::Rest),
+                value => value.as_u64().map(Slot::Index),
+            },
+            short: prop["x-nd-short"].as_str().and_then(|s| s.chars().next()),
+            long: prop["x-nd-long"].as_str(),
+            env: prop["x-nd-env"].as_str(),
         })
-        .collect()
+        .collect();
+    // Stable, so names `x-nd-order` leaves out keep their map order after
+    // the ones it lists.
+    args.sort_by_key(|arg| rank(arg.name));
+    args
 }
 
 /// The argument list as `nd tools <name>` prints it, and as an argument error
@@ -94,7 +151,20 @@ pub fn build(
     base: Option<Value>,
     pairs: &[String],
 ) -> Result<Value, String> {
-    let fail = |problem: String| Err(format!("{problem}\n\n{tool} takes:\n{}", arg_lines(schema)));
+    assemble(tool, schema, base, pairs)
+        .map_err(|problem| format!("{problem}\n\n{tool} takes:\n{}", arg_lines(schema)))
+}
+
+/// [`build`] with the bare problem on failure, for a caller that lists the
+/// arguments its own way: `nd <ns> <verb>` points at the command's page,
+/// whose flags aren't the schema's key names.
+pub fn assemble(
+    tool: &str,
+    schema: &Value,
+    base: Option<Value>,
+    pairs: &[String],
+) -> Result<Value, String> {
+    let fail = |problem: String| Err(problem);
     let args = args(schema);
 
     let mut object = match base {

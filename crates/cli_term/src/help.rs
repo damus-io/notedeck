@@ -15,25 +15,29 @@
 //! byte.
 
 /// One command's help: its line in the grouped list, and its own page.
-pub struct CommandHelp {
+///
+/// A CLI's own table is `CommandHelp<'static>` consts. The lifetime is for a
+/// page built at runtime, borrowing text the program fetched, as `nd` does
+/// for the commands the running notedeck's tools declare.
+pub struct CommandHelp<'a> {
     /// The name as typed, e.g. `move-board`.
-    pub name: &'static str,
+    pub name: &'a str,
     /// The section heading the command is listed under in the overview, e.g.
     /// `"READING"`. Must be one of its [`Cli::groups`].
-    pub group: &'static str,
+    pub group: &'a str,
     /// One line for the command list. No trailing period.
-    pub summary: &'static str,
+    pub summary: &'a str,
     /// The usage line(s) on the command's page, without the leading program
     /// name.
-    pub usage: &'static [&'static str],
+    pub usage: &'a [&'a str],
     /// The body of the command's page: what it does and why, pre-wrapped to the
     /// help column. Empty for a command the summary already covers.
-    pub details: &'static str,
+    pub details: &'a str,
     /// The `(flag, description)` pairs this command reads — only its own; the
     /// global ones are [`GlobalOption`]s, on the overview and `help options`.
-    pub options: &'static [(&'static str, &'static str)],
+    pub options: &'a [(&'a str, &'a str)],
     /// Full command lines, printed verbatim.
-    pub examples: &'static [&'static str],
+    pub examples: &'a [&'a str],
 }
 
 /// A CLI's whole help table: its name, its sections, and its commands.
@@ -47,7 +51,7 @@ pub struct Cli {
     /// Every command the CLI accepts. A CLI resolves command names through
     /// [`Cli::lookup`], so a command missing its entry is rejected rather than
     /// shipping with no help.
-    pub commands: &'static [CommandHelp],
+    pub commands: &'static [CommandHelp<'static>],
     /// A few of the global flags, named in each page's closing pointer to
     /// `<bin> help options`, e.g. `"--board, --relay, ..."`.
     pub global_hint: &'static str,
@@ -95,7 +99,7 @@ pub const WIDTH: usize = 78;
 impl Cli {
     /// The help entry for a command name, or `None` when the CLI has no such
     /// command.
-    pub fn lookup(&self, name: &str) -> Option<&'static CommandHelp> {
+    pub fn lookup(&self, name: &str) -> Option<&'static CommandHelp<'static>> {
         self.commands.iter().find(|c| c.name == name)
     }
 

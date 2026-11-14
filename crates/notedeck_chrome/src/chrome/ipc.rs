@@ -202,6 +202,11 @@ fn tool_info(spec: &ToolSpec) -> ToolInfo {
         },
         read_only: spec.is_read_only(),
         input_schema: spec.json_schema(),
+        command: spec
+            .command_path()
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect(),
     }
 }
 

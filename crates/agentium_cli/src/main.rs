@@ -605,7 +605,7 @@ enum Invocation {
     /// `agentium` with no command, or `agentium --help`: the grouped overview.
     Usage,
     /// `agentium <cmd> --help` or `agentium help <cmd>`: one command's own page.
-    CommandHelp(&'static cli_term::help::CommandHelp),
+    CommandHelp(&'static cli_term::help::CommandHelp<'static>),
     /// `agentium help options`: the options every command takes, in full.
     Options,
 }
