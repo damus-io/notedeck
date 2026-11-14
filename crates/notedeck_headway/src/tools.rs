@@ -534,7 +534,9 @@ fn resolve_shared(
 /// Resolves `board_id` (own or joined-shared, see [`resolve_target`]) so `build`
 /// can resolve card/column refs against the live view, then signs, ingests, and
 /// publishes the action — sealing into the board's SNS channel when it's shared.
-/// Errors when the account is watch-only or the context has no publisher (a
+/// A comment is signed by the context's comment key when it carries one, and
+/// refused on a plaintext board, where it would never show (see
+/// [`store::signing_key`]). Errors when the account is watch-only or the context has no publisher (a
 /// read-only context), so a change is never silently dropped.
 fn mutate(
     cx: &mut ToolContext,
@@ -561,6 +563,17 @@ fn mutate(
         .selected_filled()
         .map(|f| f.secret_key.secret_bytes())
         .ok_or("the selected account is watch-only and cannot sign changes")?;
+    // A comment from a caller with its own comment key (an agent, through
+    // `nd`) is signed by that key, as the CLI signs it; it reaches only a tool
+    // that accepts one.
+    let comment_secret = cx.comment_signer.map(|key| key.secret_key.secret_bytes());
+    let signing_key = store::signing_key(
+        &action,
+        &secret,
+        comment_secret.as_ref(),
+        channel.as_ref(),
+        board_id,
+    )?;
 
     let Some(api) = cx.publish.as_mut() else {
         return Err("publishing is unavailable in this context".to_string());
@@ -571,7 +584,7 @@ fn mutate(
         board_id,
         &view,
         &author,
-        &store::Signer::new(&secret, channel.as_ref()),
+        &store::Signer::new(signing_key, channel.as_ref()),
         action,
         &mut publisher,
     );
@@ -1033,6 +1046,7 @@ impl AppTool for CommentCard {
         )
         .titled("Post comment")
         .filed_under(crate::TOOL_CATEGORY)
+        .accepts_comment_signer()
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -1318,6 +1332,7 @@ mod tests {
             note_cache,
             accounts,
             publish: None,
+            comment_signer: None,
         }
     }
 
@@ -1897,5 +1912,157 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("watch-only"), "{err}");
+    }
+
+    /// The view `author`'s board `board_id` resolves to, as a write tool
+    /// resolves it (sealed boards by their channel), once `ready` holds of
+    /// it. Panics after a bounded wait: ingest and unwrapping are async.
+    fn settled_view(
+        ndb: &Ndb,
+        author: &Pubkey,
+        board_id: &str,
+        what: &str,
+        ready: impl Fn(&BoardView) -> bool,
+    ) -> BoardView {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let teams = teams::teams_from_ndb(ndb, author);
+            if let Ok(ResolvedTarget { view, .. }) = resolve_target(ndb, author, board_id, &teams)
+                && ready(&view)
+            {
+                return view;
+            }
+            assert!(Instant::now() < deadline, "never settled: {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Run the registered tool `name` (so the registry's comment-signer
+    /// gate applies) and hand back its data or its error.
+    fn call_registered(
+        cx: &mut ToolContext,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name() == name)
+            .unwrap_or_else(|| panic!("{name} is registered"));
+        match tool.call(cx, &args) {
+            notedeck::ToolOutcome::Data(value) => Ok(value),
+            notedeck::ToolOutcome::Error(err) => Err(err),
+            notedeck::ToolOutcome::Intent(_) => panic!("{name} answered with an intent"),
+        }
+    }
+
+    /// The caller's comment key signs a comment on a sealed board, as the
+    /// CLI's `HEADWAY_COMMENT_NSEC` does; on a plaintext board, where a
+    /// comment by another key would never show, the call is refused and a
+    /// comment without one is the account's own.
+    #[tokio::test]
+    async fn a_comment_signer_signs_on_sealed_boards_and_is_refused_on_plaintext() {
+        const SEALED: &str = "sealed";
+        let dir = TempDir::new().expect("tmp dir");
+        let account = FullKeypair::generate();
+        let agent = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+        let args: Vec<String> = [
+            "notedeck-test",
+            "--testrunner",
+            "--nsec",
+            &account.secret_key.to_secret_hex(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut notedeck = notedeck::Notedeck::init(&egui::Context::default(), dir.path(), &args);
+        let mut app = notedeck.app_context();
+        let ndb = app.ndb.clone();
+
+        // A plaintext board with cards, and a sealed board born the way
+        // `headway seed` makes one.
+        store::seed_demo_board(
+            &ndb,
+            &account.pubkey,
+            &secret,
+            store::BOARD_ID,
+            1_700_000_000,
+            &mut store::NoPublish,
+        );
+        let root = nostrdb_net::sns::derive_board_root(&secret, SEALED);
+        assert!(store::create_shared_board(
+            &ndb,
+            &account.pubkey,
+            &secret,
+            SEALED,
+            "Sealed",
+            &root,
+            &mut store::NoPublish,
+        ));
+        settled_view(&ndb, &account.pubkey, SEALED, "the sealed board", |_| true);
+        {
+            let mut cx = app.tool_context();
+            call_registered(
+                &mut cx,
+                "headway_add_card",
+                json!({ "title": "Sealed card", "board": SEALED }),
+            )
+            .expect("adds a card");
+        }
+        let view = settled_view(&ndb, &account.pubkey, SEALED, "the sealed card", |view| {
+            view.columns.iter().any(|col| !col.cards.is_empty())
+        });
+        let sealed_card = view.columns.iter().flat_map(|c| &c.cards).next().unwrap();
+        let sealed_ref = wordid::card_ref(SEALED, sealed_card.id.bytes());
+        settled_view(
+            &ndb,
+            &account.pubkey,
+            store::BOARD_ID,
+            "the demo board",
+            |view| view.columns.iter().any(|col| !col.cards.is_empty()),
+        );
+        let plain_ref = first_card_ref(&ndb, app.accounts);
+
+        let mut cx = app.tool_context();
+        cx.comment_signer = Some(&agent);
+        call_registered(
+            &mut cx,
+            "headway_comment_card",
+            json!({ "card": sealed_ref, "body": "from the agent" }),
+        )
+        .expect("a sealed board takes the agent's comment");
+        let err = call_registered(
+            &mut cx,
+            "headway_comment_card",
+            json!({ "card": plain_ref, "body": "never shown" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("plaintext board"), "{err}");
+
+        let view = settled_view(
+            &ndb,
+            &account.pubkey,
+            SEALED,
+            "the agent's comment",
+            |view| {
+                view.columns
+                    .iter()
+                    .flat_map(|c| &c.cards)
+                    .any(|card| !card.comments.is_empty())
+            },
+        );
+        let comment = view
+            .columns
+            .iter()
+            .flat_map(|c| &c.cards)
+            .flat_map(|card| &card.comments)
+            .next()
+            .unwrap();
+        assert_eq!(comment.body, "from the agent");
+        assert_eq!(
+            comment.author,
+            *agent.pubkey.bytes(),
+            "signed by the comment key"
+        );
     }
 }

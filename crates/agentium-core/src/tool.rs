@@ -279,6 +279,9 @@ pub struct ToolSpec {
     /// The command line that runs it, e.g. `["headway", "show"]`; empty for
     /// none (see [`command`](ToolSpec::command)).
     command: &'static [&'static str],
+    /// Whether a caller's comment key may sign what it writes (see
+    /// [`accepts_comment_signer`](ToolSpec::accepts_comment_signer)).
+    comment_signer: bool,
 }
 
 impl ToolSpec {
@@ -294,6 +297,7 @@ impl ToolSpec {
             category: None,
             read_only: false,
             command: &[],
+            comment_signer: false,
         }
     }
 
@@ -343,6 +347,22 @@ impl ToolSpec {
     pub fn command(mut self, path: &'static [&'static str]) -> Self {
         self.command = path;
         self
+    }
+
+    /// Let a caller's comment key sign what this tool writes, in place of
+    /// the app's account: an agent's headway comment keeps the agent's own
+    /// key. The key travels beside the call on the socket, never in the
+    /// args, so a model can't set it; a tool that doesn't opt in never sees
+    /// one.
+    pub fn accepts_comment_signer(mut self) -> Self {
+        self.comment_signer = true;
+        self
+    }
+
+    /// Whether a caller's comment key reaches this tool (see
+    /// [`accepts_comment_signer`](Self::accepts_comment_signer)).
+    pub fn takes_comment_signer(&self) -> bool {
+        self.comment_signer
     }
 
     /// Its command line (see [`command`](Self::command)), empty when it has

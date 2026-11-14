@@ -13,8 +13,9 @@
 
 use super::actions::chrome_handle_app_action;
 use super::Chrome;
+use nostrdb_net::{FullKeypair, SecretKey};
 use notedeck::{AppAction, AppContext, ToolOutcome, ToolSpec};
-use notedeck_ipc::{IntentStatus, Reply, Request, Response, ToolInfo};
+use notedeck_ipc::{IntentStatus, Reply, Request, Response, Signer, ToolInfo};
 
 /// The socket and the requests waiting on the window. Empty until
 /// [`Chrome::serve_ipc`].
@@ -129,24 +130,36 @@ pub(super) fn serve(chrome: &mut Chrome, ctx: &mut AppContext, request: Request)
         Request::ListTools => Served::Reply(Response::ok(Reply::Tools {
             tools: ctx.tool_specs().iter().map(tool_info).collect(),
         })),
-        Request::CallTool { name, args } => call_tool(chrome, ctx, &name, &args),
+        Request::CallTool { name, args, signer } => {
+            call_tool(chrome, ctx, &name, &args, signer.as_ref())
+        }
     }
 }
 
 /// Run the tool `name`: a data tool here, a UI tool in the app that owns it.
 /// What either answers with becomes the reply, or an intent for the window.
+///
+/// `signer` is the caller's comment key, which a data tool that accepts one
+/// signs its comments with. A key that doesn't parse refuses the call rather
+/// than letting it sign as the account.
 fn call_tool(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     name: &str,
     args: &serde_json::Value,
+    signer: Option<&Signer>,
 ) -> Served {
+    let comment_signer = match signer.map(comment_key).transpose() {
+        Ok(key) => key,
+        Err(err) => return Served::Reply(Response::error(err)),
+    };
     #[cfg(feature = "dave")]
     if name == notedeck_dave::SPAWN_SESSION {
         return Served::Reply(spawn_session(chrome, ctx, args));
     }
     // A person reads what nd prints, so ask a data tool for its text too.
-    let notedeck::Rendered { outcome, text } = ctx.call_tool_rendered(name, args);
+    let notedeck::Rendered { outcome, text } =
+        ctx.call_tool_rendered(name, args, comment_signer.as_ref());
     let outcome = match outcome {
         ToolOutcome::Intent(AppAction::CallTool(invocation)) => {
             match chrome.call_ui_tool(ctx, &invocation) {
@@ -165,6 +178,18 @@ fn call_tool(
         ToolOutcome::Error(err) => Served::Reply(Response::error(err)),
         ToolOutcome::Intent(action) => Served::Apply(action),
     }
+}
+
+/// The keypair `signer` names. The error never quotes the key.
+fn comment_key(signer: &Signer) -> Result<FullKeypair, String> {
+    SecretKey::parse(signer.comment_nsec.trim())
+        .ok()
+        .and_then(|secret| FullKeypair::from_secret_bytes(&secret.secret_bytes()))
+        .ok_or_else(|| {
+            "the call's comment signer is not a valid key (expected an nsec1… or a 64-char hex \
+             secret key); refusing to sign as the account instead"
+                .to_owned()
+        })
 }
 
 /// Serve `nd spawn`'s call of Dave's
@@ -209,6 +234,7 @@ fn tool_info(spec: &ToolSpec) -> ToolInfo {
             .iter()
             .map(|word| (*word).to_owned())
             .collect(),
+        accepts_signer: spec.takes_comment_signer(),
     }
 }
 
@@ -229,6 +255,23 @@ mod tests {
     const TOGGLE: &str = "test_toggle_chrome";
     /// A UI tool answering with a call to [`PEEK`], which is never made.
     const CALL_AGAIN: &str = "test_call_again";
+    /// A data tool that accepts a comment signer and answers with its pubkey.
+    const WHO_SIGNS: &str = "test_who_signs";
+
+    struct WhoSigns;
+
+    impl AppTool for WhoSigns {
+        type Args = Value;
+        type Output = Option<String>;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new(WHO_SIGNS, "Says who signs", Vec::new()).accepts_comment_signer()
+        }
+
+        fn call(&self, cx: &mut ToolContext, _args: Value) -> Result<Option<String>, String> {
+            Ok(cx.comment_signer.map(|key| key.pubkey.hex()))
+        }
+    }
 
     struct Echo;
 
@@ -261,7 +304,7 @@ mod tests {
         }
 
         fn tools(&self) -> Vec<RegisteredTool> {
-            vec![RegisteredTool::new(Echo)]
+            vec![RegisteredTool::new(Echo), RegisteredTool::new(WhoSigns)]
         }
 
         fn ui_tools(&self) -> Vec<ToolSpec> {
@@ -326,8 +369,22 @@ mod tests {
         let request = Request::CallTool {
             name: name.to_owned(),
             args,
+            signer: None,
         };
         serve(&mut f.chrome, &mut ctx, request)
+    }
+
+    /// Call [`WHO_SIGNS`] with `signer`, answering with what it saw.
+    fn call_signed(f: &mut Fixture, signer: Option<&str>) -> Outcome {
+        let mut ctx = f.notedeck.app_context();
+        let request = Request::CallTool {
+            name: WHO_SIGNS.to_owned(),
+            args: json!({}),
+            signer: signer.map(|key| Signer {
+                comment_nsec: key.to_owned(),
+            }),
+        };
+        reply(serve(&mut f.chrome, &mut ctx, request))
     }
 
     fn reply(served: Served) -> Outcome {
@@ -373,6 +430,48 @@ mod tests {
             })
         );
         assert!(f.calls.borrow().is_empty(), "no UI tool ran");
+    }
+
+    /// A call's signer reaches the context of a tool that accepts one, as a
+    /// keypair; a call without one leaves it `None`; and a key that doesn't
+    /// parse refuses the call without echoing the key.
+    #[tokio::test]
+    async fn a_call_tool_signer_reaches_the_tool_context() {
+        let mut f = fixture();
+        let key = nostrdb_net::FullKeypair::generate();
+        let Outcome::Ok(Reply::Result { result, .. }) =
+            call_signed(&mut f, Some(&key.secret_key.to_secret_hex()))
+        else {
+            panic!("the signed call answers");
+        };
+        assert_eq!(result, json!(key.pubkey.hex()));
+
+        let Outcome::Ok(Reply::Result { result, .. }) = call_signed(&mut f, None) else {
+            panic!("the unsigned call answers");
+        };
+        assert_eq!(result, Value::Null);
+
+        let Outcome::Error { message } = call_signed(&mut f, Some("nsec1notakey")) else {
+            panic!("a bad key is refused");
+        };
+        assert!(message.contains("not a valid key"), "{message}");
+        assert!(!message.contains("nsec1notakey"), "{message}");
+
+        let mut ctx = f.notedeck.app_context();
+        let Outcome::Ok(Reply::Tools { tools }) =
+            reply(serve(&mut f.chrome, &mut ctx, Request::ListTools))
+        else {
+            panic!("expected the tool list");
+        };
+        let accepts = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap()
+                .accepts_signer
+        };
+        assert!(accepts(WHO_SIGNS));
+        assert!(!accepts(ECHO));
     }
 
     #[tokio::test]
@@ -440,6 +539,7 @@ mod tests {
             let request = Request::CallTool {
                 name: notedeck_dave::SPAWN_SESSION.to_owned(),
                 args: serde_json::json!({ "cwd": cwd }),
+                signer: None,
             };
             reply(serve(chrome, ctx, request))
         };
@@ -473,6 +573,7 @@ mod tests {
                 .request(&Request::CallTool {
                     name: TOGGLE.to_owned(),
                     args: Value::Null,
+                    signer: None,
                 })
         });
 

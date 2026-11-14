@@ -34,13 +34,13 @@
 //! `headway_show_board`, and `headway show <card>` is `headway_show_card`.
 //! Tools that tie keep the order notedeck listed them in.
 
-use crate::caller::Caller;
+use crate::caller::{self, Caller};
 use crate::help::CLI;
 use crate::output::Output;
 use crate::schema::{self, Arg, ClientKind, Slot};
 use cli_term::help::{CommandHelp, NAME_COL};
 use cli_term::{ColorWhen, PagerMode};
-use notedeck_ipc::ToolInfo;
+use notedeck_ipc::{Signer, ToolInfo};
 use serde_json::Value;
 
 /// What a command line resolved to.
@@ -48,12 +48,14 @@ use serde_json::Value;
 pub enum Action {
     /// Call `tool` with `args`, printing its answer as `output` says. `ns`
     /// is the command's namespace, whose pager variable the text goes
-    /// through.
+    /// through. `signer` is the caller's comment key, set only for a tool
+    /// that accepts one (see [`caller::signer_for`]).
     Call {
         tool: String,
         args: Value,
         output: Output,
         ns: String,
+        signer: Option<Signer>,
     },
     /// Print this help page.
     Help(String),
@@ -216,6 +218,7 @@ pub fn resolve(
         args,
         output: line.output,
         ns: path[0].to_owned(),
+        signer: caller::signer_for(entry.tool, caller)?,
     })
 }
 
@@ -705,6 +708,7 @@ mod tests {
             read_only: true,
             input_schema: schema,
             command: command.iter().map(|w| (*w).to_owned()).collect(),
+            accepts_signer: false,
         }
     }
 
@@ -771,24 +775,27 @@ mod tests {
                     "x-nd-order": ["column", "title", "urgent", "group_by"],
                 }),
             ),
-            tool(
-                "headway_edit",
-                &["headway", "edit"],
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
-                        "body": {"type": "string", "description": "A comment.", "x-nd-positional": "rest", "x-nd-from-file": "body-file"},
-                        "labels": {"type": "array", "items": {"type": "string"}, "description": "Labels.", "x-nd-short": "l", "x-nd-kind": "list"},
-                        "desc": {"type": "string", "description": "The text.", "x-nd-from-file": "desc-file"},
-                        "repo_dir": {"type": "string", "description": "The checkout.", "x-nd-kind": "path", "x-nd-default-cwd": true},
-                        "file": {"type": "string", "description": "A file.", "x-nd-kind": "path"},
-                        "session": {"type": "string", "description": "Who.", "x-nd-env": "AGENTIUM_SESSION"},
-                    },
-                    "required": ["card"],
-                    "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "session"],
-                }),
-            ),
+            ToolInfo {
+                accepts_signer: true,
+                ..tool(
+                    "headway_edit",
+                    &["headway", "edit"],
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
+                            "body": {"type": "string", "description": "A comment.", "x-nd-positional": "rest", "x-nd-from-file": "body-file"},
+                            "labels": {"type": "array", "items": {"type": "string"}, "description": "Labels.", "x-nd-short": "l", "x-nd-kind": "list"},
+                            "desc": {"type": "string", "description": "The text.", "x-nd-from-file": "desc-file"},
+                            "repo_dir": {"type": "string", "description": "The checkout.", "x-nd-kind": "path", "x-nd-default-cwd": true},
+                            "file": {"type": "string", "description": "A file.", "x-nd-kind": "path"},
+                            "session": {"type": "string", "description": "Who.", "x-nd-env": "AGENTIUM_SESSION"},
+                        },
+                        "required": ["card"],
+                        "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "session"],
+                    }),
+                )
+            },
             tool(
                 "headway_open_review_queue",
                 &[],
@@ -863,6 +870,7 @@ mod tests {
             args,
             output,
             ns: "headway".to_owned(),
+            signer: None,
         })
     }
 
@@ -1243,6 +1251,55 @@ mod tests {
 
     /// The caller's session fills a tool's `x-nd-env` argument the way
     /// `$HEADWAY_BOARD` does, and a typed value beats it.
+    /// The signer `line` sends, in `cwd` with `env`.
+    fn signer_of(
+        line: &[&str],
+        env: &[(&str, &str)],
+        cwd: &Path,
+    ) -> Result<Option<String>, String> {
+        let caller = Fake {
+            env,
+            cwd: cwd.to_owned(),
+            stdin: "",
+        };
+        match resolve_in(line, &caller)? {
+            Action::Call { signer, .. } => Ok(signer.map(|s| s.comment_nsec)),
+            other => panic!("{line:?}: {other:?}"),
+        }
+    }
+
+    /// The comment key goes with a call of a tool that accepts one, from
+    /// the variable before the file, trimmed; never with any other tool.
+    #[test]
+    fn the_comment_key_goes_only_to_a_tool_that_accepts_one() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("key"), "nsec1fromfile\n").unwrap();
+        let edit = ["headway", "edit", "c"];
+        let inline = ("HEADWAY_COMMENT_NSEC", " nsec1inline ");
+        let file = ("HEADWAY_COMMENT_NSEC_FILE", "key");
+
+        assert_eq!(signer_of(&edit, &[], dir.path()), Ok(None));
+        assert_eq!(
+            signer_of(&edit, &[file], dir.path()),
+            Ok(Some("nsec1fromfile".to_owned()))
+        );
+        assert_eq!(
+            signer_of(&edit, &[inline, file], dir.path()),
+            Ok(Some("nsec1inline".to_owned()))
+        );
+        assert_eq!(
+            signer_of(&["headway", "show"], &[inline, file], dir.path()),
+            Ok(None),
+            "headway_show_board doesn't accept one"
+        );
+
+        let missing = ("HEADWAY_COMMENT_NSEC_FILE", "absent");
+        let err = signer_of(&edit, &[missing], dir.path()).unwrap_err();
+        assert!(err.contains("can't read"), "{err}");
+        let err = signer_of(&edit, &[("HEADWAY_COMMENT_NSEC", " ")], dir.path()).unwrap_err();
+        assert!(err.contains("holds no key"), "{err}");
+    }
+
     #[test]
     fn agentium_session_falls_back_from_env() {
         let env = [("AGENTIUM_SESSION", "agentium:gaze-cross-blossom")];

@@ -51,6 +51,7 @@ fn tools() -> Vec<ToolInfo> {
             "required": ["reference"],
         }),
         command: Vec::new(),
+        accepts_signer: false,
     }]
 }
 
@@ -67,6 +68,7 @@ fn app_tools() -> Vec<ToolInfo> {
         read_only: true,
         input_schema: schema,
         command: vec!["headway".to_owned(), verb.to_owned()],
+        accepts_signer: false,
     };
     vec![
         tool(
@@ -126,6 +128,23 @@ fn app_tools() -> Vec<ToolInfo> {
                 "x-nd-order": ["card", "labels", "desc", "repo_dir", "session"],
             }),
         ),
+        ToolInfo {
+            accepts_signer: true,
+            ..tool(
+                "headway_comment_card",
+                "Post comment",
+                "comment",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
+                        "body": {"type": "string", "description": "The text.", "x-nd-positional": "rest"},
+                    },
+                    "required": ["card", "body"],
+                    "x-nd-order": ["card", "body"],
+                }),
+            )
+        },
     ]
 }
 
@@ -164,9 +183,18 @@ fn serve(dir: &TempDir, answers: Vec<Response>) -> Fake {
 }
 
 fn nd(socket: &Path, args: &[&str]) -> Output {
+    nd_env(socket, args, &[])
+}
+
+/// [`nd`] with `env` set, in an environment otherwise clear of the comment
+/// key an agent session exports.
+fn nd_env(socket: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     Command::new(nd_bin())
         .args(args)
         .env("NOTEDECK_SOCKET", socket)
+        .env_remove("HEADWAY_COMMENT_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC_FILE")
+        .envs(env.iter().copied())
         .output()
         .expect("run nd")
 }
@@ -218,6 +246,7 @@ fn an_applied_intent_prints_nothing_and_exits_0() {
         Request::CallTool {
             name: "open".to_owned(),
             args: json!({"reference": "headway:notedeck/a-b", "limit": 3}),
+            signer: None,
         }
     );
 }
@@ -240,6 +269,7 @@ fn a_bare_value_fills_the_one_required_string() {
         Request::CallTool {
             name: "open".to_owned(),
             args: json!({"reference": "agentium:possible-video-science"}),
+            signer: None,
         }
     );
 }
@@ -389,6 +419,7 @@ fn mcp_serves_a_session_over_stdio() {
         Request::CallTool {
             name: "open".to_owned(),
             args: json!({"reference": "x"}),
+            signer: None,
         }
     );
 }
@@ -440,6 +471,7 @@ fn spawn_sends_the_resolved_dir_and_prints_the_session() {
         Request::CallTool {
             name: "dave_spawn_session".to_owned(),
             args: json!({"cwd": work.path().canonicalize().unwrap()}),
+            signer: None,
         }
     );
 }
@@ -490,6 +522,7 @@ fn an_app_command_calls_the_tool_it_names() {
         Request::CallTool {
             name: "headway_show_card".to_owned(),
             args: json!({"card": "headway:notedeck/a-b-c"}),
+            signer: None,
         }
     );
 }
@@ -570,6 +603,7 @@ fn an_app_command_reads_flags_and_the_callers_env() {
                 "limit": 1,
                 "board": "notedeck",
             }),
+            signer: None,
         }
     );
 }
@@ -627,6 +661,7 @@ fn an_app_command_resolves_the_callers_side() {
                 "repo_dir": repo_dir.to_string_lossy(),
                 "session": "agentium:gaze-cross-blossom",
             }),
+            signer: None,
         }
     );
 }
@@ -686,4 +721,50 @@ fn an_app_command_without_notedeck_exits_2() {
     let dir = socket_dir();
     let out = nd(&dir.path().join("absent.sock"), &["headway", "show"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}
+
+/// The comment key in nd's environment goes on the wire beside a call of a
+/// tool that accepts one, by command or by `nd call`, and with no other.
+#[test]
+fn the_comment_key_rides_only_with_a_tool_that_accepts_one() {
+    let dir = socket_dir();
+    let done = || {
+        Response::ok(Reply::Result {
+            result: json!({"ok": true}),
+            text: None,
+        })
+    };
+    let Fake { socket, server } = serve(
+        &dir,
+        vec![app_list(), done(), app_list(), done(), app_list(), done()],
+    );
+    let key = [("HEADWAY_COMMENT_NSEC", "nsec1agent")];
+    for line in [
+        &["headway", "comment", "c", "looks", "good"][..],
+        &["call", "headway_comment_card", "card=c", "body=looks good"],
+        &["headway", "show"],
+    ] {
+        let out = nd_env(&socket, line, &key);
+        assert_eq!(out.status.code(), Some(0), "{line:?}: {}", stderr(&out));
+    }
+    let seen = server.join().unwrap();
+    let signed = Some(notedeck_ipc::Signer {
+        comment_nsec: "nsec1agent".to_owned(),
+    });
+    let comment = Request::CallTool {
+        name: "headway_comment_card".to_owned(),
+        args: json!({"card": "c", "body": "looks good"}),
+        signer: signed,
+    };
+    assert_eq!(seen[1], comment, "by command");
+    assert_eq!(seen[3], comment, "by nd call");
+    assert_eq!(
+        seen[5],
+        Request::CallTool {
+            name: "headway_show_board".to_owned(),
+            args: json!({}),
+            signer: None,
+        },
+        "a tool that doesn't accept one never gets it"
+    );
 }

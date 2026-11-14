@@ -287,7 +287,8 @@ fn app(words: &[String], help: bool) -> Result<(), Failure> {
             args,
             output,
             ns,
-        } => send_call(tool, args, Print::Command { output, ns: &ns }),
+            signer,
+        } => send_call(tool, args, signer, Print::Command { output, ns: &ns }),
     }
 }
 
@@ -330,7 +331,8 @@ fn call(name: &str, pairs: &[String], base: Option<JsonSource>) -> Result<(), Fa
         )));
     };
     let args = schema::build(name, &tool.input_schema, base, pairs)?;
-    send_call(name.to_owned(), args, Print::Value)
+    let signer = caller::signer_for(tool, &caller::Process)?;
+    send_call(name.to_owned(), args, signer, Print::Value)
 }
 
 /// How [`send_call`] prints a tool's answer.
@@ -344,9 +346,14 @@ enum Print<'a> {
 }
 
 /// Call tool `name` with `args`, already checked against its schema, and
-/// print what it answers.
-fn send_call(name: String, args: Value, print: Print) -> Result<(), Failure> {
-    match answer(Request::CallTool { name, args })? {
+/// `signer` beside them, and print what it answers.
+fn send_call(
+    name: String,
+    args: Value,
+    signer: Option<notedeck_ipc::Signer>,
+    print: Print,
+) -> Result<(), Failure> {
+    match answer(Request::CallTool { name, args, signer })? {
         Reply::Result { result, text } => match print {
             Print::Value => print_json(&result),
             Print::Command { output, ns } => output.print(&result, text.as_deref(), ns),
@@ -370,6 +377,7 @@ fn spawn(json: bool, dir: Option<&str>) -> Result<(), Failure> {
     let request = Request::CallTool {
         name: SPAWN_SESSION.to_owned(),
         args: serde_json::json!({ "cwd": cwd }),
+        signer: None,
     };
     let reply = answer(request).map_err(|failure| match failure.code {
         NOT_RUNNING => failure,

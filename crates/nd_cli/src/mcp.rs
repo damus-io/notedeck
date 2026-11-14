@@ -220,9 +220,12 @@ fn tools_call(
         )));
     }
 
+    // A model picks the call, so it never carries the caller's comment key:
+    // that is for a person's own shell (`nd <ns> <verb>`, `nd call`).
     let request = Request::CallTool {
         name: name.to_owned(),
         args,
+        signer: None,
     };
     Ok(match ask(request) {
         Ok(Reply::Result { result, .. }) => data(result),
@@ -283,6 +286,7 @@ mod tests {
             read_only,
             input_schema: json!({"type": "object", "properties": {}}),
             command: Vec::new(),
+            accepts_signer: false,
         }
     }
 
@@ -422,6 +426,7 @@ mod tests {
             Request::CallTool {
                 name: "read_board".to_owned(),
                 args: json!({"board": "notedeck"}),
+                signer: None,
             }
         );
     }

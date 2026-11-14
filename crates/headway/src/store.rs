@@ -247,6 +247,40 @@ impl<'a> Signer<'a> {
     }
 }
 
+/// The key that signs `action`: the comment key for a comment (on the card or
+/// on a review record's commit) when one is set, the editor's own `secret` for
+/// everything else. The `headway` CLI and the app's comment tool both decide
+/// with this, so an agent's comment keeps its key either way.
+///
+/// A comment signed by another key only shows on a sealed board. The shared fold
+/// takes any rumor sealed into the board's channel, whoever signed it, so the
+/// comment folds and is attributed to the comment key. A plaintext board folds
+/// only its owner's own events ([`event::fold_board`]), so a comment signed by
+/// anyone else would be published and never seen — refused here instead.
+pub fn signing_key<'a>(
+    action: &BoardAction,
+    secret: &'a [u8; 32],
+    comment_secret: Option<&'a [u8; 32]>,
+    channel: Option<&SnsChannel>,
+    board: &str,
+) -> Result<&'a [u8; 32], String> {
+    let is_comment = matches!(
+        action,
+        BoardAction::AddComment { .. } | BoardAction::AddReviewComments { .. }
+    );
+    let (true, Some(comment_secret)) = (is_comment, comment_secret) else {
+        return Ok(secret);
+    };
+    if channel.is_none() {
+        return Err(format!(
+            "'{board}' is a plaintext board, which shows only its owner's own events, so a \
+             comment signed with --comment-nsec / $HEADWAY_COMMENT_NSEC(_FILE) would never appear. \
+             Unset it to comment as yourself, or seal the board first (`headway migrate`)"
+        ));
+    }
+    Ok(comment_secret)
+}
+
 /// Sign `builder` with `secret` and ingest+publish the resulting note as
 /// plaintext — the single-writer path. Shared boards go through
 /// [`ingest_signed`] with a [`Signer::shared`] instead.

@@ -76,6 +76,12 @@ pub struct ToolContext<'a> {
     /// [`Accounts::selected_filled`]); this supplies the remote publish path
     /// used by [`fan_out_event_frame`](crate::fan_out_event_frame).
     pub publish: Option<ExplicitPublishApi<'a>>,
+    /// The caller's comment key, to sign comments with in place of the
+    /// selected account: an agent's own key, which `nd` sends beside a socket
+    /// call (see [`ToolSpec::accepts_comment_signer`]). Only a tool whose
+    /// spec opts in ever sees it; [`RegisteredTool`] clears it for any
+    /// other. `None` for every model-driven call (Dave, MCP).
+    pub comment_signer: Option<&'a nostrdb_net::FullKeypair>,
 }
 
 /// The result of running a [`ToolCall`].
@@ -289,13 +295,22 @@ impl RegisteredTool {
 
     /// Run the erased tool with raw JSON `args`.
     pub fn call(&self, cx: &mut ToolContext, args: &Value) -> ToolOutcome {
-        (self.handler)(cx, args, false).outcome
+        self.run(cx, args, false).outcome
     }
 
     /// Run it as [`call`](Self::call) does, and render its value as text too
     /// (see [`AppTool::render`]).
     pub fn call_rendered(&self, cx: &mut ToolContext, args: &Value) -> Rendered {
-        (self.handler)(cx, args, true)
+        self.run(cx, args, true)
+    }
+
+    /// Run the handler, first taking the caller's comment key away from a
+    /// tool that didn't ask for one, so no other tool can sign with it.
+    fn run(&self, cx: &mut ToolContext, args: &Value, text: bool) -> Rendered {
+        if !self.spec.takes_comment_signer() {
+            cx.comment_signer = None;
+        }
+        (self.handler)(cx, args, text)
     }
 }
 
@@ -626,6 +641,7 @@ mod tests {
             note_cache: &mut note_cache,
             accounts: &accounts,
             publish: None,
+            comment_signer: None,
         };
 
         let mut reg = ToolRegistry::default();
@@ -653,6 +669,7 @@ mod tests {
             note_cache: &mut note_cache,
             accounts: &accounts,
             publish: None,
+            comment_signer: None,
         };
         let mut reg = ToolRegistry::default();
         reg.register(RegisteredTool::new(Echo));
@@ -672,6 +689,75 @@ mod tests {
         assert!(matches!(unknown.outcome, ToolOutcome::Error(_)));
     }
 
+    /// Answers with the pubkey of the comment key its context carries, if
+    /// any; opts in to one only when `accepts` is set.
+    struct WhoSigns {
+        name: &'static str,
+        accepts: bool,
+    }
+
+    impl AppTool for WhoSigns {
+        type Args = Value;
+        type Output = Option<String>;
+
+        fn spec(&self) -> ToolSpec {
+            let spec = ToolSpec::new(self.name, "Say who signs.", Vec::new());
+            if self.accepts {
+                spec.accepts_comment_signer()
+            } else {
+                spec
+            }
+        }
+
+        fn call(&self, cx: &mut ToolContext, _args: Value) -> Result<Option<String>, String> {
+            Ok(cx.comment_signer.map(|key| key.pubkey.hex()))
+        }
+    }
+
+    /// A caller's comment key reaches a tool that accepts one, and is taken
+    /// away from one that doesn't, on both dispatch paths.
+    #[test]
+    fn only_an_opted_in_tool_sees_the_comment_signer() {
+        let ToolEnv {
+            db,
+            mut note_cache,
+            accounts,
+        } = test_tool_env();
+        let key = nostrdb_net::FullKeypair::generate();
+        let mut reg = ToolRegistry::default();
+        reg.register(RegisteredTool::new(WhoSigns {
+            name: "signs",
+            accepts: true,
+        }));
+        reg.register(RegisteredTool::new(WhoSigns {
+            name: "plain",
+            accepts: false,
+        }));
+        let mut call = |name: &str, rendered: bool| {
+            let mut cx = ToolContext {
+                ndb: &db.ndb,
+                note_cache: &mut note_cache,
+                accounts: &accounts,
+                publish: None,
+                comment_signer: Some(&key),
+            };
+            let outcome = if rendered {
+                reg.call_rendered(&mut cx, name, &json!({})).outcome
+            } else {
+                reg.call(&mut cx, name, &json!({}))
+            };
+            let ToolOutcome::Data(value) = outcome else {
+                panic!("expected data");
+            };
+            value
+        };
+
+        for rendered in [false, true] {
+            assert_eq!(call("signs", rendered), json!(key.pubkey.hex()));
+            assert_eq!(call("plain", rendered), Value::Null);
+        }
+    }
+
     #[test]
     fn registry_rejects_bad_args_and_unknown_tools() {
         let ToolEnv {
@@ -684,6 +770,7 @@ mod tests {
             note_cache: &mut note_cache,
             accounts: &accounts,
             publish: None,
+            comment_signer: None,
         };
 
         let mut reg = ToolRegistry::default();
@@ -748,6 +835,7 @@ mod tests {
             note_cache: &mut note_cache,
             accounts: &accounts,
             publish: None,
+            comment_signer: None,
         };
 
         let mut reg = ToolRegistry::default();

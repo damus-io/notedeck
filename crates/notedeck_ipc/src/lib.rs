@@ -91,7 +91,34 @@ pub enum Request {
         name: String,
         #[serde(default)]
         args: Value,
+        /// A key to sign the call's comments with in place of the app's
+        /// account, for a tool that accepts one (see
+        /// [`ToolInfo::accepts_signer`]); every other tool ignores it. It
+        /// rides beside the args, never in them, so a model calling the
+        /// tool through MCP or Dave can't set it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signer: Option<Signer>,
     },
+}
+
+/// Who signs a [`Request::CallTool`]'s comments, when not the app's account.
+///
+/// Its `Debug` hides the key, so logging a request never prints it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signer {
+    /// The comment key, `nsec1…` or 64-char hex, as `nd` read it from
+    /// `$HEADWAY_COMMENT_NSEC` or the file `$HEADWAY_COMMENT_NSEC_FILE`
+    /// names. notedeck parses it and refuses the call if it doesn't parse,
+    /// rather than signing as the account.
+    pub comment_nsec: String,
+}
+
+impl std::fmt::Debug for Signer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Signer")
+            .field("comment_nsec", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A [`Request`] as it goes over the wire: `v` beside the tagged fields.
@@ -240,6 +267,11 @@ pub struct ToolInfo {
     /// only by name; absent on the wire then, and from an older notedeck.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
+    /// Whether a call may carry a [`Signer`] for this tool to sign its
+    /// comments with. `nd` sends one only then. Absent on the wire when
+    /// false, and from an older notedeck.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepts_signer: bool,
 }
 
 #[cfg(test)]
@@ -257,6 +289,7 @@ mod tests {
             read_only: false,
             input_schema: json!({"type": "object", "properties": {}}),
             command: vec!["headway".to_owned(), "review".to_owned()],
+            accepts_signer: false,
         }
     }
 
@@ -280,6 +313,14 @@ mod tests {
             Request::CallTool {
                 name: "open".to_owned(),
                 args: json!({"reference": "headway:notedeck/hill-measure-accuse"}),
+                signer: None,
+            },
+            Request::CallTool {
+                name: "headway_comment_card".to_owned(),
+                args: json!({"card": "c", "body": "hi"}),
+                signer: Some(Signer {
+                    comment_nsec: "nsec1x".to_owned(),
+                }),
             },
         ];
         for request in requests {
@@ -300,9 +341,49 @@ mod tests {
             Request::from_line(r#"{"v":1,"type":"call_tool","name":"x"}"#),
             Ok(Request::CallTool {
                 name: "x".to_owned(),
-                args: Value::Null
+                args: Value::Null,
+                signer: None,
             })
         );
+    }
+
+    /// A call without a signer writes no `signer` key, so the wire is what
+    /// it was before the field, and one with a signer reads back. Neither
+    /// `Debug` prints the key.
+    #[test]
+    fn the_signer_is_optional_and_never_debug_printed() {
+        let bare = Request::CallTool {
+            name: "x".to_owned(),
+            args: Value::Null,
+            signer: None,
+        };
+        assert!(!bare.to_line().contains("signer"), "{}", bare.to_line());
+
+        let line =
+            r#"{"v":1,"type":"call_tool","name":"x","signer":{"comment_nsec":"nsec1secret"}}"#;
+        let request = Request::from_line(line).unwrap();
+        let Request::CallTool { signer, .. } = &request else {
+            panic!("a call");
+        };
+        assert_eq!(signer.as_ref().unwrap().comment_nsec, "nsec1secret");
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("nsec1secret"), "{debug}");
+        assert!(debug.contains("redacted"), "{debug}");
+    }
+
+    /// `accepts_signer` is off the wire when false, on it when true, and a
+    /// tool list from a notedeck that predates it reads as false.
+    #[test]
+    fn accepts_signer_is_optional_on_the_wire() {
+        let line = serde_json::to_string(&tool()).unwrap();
+        assert!(!line.contains("accepts_signer"), "{line}");
+        let signs = ToolInfo {
+            accepts_signer: true,
+            ..tool()
+        };
+        let line = serde_json::to_string(&signs).unwrap();
+        assert!(line.contains(r#""accepts_signer":true"#), "{line}");
+        assert_eq!(serde_json::from_str::<ToolInfo>(&line).unwrap(), signs);
     }
 
     #[test]

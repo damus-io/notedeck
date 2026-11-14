@@ -171,6 +171,7 @@ impl<'a> AppContext<'a> {
             note_cache: self.note_cache,
             accounts: self.accounts,
             publish: Some(self.remote.publisher_explicit()),
+            comment_signer: None,
         }
     }
 
@@ -218,7 +219,16 @@ impl<'a> AppContext<'a> {
     /// tool's rendered text beside its value (see
     /// [`AppTool::render`](crate::AppTool::render)), for a caller that prints
     /// to a person. A browser tool renders nothing.
-    pub fn call_tool_rendered(&mut self, name: &str, args: &serde_json::Value) -> crate::Rendered {
+    ///
+    /// `comment_signer` is the caller's comment key, from the socket: a tool
+    /// that [accepts one](crate::ToolSpec::accepts_comment_signer) signs its
+    /// comments with it, and every other tool never sees it.
+    pub fn call_tool_rendered(
+        &mut self,
+        name: &str,
+        args: &serde_json::Value,
+        comment_signer: Option<&nostrdb_net::FullKeypair>,
+    ) -> crate::Rendered {
         if crate::ToolCall::specs()
             .iter()
             .any(|spec| spec.name() == name)
@@ -226,7 +236,9 @@ impl<'a> AppContext<'a> {
             return self.call_tool(name, args).into();
         }
         let tools = &self.registries.tools;
-        tools.call_rendered(&mut self.tool_context(), name, args)
+        let mut cx = self.tool_context();
+        cx.comment_signer = comment_signer;
+        tools.call_rendered(&mut cx, name, args)
     }
 
     pub fn select_account(&mut self, pubkey: &Pubkey) {
