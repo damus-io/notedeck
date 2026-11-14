@@ -2921,5 +2921,20 @@ mod tests {
             .expect("shows the sealed card");
         assert_eq!(shown[0]["comments"][0]["body"], "from the agent");
         assert_eq!(shown[0]["comments"][0]["author"], agent.pubkey.hex());
+
+        // So does `show --all`: each sealed board is folded by its
+        // coordinate there too, not only by the account's own events.
+        let all = call_registered(&mut cx, "headway_show_board", json!({ "all": true }))
+            .expect("shows every board");
+        let sealed = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|board| board["id"] == SEALED)
+            .expect("the sealed board");
+        assert_eq!(
+            sealed["columns"][0]["cards"][0]["comments"][0]["author"],
+            agent.pubkey.hex()
+        );
     }
 }

@@ -200,18 +200,25 @@ impl Roster {
 /// joined shared board folds by *coordinate* (gathering every member's sealed
 /// edits), a private one folds from the owner's own plaintext events.
 pub fn load_board(ndb: &Ndb, roster: &Roster, board_id: &str) -> Option<BoardView> {
-    let author = &roster.id.owner;
     let txn = Transaction::new(ndb).ok()?;
+    load_board_in(ndb, &txn, roster, board_id)
+}
+
+/// [`load_board`] in the caller's transaction. A fold that already holds one
+/// must use this: LMDB refuses a second read transaction on the same thread,
+/// so [`load_board`] there answers `None` however the board is stored.
+fn load_board_in(
+    ndb: &Ndb,
+    txn: &Transaction,
+    roster: &Roster,
+    board_id: &str,
+) -> Option<BoardView> {
+    let author = &roster.id.owner;
     let channels = roster.channel_pubkeys(board_id);
     if channels.is_empty() {
-        return event::load_board(ndb, &txn, author, board_id);
+        return event::load_board(ndb, txn, author, board_id);
     }
-    event::load_shared_board(
-        ndb,
-        &txn,
-        &event::board_address(author, board_id),
-        &channels,
-    )
+    event::load_shared_board(ndb, txn, &event::board_address(author, board_id), &channels)
 }
 
 /// The roster owner's live boards in the cache — [`list_all_boards`] without the
@@ -239,7 +246,7 @@ pub fn list_all_boards(ndb: &Ndb, roster: &Roster) -> Vec<BoardView> {
         if roster.channel_pubkeys(&board.id).is_empty() {
             continue;
         }
-        if let Some(shared) = load_board(ndb, roster, &board.id) {
+        if let Some(shared) = load_board_in(ndb, &txn, roster, &board.id) {
             *board = shared;
         }
     }
