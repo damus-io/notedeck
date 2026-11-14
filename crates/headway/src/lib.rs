@@ -10,6 +10,9 @@
 //! - [`graph`] — the pure dependency-graph model: folds an epic's subtree +
 //!   blocking edges out of a [`event::BoardView`] into nodes + directed edges for
 //!   the graph view's layout and rendering. No egui.
+//! - [`edit`] — reading an edit's arguments against a board: columns, review
+//!   records, due dates, estimates and what a comment answers, for the CLI and
+//!   the app's tools alike.
 //! - [`query`] — the issue-list query model: the shared filter parser and
 //!   predicate behind the board filter, the list view and `headway list`.
 //! - [`render`] — the human text view of a board, a card, the `next`
@@ -30,6 +33,7 @@
 //!   read boards outside the egui app.
 
 pub mod boards;
+pub mod edit;
 pub mod event;
 pub mod fmt;
 pub mod git;

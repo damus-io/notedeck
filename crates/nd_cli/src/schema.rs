@@ -74,6 +74,12 @@ impl Arg<'_> {
         }
     }
 
+    /// Whether it declares a flag of its own (`x-nd-short` or `x-nd-long`),
+    /// which a positional then answers to beside its bare words.
+    pub fn has_flag(&self) -> bool {
+        self.short.is_some() || self.long.is_some()
+    }
+
     /// Whether a command line gives it as a bare switch, with no value.
     pub fn is_switch(&self) -> bool {
         self.kind == Some("boolean")

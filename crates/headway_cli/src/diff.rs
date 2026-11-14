@@ -9,7 +9,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use headway::event::{self, BoardView, ReviewView, resolve_card};
+use headway::edit::pick_record;
+use headway::event::{self, BoardView, resolve_card};
 use headway::git::{self, NoteKind, ResolveCtx};
 use headway::wordid;
 
@@ -99,63 +100,4 @@ pub(crate) fn print_diff(
         eprintln!("(patch truncated at {MAX_PATCH_BYTES} bytes)");
     }
     Ok(())
-}
-
-/// The review record `diff` shows, and a new `comment --path` lands on: the
-/// one whose commit starts with `prefix` when given (newest first, as
-/// [`event::CardView::reviews`] is ordered), else the newest. `None` when the
-/// card has no records and no prefix was asked for.
-pub(crate) fn pick_record<'a>(
-    reviews: &'a [ReviewView],
-    prefix: Option<&str>,
-) -> Result<Option<&'a ReviewView>> {
-    let Some(prefix) = prefix else {
-        return Ok(reviews.first());
-    };
-    reviews
-        .iter()
-        .find(|r| {
-            r.fields
-                .commit
-                .as_deref()
-                .is_some_and(|c| c.starts_with(prefix))
-        })
-        .map(Some)
-        .ok_or_else(|| format!("no review record with a commit starting '{prefix}'").into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use headway::event::ReviewFields;
-    use nostrdb_net::NoteId;
-
-    /// A review record carrying only `commit`.
-    fn review(commit: &str) -> ReviewView {
-        ReviewView {
-            id: NoteId::new([0; 32]),
-            author: [0; 32],
-            created_at: 0,
-            fields: ReviewFields {
-                commit: Some(commit.to_string()),
-                ..Default::default()
-            },
-            comments: Vec::new(),
-            sources: Vec::new(),
-        }
-    }
-
-    /// No prefix takes the newest; a prefix picks the first match; a prefix
-    /// matching nothing is an error rather than a silent fallback.
-    #[test]
-    fn pick_record_by_prefix() {
-        let reviews = [review("bbb222"), review("aaa111")];
-        assert_eq!(pick_record(&reviews, None).unwrap(), Some(&reviews[0]));
-        assert_eq!(
-            pick_record(&reviews, Some("aaa")).unwrap(),
-            Some(&reviews[1])
-        );
-        assert!(pick_record(&reviews, Some("ccc")).is_err());
-        assert_eq!(pick_record(&[], None).unwrap(), None);
-    }
 }

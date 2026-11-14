@@ -12,7 +12,8 @@
 //! - **Flags** are `--<flag> <value>` or `--<flag>=<value>`, where the flag is
 //!   the argument's `x-nd-long`, else its name with `_` as `-`. `-<short>
 //!   <value>` when it has an `x-nd-short`. A boolean is a bare switch.
-//!   `--` ends the flags.
+//!   `--` ends the flags. A positional that declares an `x-nd-short` or
+//!   `x-nd-long` takes its flag as well as bare words: `label <card> a -l b`.
 //! - **Env fallback**: an argument left out is read from its `x-nd-env`
 //!   variable when that is set and not empty.
 //! - **Caller-side kinds**, since the tool runs in notedeck and can't see
@@ -78,6 +79,19 @@ impl Entry<'_> {
         self.positionals().filter(|arg| arg.required).count()
     }
 
+    /// The required positionals `line` must still give as bare words: those
+    /// it doesn't already give by a flag, such as a comment body read with
+    /// `--body-file`.
+    fn words_needed<'e>(&'e self, line: &'e Line) -> impl Iterator<Item = &'e Arg<'e>> {
+        self.positionals().filter(move |arg| {
+            arg.required
+                && !line
+                    .flags
+                    .iter()
+                    .any(|(flag, _)| self.flag(flag).is_some_and(|hit| hit.arg.name == arg.name))
+        })
+    }
+
     /// Its positional arguments, in slot order with any `rest` last.
     fn positionals(&self) -> impl Iterator<Item = &Arg<'_>> {
         let mut slots: Vec<&Arg> = self
@@ -94,7 +108,7 @@ impl Entry<'_> {
     fn flag(&self, flag: &str) -> Option<FlagHit<'_, '_>> {
         let by_value = self.args.iter().find(|arg| {
             let short = flag.chars().count() == 1 && arg.short == flag.chars().next();
-            arg.positional.is_none() && (short || arg.flag() == flag)
+            (arg.positional.is_none() || arg.has_flag()) && (short || arg.flag() == flag)
         });
         if let Some(arg) = by_value {
             return Some(FlagHit { arg, file: false });
@@ -198,14 +212,13 @@ pub fn resolve(
     let line = Line::read(&candidates, &words[path_len..]).map_err(|e| with_help(e, path))?;
     let Some(entry) = candidates
         .iter()
-        .find(|e| e.required_slots() <= line.positionals.len())
+        .find(|e| e.words_needed(&line).count() <= line.positionals.len())
     else {
         // Nothing runs on this few words, so name what the least demanding
         // tool still needs.
         let entry = candidates.last().expect("a path has a tool");
         let missing = entry
-            .positionals()
-            .filter(|arg| arg.required)
+            .words_needed(&line)
             .nth(line.positionals.len())
             .map_or("an argument", |arg| arg.name);
         return Err(with_help(format!("missing <{missing}>"), path));
@@ -675,15 +688,20 @@ const ND_OPTIONS: &[(&str, &str)] = &[
 ];
 
 /// How [`command_page`] lists `arg`: `<card>` for a positional, else its
-/// flag spellings and a value placeholder unless it's a switch.
+/// flag spellings and a value placeholder unless it's a switch; both for a
+/// positional that also takes a flag (`<labels>, -l, --label <labels>`).
 fn option_key(arg: &Arg) -> String {
-    if arg.positional.is_some() {
+    if arg.positional.is_some() && !arg.has_flag() {
         return format!("<{}>", arg.name);
     }
-    let mut key = match arg.short {
+    let mut key = match arg.positional {
+        Some(_) => format!("<{}>, ", arg.name),
+        None => String::new(),
+    };
+    key.push_str(&match arg.short {
         Some(short) => format!("-{short}, --{}", arg.flag()),
         None => format!("--{}", arg.flag()),
-    };
+    });
     if !arg.is_switch() {
         key.push_str(&format!(" <{}>", arg.name));
     }
@@ -1158,6 +1176,93 @@ mod tests {
         )
         .unwrap();
         assert_eq!(args["labels"], json!(["a", "b", "c", "d"]));
+    }
+
+    /// A required positional given by its file form needs no bare word: `comment
+    /// <card> --body-file -` runs, and the slots still fill in order.
+    #[test]
+    fn a_file_form_stands_in_for_a_required_positional() {
+        let tools = vec![tool(
+            "headway_comment_card",
+            &["headway", "comment"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
+                    "body": {"type": "string", "description": "The text.",
+                             "x-nd-positional": "rest", "x-nd-from-file": "body-file"},
+                },
+                "required": ["card", "body"],
+                "x-nd-order": ["card", "body"],
+            }),
+        )];
+        let caller = Fake {
+            env: &[],
+            cwd: PathBuf::from("/"),
+            stdin: "from stdin\n",
+        };
+        let resolve_line = |line: &[&str]| {
+            let words: Vec<String> = line.iter().map(|w| (*w).to_owned()).collect();
+            resolve(&tools, &words, false, &caller)
+        };
+        let Action::Call { args, .. } =
+            resolve_line(&["headway", "comment", "c", "--body-file", "-"]).unwrap()
+        else {
+            panic!("a call");
+        };
+        assert_eq!(args, json!({"card": "c", "body": "from stdin"}));
+
+        let err = resolve_line(&["headway", "comment", "--body-file", "-"]).unwrap_err();
+        assert!(err.starts_with("missing <card>"), "{err}");
+        let err = resolve_line(&["headway", "comment", "c"]).unwrap_err();
+        assert!(err.starts_with("missing <body>"), "{err}");
+    }
+
+    /// A positional that declares a flag answers to it as well as to bare
+    /// words, the two spellings adding up, and its page lists both; one
+    /// that declares none stays bare-words only.
+    #[test]
+    fn a_positional_with_a_flag_takes_either_spelling() {
+        let tools = vec![tool(
+            "headway_set_labels",
+            &["headway", "label"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
+                    "labels": {"type": "array", "items": {"type": "string"}, "description": "Labels.",
+                               "x-nd-positional": "rest", "x-nd-kind": "list",
+                               "x-nd-short": "l", "x-nd-long": "label"},
+                },
+                "required": ["card"],
+                "x-nd-order": ["card", "labels"],
+            }),
+        )];
+        let caller = Fake {
+            env: &[],
+            cwd: PathBuf::from("/"),
+            stdin: "",
+        };
+        let resolve_line = |line: &[&str]| {
+            let words: Vec<String> = line.iter().map(|w| (*w).to_owned()).collect();
+            resolve(&tools, &words, false, &caller)
+        };
+
+        let Action::Call { args, .. } =
+            resolve_line(&["headway", "label", "c", "a", "b,c", "-l", "d", "--label=e"]).unwrap()
+        else {
+            panic!("a call");
+        };
+        assert_eq!(args["card"], json!("c"));
+        assert_eq!(args["labels"], json!(["a", "b", "c", "d", "e"]));
+
+        let err = resolve_line(&["headway", "label", "--card", "c"]).unwrap_err();
+        assert!(err.starts_with("unknown flag '--card'"), "{err}");
+
+        let Action::Help(page) = resolve_line(&["headway", "label", "--help"]).unwrap() else {
+            panic!("a page");
+        };
+        assert!(page.contains("<labels>, -l, --label <labels>"), "{page}");
     }
 
     /// A file form reads its file against the caller's cwd, or stdin for

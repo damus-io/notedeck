@@ -9,7 +9,7 @@
 
 use headway::event::{self, BoardView, Container, Priority, resolve_card};
 use headway::store::{self, BoardAction, NewCard};
-use headway::{render, traversal, wordid};
+use headway::{edit, render, traversal, wordid};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
@@ -38,6 +38,8 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(SetDescription),
         RegisteredTool::new(SetLabels),
         RegisteredTool::new(SetPriority),
+        RegisteredTool::new(SetDue),
+        RegisteredTool::new(SetEstimate),
         RegisteredTool::new(SetParent),
         RegisteredTool::new(CommentCard),
         RegisteredTool::new(ArchiveCard),
@@ -53,6 +55,17 @@ fn fold(cx: &ToolContext) -> Result<Option<event::BoardReducer>, String> {
     let author = *cx.accounts.selected_account_pubkey();
     let txn = Transaction::new(cx.ndb).map_err(|e| format!("failed to open db: {e}"))?;
     Ok(event::fold_board(cx.ndb, &txn, &author))
+}
+
+/// The board `board_id` as the edit tools see it ([`resolve_target`]): an
+/// own plaintext board folded by its author, a sealed or joined board by its
+/// coordinate with every member's and comment key's events in it. The read
+/// tools answer from it, so a card read back shows what an edit wrote, an
+/// agent's comment on a sealed board included, as the CLI's `show` does.
+fn board_view(cx: &ToolContext, board_id: &str) -> Result<BoardView, String> {
+    let author = *cx.accounts.selected_account_pubkey();
+    let teams = teams::teams_from_ndb(cx.ndb, &author);
+    resolve_target(cx.ndb, &author, board_id, &teams).map(|target| target.view)
 }
 
 /// The variable a command line falls back to for a tool's `board`, as the
@@ -177,14 +190,9 @@ impl AppTool for ShowBoard {
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
         let board_id = args.board.as_deref().unwrap_or(store::BOARD_ID);
-        let author = *cx.accounts.selected_account_pubkey();
-        let Some(reducer) = fold(cx)? else {
-            return Err(format!("no board '{board_id}'"));
-        };
-        match event::pick_board(&reducer, &author, board_id) {
-            Some(view) => Ok(ShownBoard { view }),
-            None => Err(format!("no board '{board_id}'")),
-        }
+        Ok(ShownBoard {
+            view: board_view(cx, board_id)?,
+        })
     }
 
     fn render(&self, out: &Self::Output) -> Option<String> {
@@ -201,10 +209,9 @@ struct ShowCardArgs {
     /// The card ref: `headway:<board>/<word-id>` (or `<board>/<word-id>`) or a hex
     /// id prefix.
     card: String,
-    /// The board to resolve the card on; when omitted, the board the card ref
-    /// names, else the primary board.
-    #[serde(default)]
-    board: Option<String>,
+    /// The board to resolve the card on (see [`Route::board`]).
+    #[serde(flatten)]
+    route: Route,
 }
 
 /// [`ShowCard`]'s answer: the card's board and its id. It goes out as
@@ -248,6 +255,7 @@ impl AppTool for ShowCard {
                 .required(true)
                 .positional(),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
 .titled("Show card")
@@ -257,14 +265,8 @@ impl AppTool for ShowCard {
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        let board_id = card_board(&args.board, &args.card);
-        let author = *cx.accounts.selected_account_pubkey();
-        let Some(reducer) = fold(cx)? else {
-            return Err(format!("no board '{board_id}'"));
-        };
-        let Some(view) = event::pick_board(&reducer, &author, board_id) else {
-            return Err(format!("no board '{board_id}'"));
-        };
+        let board = args.route.board([args.card.as_str()])?;
+        let view = board_view(cx, &board)?;
         let id = resolve_card(&view, &args.card)?;
         if render::find_card(&view, &id).is_none() {
             return Err(format!("no card matching '{}'", args.card));
@@ -344,14 +346,7 @@ impl AppTool for ReadyItems {
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        let board_id = board_of(&args.board);
-        let author = *cx.accounts.selected_account_pubkey();
-        let Some(reducer) = fold(cx)? else {
-            return Err(format!("no board '{board_id}'"));
-        };
-        let Some(view) = event::pick_board(&reducer, &author, board_id) else {
-            return Err(format!("no board '{board_id}'"));
-        };
+        let view = board_view(cx, board_of(&args.board))?;
         let container = match args.container.as_deref() {
             Some(sel) => resolve_container(&view, sel)?,
             None => Container::BoardRoot(view.id.clone()),
@@ -392,7 +387,8 @@ fn resolve_container(view: &BoardView, sel: &str) -> Result<Container, String> {
 
 /// A [`store::Publisher`] that fans locally-ingested board events out to the
 /// selected account's private relays through a [`ToolContext`]'s publisher —
-/// the tool-side analogue of the Headway app's own `PrivateRelayPublisher`.
+/// the tool-side analogue of the Headway app's own `PrivateRelayPublisher` —
+/// counting what it sends for the edit's [`EditAck`].
 ///
 /// A write is a plaintext event on an own board and a kind-1081 envelope on a
 /// shared one, so each frame is routed by its kind: an encrypted-only private
@@ -400,49 +396,94 @@ fn resolve_container(view: &BoardView, sel: &str) -> Result<Container, String> {
 struct RelayFanout<'x, 'a> {
     api: &'x mut ExplicitPublishApi<'a>,
     targets: PrivateRelayTargets,
+    /// The frames published so far.
+    sent: usize,
 }
 
 impl store::Publisher for RelayFanout<'_, '_> {
     fn publish(&mut self, event_frame: &str) {
         fan_out_routed_event_frame(self.api, event_frame, &self.targets);
+        self.sent += 1;
     }
 }
 
-/// The result of a mutating tool: a simple acknowledgement. The change ingests
-/// and publishes asynchronously, so re-query with `headway_show_board` /
-/// `headway_show_card` to see the settled state.
+/// What an edit tool answers: the ack `headway <edit> --json` prints,
+/// `{ok, events}`, plus the new card's `card` and `ref` after an add, or
+/// `noop` when the card was already as asked and nothing was written. The
+/// change ingests and publishes asynchronously, so re-query with
+/// `headway_show_board` / `headway_show_card` to see the settled state.
 #[derive(Serialize, Debug)]
-struct Applied {
+struct EditAck {
     ok: bool,
+    /// How many events the edit signed and published.
+    events: usize,
+    /// The hex id of the card an add created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card: Option<String>,
+    /// That card's `headway:<board>/<word-id>` ref.
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    card_ref: Option<String>,
+    /// Why nothing was written: the card was already in the asked-for state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    noop: Option<String>,
 }
 
-impl Applied {
-    fn ok() -> Self {
-        Applied { ok: true }
+impl EditAck {
+    /// The ack as the CLI prints it: `ok (2 events)`, then the new card's
+    /// ref (muted) after an add, or why nothing was written.
+    fn render(&self) -> String {
+        match (&self.noop, &self.card_ref) {
+            (Some(why), _) => format!("ok (0 events) — {why}\n"),
+            (None, Some(card_ref)) => format!(
+                "ok ({} events) — {}\n",
+                self.events,
+                render::dim(true, card_ref)
+            ),
+            (None, None) => format!("ok ({} events)\n", self.events),
+        }
     }
 }
 
-/// Resolve a column selector — a column id or a case-insensitive name — to its
-/// index on `view`, mirroring the CLI.
-fn resolve_col(view: &BoardView, sel: &str) -> Result<usize, String> {
-    view.columns
+/// A list argument as a model or a key binding may send it: a JSON array of
+/// strings, or one comma-separated string. Either way each item is trimmed
+/// and blanks dropped, so `["a", "b,c"]` and `"a, b,c"` are the same three.
+fn list_or_csv<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Labels {
+        List(Vec<String>),
+        Csv(String),
+    }
+    let items = match Labels::deserialize(de)? {
+        Labels::List(items) => items,
+        Labels::Csv(csv) => vec![csv],
+    };
+    Ok(items
         .iter()
-        .position(|c| c.id == sel || c.name.eq_ignore_ascii_case(sel))
-        .ok_or_else(|| {
-            let names: Vec<&str> = view.columns.iter().map(|c| c.name.as_str()).collect();
-            format!("no column matching '{sel}'; columns: {}", names.join(", "))
-        })
-}
-
-/// Split a comma-separated label argument into trimmed, non-empty labels.
-/// `ToolArgType` has no array kind, so list arguments arrive as delimited
-/// strings (as the CLI's `present_notes` tool does with note ids).
-fn split_labels(csv: &str) -> Vec<String> {
-    csv.split(',')
+        .flat_map(|item| item.split(','))
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_owned)
-        .collect()
+        .collect())
+}
+
+/// An estimate as a model may send it, a number or the text a command line
+/// types (`3`, `none`), parsed as `headway estimate` parses it.
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum Points {
+    Number(u32),
+    Text(String),
+}
+
+impl Points {
+    /// The estimate to set, `None` to clear it.
+    fn parse(&self) -> Result<Option<u32>, String> {
+        match self {
+            Self::Number(n) => Ok(Some(*n)),
+            Self::Text(text) => edit::parse_estimate(text),
+        }
+    }
 }
 
 /// A resolved edit target: the folded board view and the SNS channel to seal its
@@ -528,21 +569,26 @@ fn resolve_shared(
     })
 }
 
-/// Apply a board mutation for the selected account and fan the resulting events
-/// out to its private relays.
+/// Apply a board mutation for the selected account, fan the resulting events
+/// out to its private relays, and answer with the CLI's ack.
 ///
 /// Resolves `board_id` (own or joined-shared, see [`resolve_target`]) so `build`
 /// can resolve card/column refs against the live view, then signs, ingests, and
 /// publishes the action — sealing into the board's SNS channel when it's shared.
 /// A comment is signed by the context's comment key when it carries one, and
 /// refused on a plaintext board, where it would never show (see
-/// [`store::signing_key`]). Errors when the account is watch-only or the context has no publisher (a
-/// read-only context), so a change is never silently dropped.
+/// [`store::signing_key`]). Errors when the account is watch-only or the
+/// context has no publisher (a read-only context), so a change is never
+/// silently dropped.
+///
+/// An edge or parent edit [`store::apply_outcome`] declines is refused with
+/// its reason, unless the card was already as asked: that is an `ok` with
+/// nothing written, as the CLI answers it.
 fn mutate(
     cx: &mut ToolContext,
     board_id: &str,
     build: impl FnOnce(&BoardView) -> Result<BoardAction, String>,
-) -> Result<Applied, String> {
+) -> Result<EditAck, String> {
     let author = *cx.accounts.selected_account_pubkey();
     let targets = cx.accounts.selected_account_private_relay_set().targets();
 
@@ -552,9 +598,7 @@ fn mutate(
     let teams = teams::teams_from_ndb(cx.ndb, &author);
     let ResolvedTarget { view, channel } = resolve_target(cx.ndb, &author, board_id, &teams)?;
     if view.deleted {
-        return Err(format!(
-            "board '{board_id}' is deleted — it can be restored with `headway restore-board {board_id}`"
-        ));
+        return Err(render::deleted_board_error(board_id));
     }
     let action = build(&view)?;
 
@@ -578,8 +622,12 @@ fn mutate(
     let Some(api) = cx.publish.as_mut() else {
         return Err("publishing is unavailable in this context".to_string());
     };
-    let mut publisher = RelayFanout { api, targets };
-    store::apply(
+    let mut publisher = RelayFanout {
+        api,
+        targets,
+        sent: 0,
+    };
+    let store::ApplyOutcome { declined, created } = store::apply_outcome(
         cx.ndb,
         board_id,
         &view,
@@ -588,7 +636,29 @@ fn mutate(
         action,
         &mut publisher,
     );
-    Ok(Applied::ok())
+    if let Some(declined) = declined {
+        let why = render::declined_message(&view, &declined);
+        if !declined.reason.is_noop() {
+            return Err(format!("refused: {why}"));
+        }
+        return Ok(EditAck {
+            ok: true,
+            events: 0,
+            card: None,
+            card_ref: None,
+            noop: Some(why),
+        });
+    }
+    if publisher.sent == 0 {
+        return Err("the edit produced no events (unknown card or column?)".to_owned());
+    }
+    Ok(EditAck {
+        ok: true,
+        events: publisher.sent,
+        card: created.map(|id| id.hex()),
+        card_ref: created.map(|id| render::plain_ref(&view, &id)),
+        noop: None,
+    })
 }
 
 /// The board a mutation targets: the `board` argument, or the primary board.
@@ -596,15 +666,56 @@ fn board_of(board: &Option<String>) -> &str {
     board.as_deref().unwrap_or(store::BOARD_ID)
 }
 
-/// The board a card tool targets: the `board` argument, else the board the
-/// `card` ref names (`headway:<board>/<word-id>` routes itself), else the
-/// primary board. So a key bound to a card tool on the app's current card
-/// (`card = "{current}"`) edits the board that card is on.
-fn card_board<'a>(board: &'a Option<String>, card: &'a str) -> &'a str {
-    board
-        .as_deref()
-        .or_else(|| wordid::parse_ref(card).map(|r| r.board))
-        .unwrap_or(store::BOARD_ID)
+/// Which board a card tool runs on, from the two arguments every card tool
+/// takes ([`card_board_arg`] and [`default_board_arg`]) and the card refs it
+/// was given.
+#[derive(Deserialize, Default, Debug)]
+struct Route {
+    /// The board named outright: `--board` on a command line.
+    #[serde(default)]
+    board: Option<String>,
+    /// The caller's board when nothing names one: `$HEADWAY_BOARD` on a
+    /// command line.
+    #[serde(default)]
+    default_board: Option<String>,
+}
+
+impl Route {
+    /// The board, by the `headway` CLI's rule: `board` and the board any
+    /// self-routing ref in `refs` names (`headway:<board>/<word-id>`) must
+    /// agree, and whichever is given names it; else `default_board`; else
+    /// the primary board. So a ref pasted from `show` works wherever it goes,
+    /// and a caller's `$HEADWAY_BOARD` never sends it to the wrong board.
+    /// Bare word-ids and hex prefixes route nowhere, and resolve on the
+    /// board picked.
+    fn board<'r>(&self, refs: impl IntoIterator<Item = &'r str>) -> Result<String, String> {
+        let mut named: Option<String> = None;
+        for slug in refs
+            .into_iter()
+            .filter_map(wordid::parse_ref)
+            .map(|r| r.board.to_lowercase())
+        {
+            match &named {
+                Some(cur) if *cur != slug => {
+                    return Err(format!(
+                        "card refs name different boards ('{cur}' and '{slug}')"
+                    ));
+                }
+                _ => named = Some(slug),
+            }
+        }
+        match (&self.board, named) {
+            (Some(board), Some(named)) if *board != named => Err(format!(
+                "board '{board}' conflicts with card ref board '{named}'"
+            )),
+            (Some(board), _) => Ok(board.clone()),
+            (None, Some(named)) => Ok(named),
+            (None, None) => Ok(self
+                .default_board
+                .clone()
+                .unwrap_or_else(|| store::BOARD_ID.to_owned())),
+        }
+    }
 }
 
 /// `headway_add_card`: create a card on a board.
@@ -617,52 +728,86 @@ struct AddCardArgs {
     /// Target column id or name; the first column when omitted.
     #[serde(default)]
     column: Option<String>,
-    /// Comma-separated labels to tag the new card with.
-    #[serde(default)]
-    labels: Option<String>,
+    /// Labels to tag the new card with.
+    #[serde(default, deserialize_with = "list_or_csv")]
+    labels: Vec<String>,
     /// A card ref to parent the new card under (create it as a subissue).
     #[serde(default)]
     parent: Option<String>,
+    /// Its starting description.
     #[serde(default)]
-    board: Option<String>,
+    description: Option<String>,
+    /// Its starting priority.
+    #[serde(default)]
+    priority: Option<String>,
+    /// Its starting estimate.
+    #[serde(default)]
+    estimate: Option<Points>,
+    /// Its starting due date, `YYYY-MM-DD`.
+    #[serde(default)]
+    due: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for AddCard {
     type Args = AddCardArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_add_card",
-            "Create a card on a headway board. Defaults to the first column of the primary board.",
+            "Create a card on a headway board, by default in the first column of the primary board. Answers `{ok, events, card, ref}`: `ref` is the new card's `headway:<board>/<word-id>` ref.",
             vec![
-                ToolArg::new("title", ToolArgType::String, "The card title.").required(true),
+                ToolArg::new("title", ToolArgType::String, "The card title.")
+                    .required(true)
+                    .rest(),
                 ToolArg::new(
                     "column",
                     ToolArgType::String,
                     "Target column id or name. Defaults to the first column.",
-                ),
+                )
+                .long("col"),
                 ToolArg::new(
                     "labels",
-                    ToolArgType::String,
-                    "Optional comma-separated labels to tag the card with.",
-                ),
+                    ToolArgType::List,
+                    "Labels to tag the card with.",
+                )
+                .short('l')
+                .long("label"),
                 ToolArg::new(
                     "parent",
                     ToolArgType::String,
                     "Optional card ref (`headway:<board>/<word-id>` or `<board>/<word-id>`) to parent the new card under (make it a subissue).",
                 ),
+                ToolArg::new(
+                    "description",
+                    ToolArgType::String,
+                    "Its starting description (the cover note).",
+                )
+                .long("desc")
+                .from_file("desc-file"),
+                priority_arg("Its starting priority."),
+                estimate_arg("Its starting estimate: a number of points."),
+                due_arg("Its starting due date, `YYYY-MM-DD`."),
                 board_arg(),
+                default_board_arg(),
             ],
         )
-.titled("Add card")
-.filed_under(crate::TOOL_CATEGORY)
+        .titled("Add card")
+        .command(&["headway", "add"])
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        let board = args.route.board(args.parent.as_deref())?;
+        // Read the clearable fields before resolving anything, so a typo in
+        // one fails before the board is folded.
+        let estimate = args.estimate.as_ref().map(Points::parse).transpose()?;
+        let due = args.due.as_deref().map(edit::parse_due).transpose()?;
+        mutate(cx, &board, |view| {
             let col = match args.column.as_deref() {
-                Some(sel) => resolve_col(view, sel)?,
+                Some(sel) => edit::resolve_col(view, sel)?,
                 None => 0,
             };
             let parent = match args.parent.as_deref() {
@@ -671,12 +816,23 @@ impl AppTool for AddCard {
             };
             Ok(BoardAction::AddCard(NewCard {
                 col,
-                title: args.title.clone(),
-                labels: args.labels.as_deref().map(split_labels).unwrap_or_default(),
+                title: args.title,
+                description: args.description.unwrap_or_default(),
+                labels: args.labels,
                 parent,
-                ..NewCard::default()
+                priority: args
+                    .priority
+                    .as_deref()
+                    .map(Priority::parse)
+                    .unwrap_or_default(),
+                estimate: estimate.flatten(),
+                due: due.flatten(),
             }))
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -691,11 +847,14 @@ struct MoveCardArgs {
     /// Target column id or name.
     #[serde(default)]
     column: Option<String>,
+    /// The row in `column` to land on (0 is the top); its end when omitted.
+    #[serde(default)]
+    row: Option<usize>,
     /// One step from where the card is.
     #[serde(default)]
     to: Option<MoveStep>,
-    #[serde(default)]
-    board: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 /// A one-step card move, the board edit behind Headway's `H L J K`.
@@ -747,34 +906,45 @@ impl MoveStep {
 
 impl AppTool for MoveCard {
     type Args = MoveCardArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_move_card",
-            "Move a headway card: to another column (appended to the end of that column), \
+            "Move a headway card: to another column (at `row`, else the end of that column), \
              or one step with `to` (left/right: the neighbouring column at the same height; \
              up/down: past the neighbouring card in its column). Give exactly one of \
              `column` and `to`.",
             vec![
                 card_arg(),
-                ToolArg::new("column", ToolArgType::String, "Target column id or name."),
+                ToolArg::new("column", ToolArgType::String, "Target column id or name.")
+                    .long("col"),
+                ToolArg::new(
+                    "row",
+                    ToolArgType::Integer,
+                    "The position in `column` to land at, 0 being the top. Defaults to its end.",
+                ),
                 ToolArg::new(
                     "to",
                     ToolArgType::Enum(MOVE_STEPS.to_vec()),
                     "One step from where the card is, instead of a column.",
                 ),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
         .titled("Move card")
+        .command(&["headway", "move"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
-            Self::edit(view, &args)
-        })
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| Self::edit(view, &args))
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -784,11 +954,14 @@ impl MoveCard {
         let card = resolve_card(view, &args.card)?;
         let MoveTarget { to_col, to_row } = match (&args.column, args.to) {
             (Some(column), None) => {
-                let to_col = resolve_col(view, column)?;
+                let to_col = edit::resolve_col(view, column)?;
                 MoveTarget {
                     to_col,
-                    to_row: view.columns[to_col].cards.len(),
+                    to_row: args.row.unwrap_or(view.columns[to_col].cards.len()),
                 }
+            }
+            (None, Some(_)) if args.row.is_some() => {
+                return Err("'row' goes with 'column', not 'to'".to_owned());
             }
             (None, Some(step)) => step.target(view, card)?,
             _ => return Err("give exactly one of 'column' and 'to'".to_owned()),
@@ -809,13 +982,13 @@ struct SetTitle;
 struct SetTitleArgs {
     card: String,
     title: String,
-    #[serde(default)]
-    board: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for SetTitle {
     type Args = SetTitleArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
@@ -823,21 +996,30 @@ impl AppTool for SetTitle {
             "Replace a headway card's title.",
             vec![
                 card_arg(),
-                ToolArg::new("title", ToolArgType::String, "The new title.").required(true),
+                ToolArg::new("title", ToolArgType::String, "The new title.")
+                    .required(true)
+                    .rest(),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
         .titled("Set card title")
+        .command(&["headway", "title"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| {
             Ok(BoardAction::EditTitle {
                 card: resolve_card(view, &args.card)?,
-                title: args.title.clone(),
+                title: args.title,
             })
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -849,13 +1031,13 @@ struct SetDescription;
 struct SetDescriptionArgs {
     card: String,
     description: String,
-    #[serde(default)]
-    board: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for SetDescription {
     type Args = SetDescriptionArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
@@ -864,63 +1046,86 @@ impl AppTool for SetDescription {
             vec![
                 card_arg(),
                 ToolArg::new("description", ToolArgType::String, "The new description.")
-                    .required(true),
+                    .required(true)
+                    .rest()
+                    .from_file("desc-file"),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
         .titled("Set card description")
+        .command(&["headway", "desc"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| {
             Ok(BoardAction::EditDescription {
                 card: resolve_card(view, &args.card)?,
-                description: args.description.clone(),
+                description: args.description,
             })
         })
     }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
+    }
 }
 
-/// `headway_set_labels`: set a card's labels (additive union with existing).
+/// `headway_set_labels`: set a card's labels, replacing its set.
 struct SetLabels;
 
 /// Arguments for [`SetLabels`].
 #[derive(Deserialize)]
 struct SetLabelsArgs {
     card: String,
-    /// Comma-separated labels.
-    labels: String,
-    #[serde(default)]
-    board: Option<String>,
+    /// The card's new label set; none clears it.
+    #[serde(default, deserialize_with = "list_or_csv")]
+    labels: Vec<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for SetLabels {
     type Args = SetLabelsArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_set_labels",
-            "Add labels to a headway card (a comma-separated set, unioned with any existing labels).",
+            "Set a headway card's labels to exactly `labels`, replacing its set: to add one, pass the card's labels with it. Naming none clears them.",
             vec![
                 card_arg(),
-                ToolArg::new("labels", ToolArgType::String, "Comma-separated labels.")
-                    .required(true),
+                ToolArg::new(
+                    "labels",
+                    ToolArgType::List,
+                    "The card's labels. Omit or leave empty to clear them.",
+                )
+                .rest()
+                .short('l')
+                .long("label"),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
-.titled("Add card labels")
-.filed_under(crate::TOOL_CATEGORY)
+        .titled("Set card labels")
+        .command(&["headway", "label"])
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| {
             Ok(BoardAction::SetLabels {
                 card: resolve_card(view, &args.card)?,
-                labels: split_labels(&args.labels),
+                labels: args.labels,
             })
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -933,13 +1138,13 @@ struct SetPriorityArgs {
     card: String,
     /// One of `none`, `low`, `medium`, `high`, `urgent`.
     priority: String,
-    #[serde(default)]
-    board: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for SetPriority {
     type Args = SetPriorityArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
@@ -947,26 +1152,132 @@ impl AppTool for SetPriority {
             "Set a headway card's priority. `none` clears it.",
             vec![
                 card_arg(),
-                ToolArg::new(
-                    "priority",
-                    ToolArgType::Enum(vec!["none", "low", "medium", "high", "urgent"]),
-                    "The priority level.",
-                )
-                .required(true),
+                priority_arg("The priority level.")
+                    .required(true)
+                    .positional(),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
         .titled("Set card priority")
+        .command(&["headway", "priority"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| {
             Ok(BoardAction::SetPriority {
                 card: resolve_card(view, &args.card)?,
                 priority: Priority::parse(&args.priority),
             })
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
+    }
+}
+
+/// `headway_set_due`: set or clear a card's due date.
+struct SetDue;
+
+/// Arguments for [`SetDue`].
+#[derive(Deserialize)]
+struct SetDueArgs {
+    card: String,
+    /// `YYYY-MM-DD`, or `none` to clear it.
+    due: String,
+    #[serde(flatten)]
+    route: Route,
+}
+
+impl AppTool for SetDue {
+    type Args = SetDueArgs;
+    type Output = EditAck;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "headway_set_due",
+            "Set a headway card's due date. `none` clears it.",
+            vec![
+                card_arg(),
+                due_arg("The due date, `YYYY-MM-DD`, or `none` to clear it.")
+                    .required(true)
+                    .positional(),
+                card_board_arg(),
+                default_board_arg(),
+            ],
+        )
+        .titled("Set card due date")
+        .command(&["headway", "due"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let board = args.route.board([args.card.as_str()])?;
+        let due = edit::parse_due(&args.due)?;
+        mutate(cx, &board, |view| {
+            Ok(BoardAction::SetDue {
+                card: resolve_card(view, &args.card)?,
+                due,
+            })
+        })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
+    }
+}
+
+/// `headway_set_estimate`: set or clear a card's estimate.
+struct SetEstimate;
+
+/// Arguments for [`SetEstimate`].
+#[derive(Deserialize)]
+struct SetEstimateArgs {
+    card: String,
+    /// A number of points, or `none` to clear it.
+    estimate: Points,
+    #[serde(flatten)]
+    route: Route,
+}
+
+impl AppTool for SetEstimate {
+    type Args = SetEstimateArgs;
+    type Output = EditAck;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "headway_set_estimate",
+            "Set a headway card's estimate in points. `none` clears it.",
+            vec![
+                card_arg(),
+                estimate_arg("The estimate: a number of points, or `none` to clear it.")
+                    .required(true)
+                    .positional(),
+                card_board_arg(),
+                default_board_arg(),
+            ],
+        )
+        .titled("Set card estimate")
+        .command(&["headway", "estimate"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let board = args.route.board([args.card.as_str()])?;
+        let estimate = args.estimate.parse()?;
+        mutate(cx, &board, |view| {
+            Ok(BoardAction::SetEstimate {
+                card: resolve_card(view, &args.card)?,
+                estimate,
+            })
+        })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -980,13 +1291,13 @@ struct SetParentArgs {
     /// The parent card ref; omit to detach `card` from its parent.
     #[serde(default)]
     parent: Option<String>,
-    #[serde(default)]
-    board: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for SetParent {
     type Args = SetParentArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
@@ -1000,14 +1311,17 @@ impl AppTool for SetParent {
                     "The parent card ref (`headway:<board>/<word-id>` or `<board>/<word-id>`). Omit to detach the card from its parent.",
                 ),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
-.titled("Set card parent")
-.filed_under(crate::TOOL_CATEGORY)
+        .titled("Set card parent")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
+        let refs = std::iter::once(args.card.as_str()).chain(args.parent.as_deref());
+        let board = args.route.board(refs)?;
+        mutate(cx, &board, |view| {
             let card = resolve_card(view, &args.card)?;
             let parent = match args.parent.as_deref() {
                 Some(p) => Some(resolve_card(view, p)?),
@@ -1016,9 +1330,14 @@ impl AppTool for SetParent {
             Ok(BoardAction::SetParent { card, parent })
         })
     }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
+    }
 }
 
-/// `headway_comment_card`: post a comment on a card.
+/// `headway_comment_card`: post a comment on a card, a reply, or an inline
+/// comment on one of its review records.
 struct CommentCard;
 
 /// Arguments for [`CommentCard`].
@@ -1026,37 +1345,95 @@ struct CommentCard;
 struct CommentCardArgs {
     card: String,
     body: String,
+    /// The comment or review comment this answers.
     #[serde(default)]
-    board: Option<String>,
+    reply_to: Option<String>,
+    /// The file in a review record's commit this comments on.
+    #[serde(default)]
+    path: Option<String>,
+    /// The line, or `a-b` range, in `path`.
+    #[serde(default)]
+    line: Option<String>,
+    /// The lines are on the old (deleted) side.
+    #[serde(default)]
+    old: bool,
+    /// The review record whose commit starts with this, rather than the newest.
+    #[serde(default)]
+    record: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for CommentCard {
     type Args = CommentCardArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_comment_card",
-            "Post a comment on a headway card.",
+            "Post a comment on a headway card. `reply_to` threads it under a comment or review comment on the card (a reply to a review comment goes on that comment's record, under the same lines). `path` and `line` leave a new inline comment on a review record's commit (the newest record, or the one `record` picks); `record` alone comments on the whole commit.",
             vec![
                 card_arg(),
-                ToolArg::new("body", ToolArgType::String, "The comment text.").required(true),
+                ToolArg::new("body", ToolArgType::String, "The comment text.")
+                    .required(true)
+                    .rest()
+                    .from_file("body-file"),
+                ToolArg::new(
+                    "reply_to",
+                    ToolArgType::String,
+                    "The comment or review comment on the same card this answers: its id, a hex prefix, or its word-id.",
+                ),
+                ToolArg::new(
+                    "path",
+                    ToolArgType::String,
+                    "The file in a review record's commit to comment on, as the diff names it. Needs `line`.",
+                ),
+                ToolArg::new(
+                    "line",
+                    ToolArgType::String,
+                    "The line, or inclusive range `a-b` (1-based), the comment points at. Needs `path`.",
+                ),
+                ToolArg::new(
+                    "old",
+                    ToolArgType::Boolean,
+                    "The lines are on the old (deleted) side.",
+                ),
+                ToolArg::new(
+                    "record",
+                    ToolArgType::String,
+                    "The review record whose commit starts with this. Defaults to the newest.",
+                ),
                 card_board_arg(),
+                default_board_arg(),
             ],
         )
         .titled("Post comment")
+        .command(&["headway", "comment"])
         .filed_under(crate::TOOL_CATEGORY)
         .accepts_comment_signer()
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
-            Ok(BoardAction::AddComment {
-                card: resolve_card(view, &args.card)?,
-                body: args.body.clone(),
-                reply_to: None,
-            })
+        let board = args.route.board([args.card.as_str()])?;
+        let flags = edit::ReviewCommentFlags {
+            path: args.path,
+            lines: args.line.as_deref().map(edit::parse_lines).transpose()?,
+            old: args.old,
+            record: args.record,
+        };
+        mutate(cx, &board, |view| {
+            edit::comment_action(
+                view,
+                resolve_card(view, &args.card)?,
+                args.body,
+                args.reply_to.as_deref(),
+                &flags,
+            )
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -1067,28 +1444,32 @@ struct ArchiveCard;
 #[derive(Deserialize)]
 struct CardArgs {
     card: String,
-    #[serde(default)]
-    board: Option<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for ArchiveCard {
     type Args = CardArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_archive_card",
             "Archive a headway card: take it off the board but keep it recoverable.",
-            vec![card_arg(), card_board_arg()],
+            vec![card_arg(), card_board_arg(), default_board_arg()],
         )
         .titled("Archive card")
+        .command(&["headway", "archive"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
-            Self::edit(view, &args)
-        })
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| Self::edit(view, &args))
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -1126,24 +1507,30 @@ struct RestoreCard;
 
 impl AppTool for RestoreCard {
     type Args = CardArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_restore_card",
             "Restore an archived headway card to the column it was archived from.",
-            vec![card_arg(), card_board_arg()],
+            vec![card_arg(), card_board_arg(), default_board_arg()],
         )
         .titled("Restore card")
+        .command(&["headway", "restore"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| {
             Ok(BoardAction::RestoreCard {
                 card: resolve_card(view, &args.card)?,
             })
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -1152,24 +1539,30 @@ struct DeleteCard;
 
 impl AppTool for DeleteCard {
     type Args = CardArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_delete_card",
             "Remove a headway card from the board (tombstone its placement).",
-            vec![card_arg(), card_board_arg()],
+            vec![card_arg(), card_board_arg(), default_board_arg()],
         )
         .titled("Delete card")
+        .command(&["headway", "delete"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, card_board(&args.board, &args.card), |view| {
+        let board = args.route.board([args.card.as_str()])?;
+        mutate(cx, &board, |view| {
             Ok(BoardAction::DeleteCard {
                 card: resolve_card(view, &args.card)?,
             })
         })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
     }
 }
 
@@ -1186,7 +1579,7 @@ struct RenameBoardArgs {
 
 impl AppTool for RenameBoard {
     type Args = RenameBoardArgs;
-    type Output = Applied;
+    type Output = EditAck;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
@@ -1210,28 +1603,40 @@ impl AppTool for RenameBoard {
     }
 }
 
-/// The shared `card` argument: a card ref accepted by [`resolve_card`].
+/// The shared `card` argument: a card ref accepted by [`resolve_card`], the
+/// first bare word on a command line.
 fn card_arg() -> ToolArg {
     ToolArg::new(
         "card",
         ToolArgType::String,
         "The card ref, as printed by list/show tools: `headway:<board>/<word-id>` \
-         (or the scheme-less `<board>/<word-id>`), or a hex id prefix. A bare \
-         word-id alone is not a card ref.",
+         (or the scheme-less `<board>/<word-id>`), or a word-id or hex id prefix \
+         on the board picked.",
     )
     .required(true)
     .from_current()
+    .positional()
 }
 
-/// A card tool's optional `board` argument, defaulting to the board the card
-/// ref names ([`card_board`]).
+/// A card tool's optional `board` argument (see [`Route::board`]).
 fn card_board_arg() -> ToolArg {
     ToolArg::new(
         "board",
         ToolArgType::String,
         "The board id (slug). Defaults to the board a `headway:<board>/<word-id>` \
-         card ref names, else the primary board.",
+         card ref names, which it must agree with, else `default_board`.",
     )
+}
+
+/// The caller's board, used when nothing else names one (see
+/// [`Route::board`]): a command line fills it from `$HEADWAY_BOARD`.
+fn default_board_arg() -> ToolArg {
+    ToolArg::new(
+        "default_board",
+        ToolArgType::String,
+        "The board to use when neither `board` nor a card ref names one. Defaults to the primary board.",
+    )
+    .env(BOARD_ENV)
 }
 
 /// The shared optional `board` argument, defaulting to the primary board.
@@ -1243,8 +1648,29 @@ fn board_arg() -> ToolArg {
     )
 }
 
+/// A card's priority, as `add` and `priority` take it.
+fn priority_arg(description: &'static str) -> ToolArg {
+    ToolArg::new(
+        "priority",
+        ToolArgType::Enum(vec!["none", "low", "medium", "high", "urgent"]),
+        description,
+    )
+}
+
+/// A card's estimate, as `add` and `estimate` take it: points or `none`.
+fn estimate_arg(description: &'static str) -> ToolArg {
+    ToolArg::new("estimate", ToolArgType::String, description)
+}
+
+/// A card's due date, as `add` and `due` take it: `YYYY-MM-DD` or `none`.
+fn due_arg(description: &'static str) -> ToolArg {
+    ToolArg::new("due", ToolArgType::String, description)
+}
+
 #[cfg(test)]
 mod tests {
+    mod edits;
+
     use super::*;
     use headway::wordid;
     use nostrdb::{Ndb, SubscriptionStream};
@@ -1528,7 +1954,7 @@ mod tests {
                 &mut cx,
                 ShowCardArgs {
                     card: card_ref.clone(),
-                    board: None,
+                    route: Route::default(),
                 },
             )
             .unwrap();
@@ -1595,7 +2021,7 @@ mod tests {
                 &mut cx,
                 ShowCardArgs {
                     card: "no-such-card".to_string(),
-                    board: None,
+                    route: Route::default(),
                 },
             )
             .unwrap_err();
@@ -1764,16 +2190,31 @@ mod tests {
         let view = event::load_board(&ndb, &txn, &author, store::BOARD_ID).expect("board");
 
         // The default board's first column is Backlog.
-        assert_eq!(resolve_col(&view, "backlog").unwrap(), 0);
-        assert_eq!(resolve_col(&view, "BACKLOG").unwrap(), 0);
-        assert_eq!(resolve_col(&view, &view.columns[0].id).unwrap(), 0);
-        assert!(resolve_col(&view, "nope").is_err());
+        assert_eq!(edit::resolve_col(&view, "backlog").unwrap(), 0);
+        assert_eq!(edit::resolve_col(&view, "BACKLOG").unwrap(), 0);
+        assert_eq!(edit::resolve_col(&view, &view.columns[0].id).unwrap(), 0);
+        assert!(edit::resolve_col(&view, "nope").is_err());
     }
 
+    /// Labels arrive as an array (a command line's `-l a -l b,c`) or, from a
+    /// model or an older binding, one comma string; both trim and drop
+    /// blanks, and none at all is an empty set, which clears.
     #[test]
-    fn split_labels_trims_and_drops_empties() {
-        assert_eq!(split_labels("a, b ,,c "), vec!["a", "b", "c"]);
-        assert!(split_labels("  ,  ").is_empty());
+    fn labels_take_a_list_or_a_comma_string() {
+        let labels = |args: serde_json::Value| -> Vec<String> {
+            let mut args = args;
+            args["card"] = json!("c");
+            serde_json::from_value::<SetLabelsArgs>(args)
+                .expect("parses")
+                .labels
+        };
+        assert_eq!(labels(json!({"labels": "a, b ,,c "})), ["a", "b", "c"]);
+        assert_eq!(
+            labels(json!({"labels": ["a", "b,c", " "]})),
+            ["a", "b", "c"]
+        );
+        assert!(labels(json!({"labels": "  ,  "})).is_empty());
+        assert!(labels(json!({})).is_empty());
     }
 
     #[test]
@@ -1795,31 +2236,51 @@ mod tests {
                     to: None,
                     card,
                     column: Some("nope".to_string()),
-                    board: None,
+                    row: None,
+                    route: Route::default(),
                 },
             )
             .unwrap_err();
         assert!(err.contains("no column matching"), "{err}");
     }
 
-    /// A card ref routes a card tool to its own board when no `board` is
-    /// given; an explicit `board` wins, and anything else is the primary.
+    /// A card tool's board, by the CLI's rule: `board` and a card ref's
+    /// board must agree and either names it, then `default_board` (the
+    /// caller's `$HEADWAY_BOARD`), then the primary board. A bare word-id or
+    /// hex prefix names no board.
     #[test]
     fn a_card_ref_routes_to_its_board() {
-        let routed = |board: Option<&str>, card: &str| {
-            card_board(&board.map(str::to_owned), card).to_owned()
+        let route = |board: Option<&str>, default_board: Option<&str>| Route {
+            board: board.map(str::to_owned),
+            default_board: default_board.map(str::to_owned),
         };
+        let routed = |board, default_board, refs: &[&str]| {
+            route(board, default_board).board(refs.iter().copied())
+        };
+        let card = "headway:notedeck/maple-river-canyon";
+        assert_eq!(routed(None, None, &[card]).unwrap(), "notedeck");
         assert_eq!(
-            routed(None, "headway:notedeck/maple-river-canyon"),
+            routed(None, None, &["Notedeck/maple-river-canyon"]).unwrap(),
             "notedeck"
         );
-        assert_eq!(routed(None, "notedeck/maple-river-canyon"), "notedeck");
-        assert_eq!(
-            routed(Some("other"), "headway:notedeck/maple-river-canyon"),
-            "other"
+        // A ref beats the caller's default; an agreeing `board` is fine.
+        assert_eq!(routed(None, Some("env"), &[card]).unwrap(), "notedeck");
+        assert_eq!(routed(Some("notedeck"), None, &[card]).unwrap(), "notedeck");
+        let err = routed(Some("other"), None, &[card]).unwrap_err();
+        assert!(
+            err.contains("conflicts with card ref board 'notedeck'"),
+            "{err}"
         );
-        assert_eq!(routed(None, "maple-river-canyon"), store::BOARD_ID);
-        assert_eq!(routed(None, "0123abcd"), store::BOARD_ID);
+        let err = routed(None, None, &[card, "headway:other/maple-river-canyon"]).unwrap_err();
+        assert!(err.contains("different boards"), "{err}");
+        // Nothing routes: the default, then the primary.
+        assert_eq!(
+            routed(None, Some("env"), &["maple-river-canyon"]).unwrap(),
+            "env"
+        );
+        assert_eq!(routed(Some("b"), Some("env"), &["0123abcd"]).unwrap(), "b");
+        assert_eq!(routed(None, None, &["0123abcd"]).unwrap(), store::BOARD_ID);
+        assert_eq!(routed(None, None, &[]).unwrap(), store::BOARD_ID);
     }
 
     /// `to` steps a card as the grid's `H L J K` did, refusing at an edge,
@@ -1833,8 +2294,9 @@ mod tests {
             let args = MoveCardArgs {
                 card: card(n),
                 column: column.map(str::to_owned),
+                row: None,
                 to,
-                board: None,
+                route: Route::default(),
             };
             match MoveCard::edit(&view, &args) {
                 Ok(BoardAction::MoveCard {
@@ -1881,7 +2343,7 @@ mod tests {
                 SetPriorityArgs {
                     card: "no-such".to_string(),
                     priority: "high".to_string(),
-                    board: None,
+                    route: Route::default(),
                 },
             )
             .unwrap_err();
@@ -1907,7 +2369,7 @@ mod tests {
                 SetPriorityArgs {
                     card,
                     priority: "high".to_string(),
-                    board: None,
+                    route: Route::default(),
                 },
             )
             .unwrap_err();
@@ -2064,5 +2526,13 @@ mod tests {
             *agent.pubkey.bytes(),
             "signed by the comment key"
         );
+
+        // `show` reads the sealed board by its coordinate, so the agent's
+        // comment is there to read back, not only the account's own events.
+        let mut cx = app.tool_context();
+        let shown = call_registered(&mut cx, "headway_show_card", json!({ "card": sealed_ref }))
+            .expect("shows the sealed card");
+        assert_eq!(shown[0]["comments"][0]["body"], "from the agent");
+        assert_eq!(shown[0]["comments"][0]["author"], agent.pubkey.hex());
     }
 }

@@ -48,7 +48,12 @@ instead.
   `--json '<object>'` or `--json-file <path|->` passes the arguments as one
   object instead.
 - `nd <app> <command> [args…]` — a tool that declares a command, e.g.
-  `nd headway show <card>`, `nd headway next --in <epic> -n 1`;
+  `nd headway show <card>`, `nd headway next --in <epic> -n 1`, and the card
+  edits `nd headway add <title…> --col todo -l a,b`, `move <card> --col
+  in-review`, `comment <card> <text…>` (`--reply-to`, `--path`/`--line`,
+  `--body-file -`), `title`, `desc`, `label`, `priority`, `due`, `estimate`,
+  `archive`, `restore`, `delete`, spelled as the `headway` CLI spells them.
+  A card ref names its board; else `--board`, else `$HEADWAY_BOARD`.
   `nd <app> --help` lists them. It prints the text the tool renders (what the
   app's own CLI prints, colored and paged through `$<APP>_PAGER`/`$PAGER` on a
   terminal); `--json` prints the value instead, the same JSON as the CLI's

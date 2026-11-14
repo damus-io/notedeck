@@ -9,7 +9,8 @@ use cli_term::{CaseMode, ColorWhen, PagerMode, compile_pattern};
 use nostrdb_net::Pubkey;
 use regex::Regex;
 
-use headway::event::{LineRange, ReviewFields, ReviewSource, ReviewSourceRole};
+use headway::edit::{ReviewCommentFlags, parse_lines};
+use headway::event::{ReviewFields, ReviewSource, ReviewSourceRole};
 use headway::git::NoteKind;
 use headway::query::{DisplayProps, GroupBy, Grouping, SortBy, Sorting};
 use headway::store;
@@ -307,46 +308,6 @@ pub(crate) enum Command {
         nsec: String,
     },
     Logout,
-}
-
-/// `comment`'s review flags as typed: where on which review record a new
-/// inline comment goes. All unset means an ordinary card comment.
-#[derive(Default)]
-pub(crate) struct ReviewCommentFlags {
-    /// `--path`: the file, as the diff names it.
-    pub(crate) path: Option<String>,
-    /// `--line`: `a` or `a-b`, parsed from the flag.
-    pub(crate) lines: Option<LineRange>,
-    /// `--old`: the lines are on the old (deleted) side.
-    pub(crate) old: bool,
-    /// `--record`: the record whose commit starts with this prefix, rather
-    /// than the newest.
-    pub(crate) record: Option<String>,
-}
-
-impl ReviewCommentFlags {
-    /// Any review flag was given, so the comment goes on a record.
-    pub(crate) fn any(&self) -> bool {
-        self.path.is_some() || self.lines.is_some() || self.old || self.record.is_some()
-    }
-}
-
-/// Parse a `--line` value: `42` for one line or `42-48` for a range, 1-based
-/// and inclusive, so `0` and a backwards range are refused.
-fn parse_lines(value: &str) -> Result<LineRange> {
-    let bad = || format!("--line wants <a> or <a-b> (1-based), got '{value}'");
-    let num = |s: &str| s.trim().parse::<u32>().ok().filter(|&n| n > 0);
-    let (start, end) = match value.split_once('-') {
-        Some((a, b)) => (num(a).ok_or_else(bad)?, num(b).ok_or_else(bad)?),
-        None => {
-            let a = num(value).ok_or_else(bad)?;
-            (a, a)
-        }
-    };
-    if end < start {
-        return Err(bad().into());
-    }
-    Ok(LineRange { start, end })
 }
 
 /// Where `seq` should place the card, parsed from `--after/--before/--first/--last`
@@ -1366,6 +1327,7 @@ fn read_desc_source(path: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use headway::event::LineRange;
     use headway::query::DisplayProp;
 
     /// Parse args in the empty environment: no `HEADWAY_*` variables and no
@@ -1454,11 +1416,6 @@ mod tests {
             panic!("expected a comment");
         };
         assert!(!review.any(), "no flags is a card comment");
-
-        assert_eq!(parse_lines("42").unwrap(), LineRange { start: 42, end: 42 });
-        for bad in ["0", "5-3", "a", "3-", "-3", ""] {
-            assert!(parse_lines(bad).is_err(), "{bad:?}");
-        }
     }
 
     /// `help options` prints the global options page, past the flag check

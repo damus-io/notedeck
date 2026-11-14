@@ -44,7 +44,8 @@ pub enum BoardAction {
     EditTitle { card: NoteId, title: String },
     /// Replace a card's description (cover note).
     EditDescription { card: NoteId, description: String },
-    /// Set a card's labels (additive union with any existing labels).
+    /// Set a card's labels to exactly `labels`, replacing its set (a label
+    /// event is the complete set; an empty one clears it).
     SetLabels { card: NoteId, labels: Vec<String> },
     /// Set a card's priority (latest-authorised-wins; `Priority::None` clears it).
     SetPriority { card: NoteId, priority: Priority },
