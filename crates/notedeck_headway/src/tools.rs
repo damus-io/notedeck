@@ -7,16 +7,16 @@
 //! same curated schema the CLI emits with `--json`. Boards are folded for the
 //! currently-selected account — the pubkey that authors this user's boards.
 
-use headway::event::{self, BoardView, CardView, Container, Priority, resolve_card};
+use headway::event::{self, BoardView, Container, Priority, resolve_card};
 use headway::store::{self, BoardAction, NewCard};
-use headway::{traversal, wordid};
+use headway::{render, traversal, wordid};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
     AppTool, ExplicitPublishApi, PrivateRelayTargets, RegisteredTool, ToolArg, ToolArgType,
     ToolContext, ToolSpec, fan_out_routed_event_frame,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::cursor::{self, MoveTarget, Side, Vertical};
 use crate::teams;
@@ -45,14 +45,6 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(DeleteCard),
         RegisteredTool::new(RenameBoard),
     ]
-}
-
-/// Every card on `view`: the live column cards followed by the archived ones.
-fn all_cards(view: &BoardView) -> impl Iterator<Item = &CardView> {
-    view.columns
-        .iter()
-        .flat_map(|c| c.cards.iter())
-        .chain(view.archived.iter().map(|a| &a.card))
 }
 
 /// Fold the selected account's boards, or `Err` when the db can't be opened.
@@ -117,6 +109,25 @@ impl AppTool for ListBoards {
             })
             .collect())
     }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(
+            out.iter()
+                .map(|board| {
+                    render::board_row(
+                        render::BoardRow {
+                            mark: ' ',
+                            id: &board.id,
+                            title: &board.title,
+                            cards: board.card_count,
+                            owner: None,
+                        },
+                        true,
+                    )
+                })
+                .collect(),
+        )
+    }
 }
 
 /// `headway_show_board`: a board's columns and cards.
@@ -130,9 +141,22 @@ struct ShowBoardArgs {
     board: Option<String>,
 }
 
+/// [`ShowBoard`]'s answer: the folded board, which goes out as
+/// [`event::board_json`] and renders as [`render::board`].
+#[derive(Debug)]
+struct ShownBoard {
+    view: BoardView,
+}
+
+impl Serialize for ShownBoard {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        event::board_json(&self.view).serialize(serializer)
+    }
+}
+
 impl AppTool for ShowBoard {
     type Args = ShowBoardArgs;
-    type Output = serde_json::Value;
+    type Output = ShownBoard;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
@@ -158,9 +182,13 @@ impl AppTool for ShowBoard {
             return Err(format!("no board '{board_id}'"));
         };
         match event::pick_board(&reducer, &author, board_id) {
-            Some(view) => Ok(event::board_json(&view)),
+            Some(view) => Ok(ShownBoard { view }),
             None => Err(format!("no board '{board_id}'")),
         }
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(render::board(&out.view, false, true))
     }
 }
 
@@ -179,14 +207,38 @@ struct ShowCardArgs {
     board: Option<String>,
 }
 
+/// [`ShowCard`]'s answer: the card's board and its id. It goes out as
+/// `headway show <card> --json` prints it ([`render::cards_json`], an array of
+/// the one card with its column) and renders as [`render::card_detail`].
+#[derive(Debug)]
+struct ShownCard {
+    view: BoardView,
+    id: NoteId,
+}
+
+impl ShownCard {
+    /// The card, with where it sits; [`ShowCard::call`] only builds a
+    /// `ShownCard` for a card it found.
+    fn placed(&self) -> Option<render::PlacedCard<'_>> {
+        render::find_card(&self.view, &self.id)
+    }
+}
+
+impl Serialize for ShownCard {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let cards: Vec<render::PlacedCard> = self.placed().into_iter().collect();
+        render::cards_json(&self.view, &cards).serialize(serializer)
+    }
+}
+
 impl AppTool for ShowCard {
     type Args = ShowCardArgs;
-    type Output = serde_json::Value;
+    type Output = ShownCard;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_show_card",
-            "Show a single headway card in full — description, labels, priority, comments, activity, subissues, its blocking edges (`blocked` = held back by an unfinished prerequisite; `blocked_by` = the cards it depends on; `blocks` = the cards depending on it, each edge flagged `done` when cleared), and its `related` edges (undirected \"see also\" links — purely informational context, never a prerequisite or work-order) — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
+            "Show a single headway card in full, as a one-element array of the card (with the `column` it sits in), the shape `headway show <card> --json` prints — description, labels, priority, comments, activity, subissues, its blocking edges (`blocked` = held back by an unfinished prerequisite; `blocked_by` = the cards it depends on; `blocks` = the cards depending on it, each edge flagged `done` when cleared), and its `related` edges (undirected \"see also\" links — purely informational context, never a prerequisite or work-order) — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
             vec![
                 ToolArg::new(
                     "card",
@@ -214,10 +266,20 @@ impl AppTool for ShowCard {
             return Err(format!("no board '{board_id}'"));
         };
         let id = resolve_card(&view, &args.card)?;
-        match all_cards(&view).find(|c| c.id == id) {
-            Some(card) => Ok(event::card_json(&view.id, card)),
-            None => Err(format!("no card matching '{}'", args.card)),
+        if render::find_card(&view, &id).is_none() {
+            return Err(format!("no card matching '{}'", args.card));
         }
+        Ok(ShownCard { view, id })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        let placed = out.placed()?;
+        Some(render::card_detail(
+            &out.view,
+            placed.card,
+            placed.column,
+            true,
+        ))
     }
 }
 
@@ -303,6 +365,16 @@ impl AppTool for ReadyItems {
                 title: c.title.clone(),
             })
             .collect())
+    }
+
+    /// One ref and title a line, as `headway next` prints them; nothing for an
+    /// empty frontier, so `$(nd headway next)` is empty when nothing is ready.
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(
+            out.iter()
+                .map(|item| render::ready_line(&item.card_ref, &item.title, true))
+                .collect(),
+        )
     }
 }
 
@@ -1383,6 +1455,7 @@ mod tests {
         let out = ShowBoard
             .call(&mut cx, ShowBoardArgs { board: None })
             .unwrap();
+        let out = serde_json::to_value(&out).unwrap();
         assert_eq!(out["id"], store::BOARD_ID);
         assert_eq!(out["columns"].as_array().unwrap().len(), 5);
     }
@@ -1444,8 +1517,52 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(out["ref"], json!(card_ref));
-        assert!(out["title"].is_string());
+        let json = serde_json::to_value(&out).unwrap();
+        // `headway show <card> --json`'s shape: one card, with its column.
+        assert_eq!(json.as_array().map(Vec::len), Some(1), "{json}");
+        assert_eq!(json[0]["ref"], json!(card_ref));
+        assert!(json[0]["title"].is_string());
+        assert!(json[0]["column"].is_string());
+
+        let text = ShowCard.render(&out).expect("a card renders");
+        assert!(
+            plain(&text).starts_with(&format!("card    {card_ref}\n")),
+            "{text}"
+        );
+    }
+
+    /// `s` without its ANSI color, as nd prints it into a pipe.
+    fn plain(s: &str) -> String {
+        s.replace("\x1b[90m", "").replace("\x1b[0m", "")
+    }
+
+    /// The tools' text is the CLI's: `nd headway show` and `headway show`
+    /// render one board with one function, so the tool's text, its color
+    /// stripped, is byte for byte what the CLI prints into a pipe, and its
+    /// value is what `headway show --json` prints.
+    #[test]
+    fn show_board_renders_what_the_cli_prints() {
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            mut note_cache,
+        } = seeded_env();
+        let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
+        let out = ShowBoard
+            .call(&mut cx, ShowBoardArgs { board: None })
+            .unwrap();
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let author = *accounts.selected_account_pubkey();
+        let view = event::load_board(&ndb, &txn, &author, store::BOARD_ID).expect("board");
+        let text = ShowBoard.render(&out).expect("a board renders");
+        assert!(text.contains("\x1b[90m"), "refs go out colored: {text:?}");
+        assert_eq!(plain(&text), render::board(&view, false, false));
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            event::board_json(&view)
+        );
     }
 
     #[test]
@@ -1563,6 +1680,14 @@ mod tests {
         assert_eq!(capped.len(), 1);
         // `limit` caps the head of the same work-order, so it's the first item.
         assert_eq!(capped[0].id, full[0].id);
+
+        // `headway next`'s lines: the plain ref, then the title.
+        let text = ReadyItems.render(&capped).expect("next renders");
+        assert_eq!(
+            plain(&text),
+            format!("{}  {}\n", capped[0].card_ref, capped[0].title)
+        );
+        assert_eq!(ReadyItems.render(&Vec::new()).as_deref(), Some(""));
     }
 
     #[test]

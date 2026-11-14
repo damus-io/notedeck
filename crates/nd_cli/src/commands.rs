@@ -15,8 +15,10 @@
 //!   `--` ends the flags.
 //! - **Env fallback**: an argument left out is read from its `x-nd-env`
 //!   variable when that is set and not empty.
-//! - `--json` is every command's: it prints the tool's JSON, which is all a
-//!   tool answers with for now.
+//! - **nd's own flags** go with every command and are read before the
+//!   tool's: `--json` prints the tool's value rather than the text it
+//!   rendered, `--pager`/`--no-pager` force paging the text either way, and
+//!   `--color <auto|always|never>` its color (see [`Output`]).
 //!
 //! **Two tools may share a path.** They are tried in order of how many
 //! positionals each *requires*, most first, and the first whose required
@@ -25,16 +27,25 @@
 //! Tools that tie keep the order notedeck listed them in.
 
 use crate::help::CLI;
+use crate::output::Output;
 use crate::schema::{self, Arg, Slot};
 use cli_term::help::{CommandHelp, NAME_COL};
+use cli_term::{ColorWhen, PagerMode};
 use notedeck_ipc::ToolInfo;
 use serde_json::Value;
 
 /// What a command line resolved to.
 #[derive(Debug, PartialEq)]
 pub enum Action {
-    /// Call `tool` with `args`.
-    Call { tool: String, args: Value },
+    /// Call `tool` with `args`, printing its answer as `output` says. `ns`
+    /// is the command's namespace, whose pager variable the text goes
+    /// through.
+    Call {
+        tool: String,
+        args: Value,
+        output: Output,
+        ns: String,
+    },
     /// Print this help page.
     Help(String),
 }
@@ -168,6 +179,8 @@ pub fn resolve(
     Ok(Action::Call {
         tool: entry.tool.name.clone(),
         args,
+        output: line.output,
+        ns: path[0].to_owned(),
     })
 }
 
@@ -197,6 +210,8 @@ struct Line<'w> {
     /// Each flag as typed without its dashes, and its value: the text after
     /// it, or `true` for a switch.
     flags: Vec<(&'w str, String)>,
+    /// What nd's own flags asked of the output.
+    output: Output,
 }
 
 impl<'w> Line<'w> {
@@ -208,6 +223,7 @@ impl<'w> Line<'w> {
         let mut line = Line {
             positionals: Vec::new(),
             flags: Vec::new(),
+            output: Output::default(),
         };
         let mut words = words.iter().map(String::as_str);
         while let Some(word) = words.next() {
@@ -223,8 +239,28 @@ impl<'w> Line<'w> {
                 Some((flag, value)) => (flag, Some(value)),
                 None => (flag, None),
             };
-            if flag == "json" {
-                continue;
+            match (flag, inline) {
+                ("json", None) => {
+                    line.output.json = true;
+                    continue;
+                }
+                ("pager", None) => {
+                    line.output.pager = PagerMode::Always;
+                    continue;
+                }
+                ("no-pager", None) => {
+                    line.output.pager = PagerMode::Never;
+                    continue;
+                }
+                ("color", _) => {
+                    let when = match inline {
+                        Some(when) => when,
+                        None => words.next().ok_or("--color needs a value")?,
+                    };
+                    line.output.color = ColorWhen::parse(when)?;
+                    continue;
+                }
+                _ => {}
             }
             let args: Vec<&Arg> = candidates.iter().filter_map(|e| e.flag(flag)).collect();
             if args.is_empty() {
@@ -427,10 +463,9 @@ fn command_page(path: &[&str], candidates: &[&Entry]) -> String {
             options.push((key, text));
         }
     }
-    options.push((
-        "--json".to_owned(),
-        "Print the tool's answer as JSON, which is all it prints for now".to_owned(),
-    ));
+    for (key, text) in ND_OPTIONS {
+        options.push(((*key).to_owned(), (*text).to_owned()));
+    }
 
     let usage: Vec<&str> = usage.iter().map(String::as_str).collect();
     let options: Vec<(&str, &str)> = options
@@ -447,6 +482,23 @@ fn command_page(path: &[&str], candidates: &[&Entry]) -> String {
         examples: &[],
     })
 }
+
+/// The flags nd reads on every command, before the tool's, as
+/// [`command_page`] lists them.
+const ND_OPTIONS: &[(&str, &str)] = &[
+    (
+        "--json",
+        "Print the tool's answer as JSON rather than the text it renders",
+    ),
+    (
+        "--pager / --no-pager",
+        "Page the text, or don't; by default it pages when stdout is a terminal, through $<NS>_PAGER, then $PAGER, then `less -R`",
+    ),
+    (
+        "--color <when>",
+        "Color the text: auto (a terminal or a pager), always or never",
+    ),
+];
 
 /// How [`command_page`] lists `arg`: `<card>` for a positional, else its
 /// flag spellings and a value placeholder unless it's a switch.
@@ -569,9 +621,15 @@ mod tests {
     }
 
     fn call(tool: &str, args: Value) -> Result<Action, String> {
+        call_with(tool, args, Output::default())
+    }
+
+    fn call_with(tool: &str, args: Value, output: Output) -> Result<Action, String> {
         Ok(Action::Call {
             tool: tool.to_owned(),
             args,
+            output,
+            ns: "headway".to_owned(),
         })
     }
 
@@ -682,11 +740,50 @@ mod tests {
         assert!(err.starts_with("missing <title>"), "{err}");
     }
 
+    /// nd's own output flags go with every command, anywhere after its
+    /// path, and never reach the tool.
     #[test]
-    fn json_is_a_no_op_switch() {
+    fn output_flags_are_nds() {
+        let json = Output {
+            json: true,
+            ..Output::default()
+        };
         assert_eq!(
             run(&["headway", "board", "--json"]),
-            call("headway_list_boards", json!({}))
+            call_with("headway_list_boards", json!({}), json)
+        );
+        assert_eq!(
+            run(&["headway", "show", "--json", "x"]),
+            call_with("headway_show_card", json!({"card": "x"}), json)
+        );
+        assert_eq!(
+            run(&["headway", "show", "--no-pager", "--color", "always"]),
+            call_with(
+                "headway_show_board",
+                json!({}),
+                Output {
+                    pager: PagerMode::Never,
+                    color: ColorWhen::Always,
+                    ..Output::default()
+                }
+            )
+        );
+        assert_eq!(
+            run(&["headway", "next", "--pager", "--color=never", "-n", "1"]),
+            call_with(
+                "headway_ready_items",
+                json!({"limit": 1}),
+                Output {
+                    pager: PagerMode::Always,
+                    color: ColorWhen::Never,
+                    ..Output::default()
+                }
+            )
+        );
+        let err = run(&["headway", "show", "--color", "pink"]).unwrap_err();
+        assert!(
+            err.starts_with("--color must be auto|always|never"),
+            "{err}"
         );
     }
 

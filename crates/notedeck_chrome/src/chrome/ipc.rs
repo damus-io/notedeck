@@ -145,7 +145,9 @@ fn call_tool(
     if name == notedeck_dave::SPAWN_SESSION {
         return Served::Reply(spawn_session(chrome, ctx, args));
     }
-    let outcome = match ctx.call_tool(name, args) {
+    // A person reads what nd prints, so ask a data tool for its text too.
+    let notedeck::Rendered { outcome, text } = ctx.call_tool_rendered(name, args);
+    let outcome = match outcome {
         ToolOutcome::Intent(AppAction::CallTool(invocation)) => {
             match chrome.call_ui_tool(ctx, &invocation) {
                 // One call is one hop, as with any tool the chrome runs.
@@ -159,7 +161,7 @@ fn call_tool(
         outcome => outcome,
     };
     match outcome {
-        ToolOutcome::Data(result) => Served::Reply(Response::ok(Reply::Result { result })),
+        ToolOutcome::Data(result) => Served::Reply(Response::ok(Reply::Result { result, text })),
         ToolOutcome::Error(err) => Served::Reply(Response::error(err)),
         ToolOutcome::Intent(action) => Served::Apply(action),
     }
@@ -183,7 +185,7 @@ fn spawn_session(chrome: &mut Chrome, ctx: &mut AppContext, args: &serde_json::V
     chrome.set_opened(slot);
     use notedeck::App;
     match chrome.apps[slot].call_ui_tool(ctx, notedeck_dave::SPAWN_SESSION, args) {
-        ToolOutcome::Data(result) => Response::ok(Reply::Result { result }),
+        ToolOutcome::Data(result) => Response::ok(Reply::Result { result, text: None }),
         ToolOutcome::Error(err) => Response::error(err),
         ToolOutcome::Intent(_) => Response::error("Dave answered a spawn with an intent"),
     }
@@ -240,6 +242,10 @@ mod tests {
 
         fn call(&self, _cx: &mut ToolContext, args: Value) -> Result<Value, String> {
             Ok(args)
+        }
+
+        fn render(&self, out: &Value) -> Option<String> {
+            Some(format!("echoed {out}\n"))
         }
     }
 
@@ -362,7 +368,8 @@ mod tests {
         assert_eq!(
             reply(call(&mut f, ECHO, json!({"a": 1}))),
             Outcome::Ok(Reply::Result {
-                result: json!({"a": 1})
+                result: json!({"a": 1}),
+                text: Some("echoed {\"a\":1}\n".to_owned()),
             })
         );
         assert!(f.calls.borrow().is_empty(), "no UI tool ran");
@@ -374,7 +381,8 @@ mod tests {
         assert_eq!(
             reply(call(&mut f, PEEK, Value::Null)),
             Outcome::Ok(Reply::Result {
-                result: json!({"peeked": true})
+                result: json!({"peeked": true}),
+                text: None,
             })
         );
         assert_eq!(*f.calls.borrow(), vec![PEEK]);
@@ -435,7 +443,7 @@ mod tests {
             };
             reply(serve(chrome, ctx, request))
         };
-        let Outcome::Ok(Reply::Result { result }) =
+        let Outcome::Ok(Reply::Result { result, .. }) =
             spawn(&mut chrome, &mut ctx, dir.path().to_owned())
         else {
             panic!("the spawn answers with data");

@@ -232,6 +232,7 @@ fn data_prints_as_json_and_exits_0() {
     let dir = socket_dir();
     let result = Response::ok(Reply::Result {
         result: json!({"cards": [1, 2]}),
+        text: None,
     });
     let Fake { socket, server } = serve(&dir, vec![list(), result]);
     let out = nd(&socket, &["call", "open", "--json", r#"{"reference":"x"}"#]);
@@ -405,6 +406,7 @@ fn spawn_sends_the_resolved_dir_and_prints_the_session() {
     let spawned = || {
         Response::ok(Reply::Result {
             result: json!({"session_id": 7}),
+            text: None,
         })
     };
     // No tool list first: the chrome starts Dave for a spawn, so nd doesn't
@@ -455,6 +457,7 @@ fn an_app_command_calls_the_tool_it_names() {
     let dir = socket_dir();
     let result = Response::ok(Reply::Result {
         result: json!({"ref": "headway:notedeck/a-b-c"}),
+        text: None,
     });
     let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
     let out = nd(
@@ -474,10 +477,57 @@ fn an_app_command_calls_the_tool_it_names() {
     );
 }
 
+/// A tool that renders answers with text, which a command prints in place
+/// of the value: without its color into a pipe, with it under `--color
+/// always`. `--json` prints the value, and so does `nd call`, whose `--json`
+/// is its argument object.
+#[test]
+fn an_app_command_prints_the_tools_text() {
+    let dir = socket_dir();
+    let rendered = || {
+        Response::ok(Reply::Result {
+            result: json!({"id": "notedeck"}),
+            text: Some("Todo (1)\n  One  \x1b[90mheadway:notedeck/a-b-c\x1b[0m\n".to_owned()),
+        })
+    };
+    let lines = [
+        &["headway", "show"][..],
+        &["headway", "show", "--color", "always"],
+        &["headway", "show", "--json"],
+        &["call", "headway_show_board"],
+    ];
+    let mut replies = Vec::new();
+    for _ in lines {
+        replies.push(app_list());
+        replies.push(rendered());
+    }
+    let Fake { socket, server } = serve(&dir, replies);
+    let outs: Vec<_> = lines.iter().map(|line| nd(&socket, line)).collect();
+    for (line, out) in lines.iter().zip(&outs) {
+        assert_eq!(out.status.code(), Some(0), "{line:?}: {}", stderr(out));
+    }
+    assert_eq!(
+        stdout(&outs[0]),
+        "Todo (1)\n  One  headway:notedeck/a-b-c\n"
+    );
+    assert_eq!(
+        stdout(&outs[1]),
+        "Todo (1)\n  One  \x1b[90mheadway:notedeck/a-b-c\x1b[0m\n"
+    );
+    for out in &outs[2..] {
+        let printed: Value = serde_json::from_str(&stdout(out)).expect("JSON on stdout");
+        assert_eq!(printed, json!({"id": "notedeck"}));
+    }
+    server.join().unwrap();
+}
+
 #[test]
 fn an_app_command_reads_flags_and_the_callers_env() {
     let dir = socket_dir();
-    let result = Response::ok(Reply::Result { result: json!([]) });
+    let result = Response::ok(Reply::Result {
+        result: json!([]),
+        text: None,
+    });
     let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
     let out = Command::new(nd_bin())
         .args([

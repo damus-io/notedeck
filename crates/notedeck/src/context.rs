@@ -214,6 +214,21 @@ impl<'a> AppContext<'a> {
         tools.call(&mut self.tool_context(), name, args)
     }
 
+    /// Dispatch as [`call_tool`](Self::call_tool) does, with an app data
+    /// tool's rendered text beside its value (see
+    /// [`AppTool::render`](crate::AppTool::render)), for a caller that prints
+    /// to a person. A browser tool renders nothing.
+    pub fn call_tool_rendered(&mut self, name: &str, args: &serde_json::Value) -> crate::Rendered {
+        if crate::ToolCall::specs()
+            .iter()
+            .any(|spec| spec.name() == name)
+        {
+            return self.call_tool(name, args).into();
+        }
+        let tools = &self.registries.tools;
+        tools.call_rendered(&mut self.tool_context(), name, args)
+    }
+
     pub fn select_account(&mut self, pubkey: &Pubkey) {
         let txn = Transaction::new(self.ndb).expect("txn");
         self.accounts

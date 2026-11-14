@@ -225,7 +225,7 @@ fn tools_call(
         args,
     };
     Ok(match ask(request) {
-        Ok(Reply::Result { result }) => data(result),
+        Ok(Reply::Result { result, .. }) => data(result),
         Ok(Reply::Intent { .. }) => text(format!("done: {name} acted on the window"), false),
         Ok(Reply::Tools { .. }) => tool_error("notedeck answered a call with a tool list"),
         Err(failure) => tool_error(failure.message),
@@ -409,6 +409,7 @@ mod tests {
     fn data_comes_back_as_text_and_structured_content() {
         let reply = Ok(Reply::Result {
             result: json!({"cards": [1, 2]}),
+            text: None,
         });
         let line = call_line("read_board", json!({"board": "notedeck"}));
         let Ran { response, seen } = run(DATA, &line, reply);

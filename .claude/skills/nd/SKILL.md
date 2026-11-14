@@ -29,6 +29,13 @@ cargo run -q -p nd_cli -- tools          # or the built target/debug/nd
   `nd call open agentium:<word-id>`.
   `--json '<object>'` or `--json-file <path|->` passes the arguments as one
   object instead.
+- `nd <app> <command> [args…]` — a tool that declares a command, e.g.
+  `nd headway show <card>`, `nd headway next --in <epic> -n 1`;
+  `nd <app> --help` lists them. It prints the text the tool renders (what the
+  app's own CLI prints, colored and paged through `$<APP>_PAGER`/`$PAGER` on a
+  terminal); `--json` prints the value instead, the same JSON as the CLI's
+  `--json`. `--pager`/`--no-pager` and `--color <auto|always|never>` go with
+  every command.
 - `nd mcp [--ui] [--read-only]` — a stdio MCP server: `tools/list` and
   `tools/call` go to the socket, one connection each, so it can start before
   notedeck. Only data tools are exposed unless `--ui`; `--read-only` keeps only
@@ -54,8 +61,9 @@ nd call headway_show_card --json '{"card":"headway:notedeck/balcony-warm-action"
 
 ## Output and exit codes
 
-- Data prints as JSON on stdout (indented on a terminal, one line in a pipe),
-  exit 0.
+- `nd call` data prints as JSON on stdout (indented on a terminal, one line in
+  a pipe), exit 0. An app command prints its tool's text, or that JSON with
+  `--json` or when the tool renders none.
 - A UI tool that acted on the window prints nothing, exit 0.
 - A tool error goes to stderr, exit 1 (also for a bad command line).
 - No notedeck listening: `notedeck isn't running (no socket at …)`, exit 2.

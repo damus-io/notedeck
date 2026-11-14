@@ -12,6 +12,8 @@
 //!   the graph view's layout and rendering. No egui.
 //! - [`query`] — the issue-list query model: the shared filter parser and
 //!   predicate behind the board filter, the list view and `headway list`.
+//! - [`render`] — the human text view of a board, a card, the `next`
+//!   frontier and the board list, shared by the CLI and the app's tools.
 //! - [`store`] — sign + ingest into a local nostrdb, board seeding, and
 //!   [`store::apply`], which turns a [`store::BoardAction`] into events.
 //! - [`git`] — thin `git` shell-outs (commit, toplevel, repo identity) for
@@ -33,6 +35,7 @@ pub mod fmt;
 pub mod git;
 pub mod graph;
 pub mod query;
+pub mod render;
 pub mod store;
 /// Backstop for the tests' nostrdb-ingest waits (see
 /// [`nostrdb::SubscriptionStream::wait_for_notes`]). A local ingest commits in

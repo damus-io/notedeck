@@ -16,12 +16,14 @@ mod commands;
 mod help;
 mod listing;
 mod mcp;
+mod output;
 mod schema;
 
 use cli_term::help::{CommandHelp, OPTIONS_PAGE, option_names};
 use notedeck_ipc::{Outcome, PROTOCOL_VERSION, Reply, Request, Response, ToolInfo};
+use output::print_json;
 use serde_json::Value;
-use std::io::{IsTerminal, Read};
+use std::io::Read;
 use std::process::ExitCode;
 
 /// What a command line asks for.
@@ -280,7 +282,12 @@ fn app(words: &[String], help: bool) -> Result<(), Failure> {
             eprint!("{page}");
             Ok(())
         }
-        commands::Action::Call { tool, args } => send_call(tool, args),
+        commands::Action::Call {
+            tool,
+            args,
+            output,
+            ns,
+        } => send_call(tool, args, Print::Command { output, ns: &ns }),
     }
 }
 
@@ -323,14 +330,27 @@ fn call(name: &str, pairs: &[String], base: Option<JsonSource>) -> Result<(), Fa
         )));
     };
     let args = schema::build(name, &tool.input_schema, base, pairs)?;
-    send_call(name.to_owned(), args)
+    send_call(name.to_owned(), args, Print::Value)
+}
+
+/// How [`send_call`] prints a tool's answer.
+enum Print<'a> {
+    /// The value, as `nd call` always has: its `--json` is the argument
+    /// object, not an output mode.
+    Value,
+    /// As `nd <ns> <verb>`'s flags say: the text the tool rendered, else
+    /// its value.
+    Command { output: output::Output, ns: &'a str },
 }
 
 /// Call tool `name` with `args`, already checked against its schema, and
 /// print what it answers.
-fn send_call(name: String, args: Value) -> Result<(), Failure> {
+fn send_call(name: String, args: Value, print: Print) -> Result<(), Failure> {
     match answer(Request::CallTool { name, args })? {
-        Reply::Result { result } => print_json(&result),
+        Reply::Result { result, text } => match print {
+            Print::Value => print_json(&result),
+            Print::Command { output, ns } => output.print(&result, text.as_deref(), ns),
+        },
         Reply::Intent { .. } => {}
         Reply::Tools { .. } => {
             return Err(Failure::new("notedeck answered a call with a tool list"));
@@ -362,7 +382,7 @@ fn spawn(json: bool, dir: Option<&str>) -> Result<(), Failure> {
             failure.message
         )),
     })?;
-    let Reply::Result { result } = reply else {
+    let Reply::Result { result, .. } = reply else {
         return Err(Failure::new("notedeck answered a spawn without data"));
     };
     let Some(session_id) = result["session_id"].as_u64() else {
@@ -490,17 +510,6 @@ fn exchange(_request: &Request) -> Result<Response, Failure> {
 /// A tool as JSON.
 fn to_value(tool: &ToolInfo) -> Value {
     serde_json::to_value(tool).expect("a tool always serializes")
-}
-
-/// `value` on stdout: indented for a person at a terminal, one line for a
-/// pipe.
-fn print_json(value: &Value) {
-    let text = if std::io::stdout().is_terminal() {
-        serde_json::to_string_pretty(value)
-    } else {
-        serde_json::to_string(value)
-    };
-    println!("{}", text.expect("a JSON value always serializes"));
 }
 
 #[cfg(test)]

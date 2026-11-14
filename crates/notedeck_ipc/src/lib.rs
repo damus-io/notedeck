@@ -157,7 +157,15 @@ pub enum Reply {
     /// To [`Request::ListTools`].
     Tools { tools: Vec<ToolInfo> },
     /// A data tool's answer, or a UI tool's that returned data.
-    Result { result: Value },
+    Result {
+        result: Value,
+        /// The same answer as text for a person, when the tool renders one:
+        /// what `nd` prints unless asked for `--json`. Muted parts carry ANSI
+        /// color for the client to keep or strip. Absent from an older
+        /// notedeck, and ignored by an older nd.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     /// The tool asked the window to act, and it did.
     Intent { intent: IntentStatus },
 }
@@ -326,9 +334,15 @@ mod tests {
             },
             Reply::Result {
                 result: json!({"cards": 3}),
+                text: None,
             },
             Reply::Result {
                 result: Value::Null,
+                text: None,
+            },
+            Reply::Result {
+                result: json!([]),
+                text: Some("Todo (0)\n".to_owned()),
             },
             Reply::Intent {
                 intent: IntentStatus::Applied,
@@ -341,6 +355,30 @@ mod tests {
         }
         let response = Response::error("no such tool");
         assert_eq!(Response::from_line(&response.to_line()), Ok(response));
+    }
+
+    /// `text` is optional both ways: a reply from a notedeck that predates it
+    /// still reads, and one without text writes no `text` key.
+    #[test]
+    fn result_text_is_optional_on_the_wire() {
+        let old = r#"{"v":1,"notedeck":"0","status":"ok","result":{"a":1}}"#;
+        let Outcome::Ok(Reply::Result { result, text }) = Response::from_line(old).unwrap().outcome
+        else {
+            panic!("a result");
+        };
+        assert_eq!((result, text), (json!({"a": 1}), None));
+
+        let bare = Response::ok(Reply::Result {
+            result: json!(1),
+            text: None,
+        });
+        assert!(!bare.to_line().contains("\"text\""), "{}", bare.to_line());
+        let with = Response::ok(Reply::Result {
+            result: json!(1),
+            text: Some("one\n".to_owned()),
+        });
+        let value: Value = serde_json::from_str(&with.to_line()).unwrap();
+        assert_eq!(value["text"], json!("one\n"));
     }
 
     #[test]

@@ -90,6 +90,28 @@ pub enum ToolOutcome {
     Error(String),
 }
 
+/// A [`ToolOutcome`] with the human text a data tool rendered beside its
+/// value, for a caller that prints to a person (`nd headway show`). Only
+/// [`ToolRegistry::call_rendered`] asks for the text; a backend that hands
+/// the value to a model (Dave, `nd mcp`) calls [`ToolRegistry::call`] and
+/// never pays for the rendering.
+pub struct Rendered {
+    pub outcome: ToolOutcome,
+    /// What [`AppTool::render`] made of a [`Data`](ToolOutcome::Data) value;
+    /// `None` for a tool that renders nothing, and for any other outcome.
+    pub text: Option<String>,
+}
+
+impl From<ToolOutcome> for Rendered {
+    /// An outcome with no text.
+    fn from(outcome: ToolOutcome) -> Self {
+        Self {
+            outcome,
+            text: None,
+        }
+    }
+}
+
 /// A statically-typed, browser-provided tool call, parsed from a backend's
 /// request. Each variant owns a concrete argument struct (so a query still calls
 /// [`QueryCall::to_filter`] on a real type), and the whole set is what a backend
@@ -176,6 +198,16 @@ pub trait AppTool: Send + Sync {
     /// only; a tool with UI side effects is a [`ToolKind::Ui`] tool instead (see
     /// [`App::call_ui_tool`](crate::App::call_ui_tool)).
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String>;
+
+    /// `out` as text for a person to read, beside the JSON value a model
+    /// gets: what `nd` prints unless asked for `--json`. `None`, the default,
+    /// prints the value instead.
+    ///
+    /// Render with the muted parts colored (ANSI); the caller strips the
+    /// color when its output isn't a terminal, since only it knows.
+    fn render(&self, _out: &Self::Output) -> Option<String> {
+        None
+    }
 }
 
 /// A type-erased [`AppTool`], ready to store in a [`ToolRegistry`] next to tools
@@ -188,8 +220,9 @@ pub trait AppTool: Send + Sync {
 /// [`RegisteredTool::new`].
 /// The erased body of a [`RegisteredTool`]: takes raw JSON args, does the
 /// `Value` ⇆ typed serde conversion around the concrete [`AppTool::call`], and
-/// returns a [`ToolOutcome`].
-type ErasedHandler = Box<dyn Fn(&mut ToolContext, &Value) -> ToolOutcome + Send + Sync>;
+/// returns a [`ToolOutcome`], with [`AppTool::render`]'s text when the
+/// `bool` asks for it.
+type ErasedHandler = Box<dyn Fn(&mut ToolContext, &Value, bool) -> Rendered + Send + Sync>;
 
 pub struct RegisteredTool {
     spec: ToolSpec,
@@ -203,20 +236,25 @@ impl RegisteredTool {
     /// Erase a concrete [`AppTool`] into a registrable tool. The returned tool
     /// deserializes incoming JSON into `T::Args`, runs `tool.call`, and
     /// serializes the output into [`ToolOutcome::Data`] — reporting any serde or
-    /// execution failure as [`ToolOutcome::Error`].
+    /// execution failure as [`ToolOutcome::Error`]. Asked for text, it renders
+    /// the same output with [`AppTool::render`].
     pub fn new<T: AppTool + 'static>(tool: T) -> Self {
         let spec = tool.spec();
-        let handler = Box::new(move |cx: &mut ToolContext, args: &Value| {
+        let handler = Box::new(move |cx: &mut ToolContext, args: &Value, text: bool| {
             let args = match serde_json::from_value::<T::Args>(args.clone()) {
                 Ok(args) => args,
-                Err(err) => return ToolOutcome::Error(format!("invalid arguments: {err}")),
+                Err(err) => return ToolOutcome::Error(format!("invalid arguments: {err}")).into(),
             };
-            match tool.call(cx, args) {
-                Ok(output) => match serde_json::to_value(&output) {
-                    Ok(value) => ToolOutcome::Data(value),
-                    Err(err) => ToolOutcome::Error(format!("failed to serialize output: {err}")),
+            let output = match tool.call(cx, args) {
+                Ok(output) => output,
+                Err(err) => return ToolOutcome::Error(err).into(),
+            };
+            match serde_json::to_value(&output) {
+                Ok(value) => Rendered {
+                    outcome: ToolOutcome::Data(value),
+                    text: text.then(|| tool.render(&output)).flatten(),
                 },
-                Err(err) => ToolOutcome::Error(err),
+                Err(err) => ToolOutcome::Error(format!("failed to serialize output: {err}")).into(),
             }
         });
         Self {
@@ -251,7 +289,13 @@ impl RegisteredTool {
 
     /// Run the erased tool with raw JSON `args`.
     pub fn call(&self, cx: &mut ToolContext, args: &Value) -> ToolOutcome {
-        (self.handler)(cx, args)
+        (self.handler)(cx, args, false).outcome
+    }
+
+    /// Run it as [`call`](Self::call) does, and render its value as text too
+    /// (see [`AppTool::render`]).
+    pub fn call_rendered(&self, cx: &mut ToolContext, args: &Value) -> Rendered {
+        (self.handler)(cx, args, true)
     }
 }
 
@@ -470,10 +514,27 @@ impl ToolRegistry {
     pub fn call(&self, cx: &mut ToolContext, name: &str, args: &Value) -> ToolOutcome {
         match self.by_name.get(name) {
             Some(&ToolSlot::Data(idx)) => self.tools[idx].call(cx, args),
+            _ => self.not_here(name, args),
+        }
+    }
+
+    /// Dispatch as [`call`](Self::call) does, with a data tool's rendered text
+    /// beside its value (see [`AppTool::render`]). Only a data tool renders.
+    pub fn call_rendered(&self, cx: &mut ToolContext, name: &str, args: &Value) -> Rendered {
+        match self.by_name.get(name) {
+            Some(&ToolSlot::Data(idx)) => self.tools[idx].call_rendered(cx, args),
+            _ => self.not_here(name, args).into(),
+        }
+    }
+
+    /// What a call of `name` is when no data tool by that name runs here: an
+    /// intent for a UI tool's owner, else an unknown-tool error.
+    fn not_here(&self, name: &str, args: &Value) -> ToolOutcome {
+        match self.by_name.get(name) {
             Some(&ToolSlot::Ui(_)) => {
                 ToolOutcome::Intent(AppAction::CallTool(ToolInvocation::new(name, args.clone())))
             }
-            None => ToolOutcome::Error(format!("unknown tool '{name}'")),
+            _ => ToolOutcome::Error(format!("unknown tool '{name}'")),
         }
     }
 }
@@ -515,6 +576,10 @@ mod tests {
             Ok(EchoOutput {
                 echoed: args.message,
             })
+        }
+
+        fn render(&self, out: &Self::Output) -> Option<String> {
+            Some(format!("echo: {}\n", out.echoed))
         }
     }
 
@@ -572,6 +637,39 @@ mod tests {
             panic!("expected data");
         };
         assert_eq!(value["echoed"], "hi");
+    }
+
+    /// Asked for text, a data tool renders the value it answers with; an
+    /// error or unknown tool carries none.
+    #[test]
+    fn call_rendered_carries_the_tool_text() {
+        let ToolEnv {
+            db,
+            mut note_cache,
+            accounts,
+        } = test_tool_env();
+        let mut cx = ToolContext {
+            ndb: &db.ndb,
+            note_cache: &mut note_cache,
+            accounts: &accounts,
+            publish: None,
+        };
+        let mut reg = ToolRegistry::default();
+        reg.register(RegisteredTool::new(Echo));
+
+        let Rendered { outcome, text } =
+            reg.call_rendered(&mut cx, "echo", &json!({ "message": "hi" }));
+        let ToolOutcome::Data(value) = outcome else {
+            panic!("expected data");
+        };
+        assert_eq!(value["echoed"], "hi");
+        assert_eq!(text.as_deref(), Some("echo: hi\n"));
+
+        let bad = reg.call_rendered(&mut cx, "echo", &json!({ "wrong": 1 }));
+        assert!(matches!(bad.outcome, ToolOutcome::Error(_)));
+        assert_eq!(bad.text, None);
+        let unknown = reg.call_rendered(&mut cx, "nope", &json!({}));
+        assert!(matches!(unknown.outcome, ToolOutcome::Error(_)));
     }
 
     #[test]
