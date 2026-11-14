@@ -320,12 +320,9 @@ jobs:
       - name: Run macOS DMG Build Script
         run: ARCH=${{ matrix.arch }} ./scripts/macos_build.sh
 
-      - name: Create release tarball
-        run: |
-          mkdir -p packages
-          tar czf packages/notedeck-${{ matrix.arch }}-macos.tar.gz \
-            -C target/${{ matrix.arch }}-apple-darwin/release notedeck
-
+      # macos_build.sh also packs the signed, notarized Notedeck.app into
+      # packages/notedeck-<arch>-macos.tar.gz (the auto-update asset) and
+      # verifies the unpacked bundle with codesign and spctl.
       - name: Upload tarball
         uses: actions/upload-artifact@v4
         with:

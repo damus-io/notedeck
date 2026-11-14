@@ -85,6 +85,67 @@ mod unix_tests {
         assert!(mode & 0o111 != 0, "binary should be executable");
     }
 
+    /// The macOS update asset is the whole `Notedeck.app`, packed by
+    /// `scripts/macos_build.sh` with the system tar:
+    /// `tar czf <asset> -C <bundle dir> Notedeck.app`.
+    ///
+    /// Pack a fake bundle the same way and check that `extract_archive()`
+    /// returns the `.app` (not a raw binary) with the executable's exec bit
+    /// and the bundle's symlinks intact, since a signed bundle that loses
+    /// either no longer verifies.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_extract_macos_app_bundle_tarball() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle_dir = tmp.path().join("bundle/osx");
+        let staging_dir = tmp.path().join("staging");
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        let app = bundle_dir.join("Notedeck.app");
+        let contents = app.join("Contents");
+        let macos = contents.join("MacOS");
+        fs::create_dir_all(&macos).unwrap();
+        fs::create_dir_all(contents.join("Resources")).unwrap();
+        fs::write(contents.join("Info.plist"), "<plist/>").unwrap();
+        let exe = macos.join("notedeck");
+        fs::write(&exe, "#!/bin/sh\necho updated\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink("../MacOS/notedeck", contents.join("Resources/link")).unwrap();
+
+        let asset = tmp.path().join("notedeck-aarch64-macos.tar.gz");
+        let status = Command::new("/usr/bin/tar")
+            .arg("czf")
+            .arg(&asset)
+            .arg("-C")
+            .arg(&bundle_dir)
+            .arg("Notedeck.app")
+            .status()
+            .expect("run tar");
+        assert!(status.success(), "tar failed");
+
+        let found = notedeck::updater::platform::extract_archive(&asset, &staging_dir)
+            .expect("extract_archive failed");
+
+        assert_eq!(found, staging_dir.join("Notedeck.app"));
+        let extracted_exe = found.join("Contents/MacOS/notedeck");
+        let mode = fs::metadata(&extracted_exe).unwrap().permissions().mode();
+        assert!(
+            mode & 0o111 != 0,
+            "bundle executable should stay executable"
+        );
+        let link = found.join("Contents/Resources/link");
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(&link).unwrap(),
+            Path::new("../MacOS/notedeck")
+        );
+    }
+
     /// Test `self_replace::self_replace()` + relaunch using the real
     /// `update_test_helper` binary.
     ///

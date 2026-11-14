@@ -41,8 +41,10 @@ if ! command -v create-dmg &> /dev/null; then
     exit 1
 fi
 
-# Build the .app bundle
-FEATURES=${FEATURES:-dave,messages}
+# Build the .app bundle. `auto-update` is on so the shipped app can update
+# itself from the signed tarball made below. The dev bundle (`make macos-app`)
+# leaves it off: an unsigned local bundle should not replace itself.
+FEATURES=${FEATURES:-dave,messages,auto-update}
 echo "Building .app bundle (features: $FEATURES)..."
 cargo bundle -p notedeck_chrome --release --features "$FEATURES" --target $TARGET
 
@@ -91,6 +93,29 @@ xcrun stapler staple target/${TARGET}/release/bundle/osx/$NAME.app
 
 echo "Removing notedeck.zip"
 rm notedeck.zip
+
+# Pack the stapled bundle as the auto-update asset. The name is
+# target_asset_name() in crates/notedeck/src/updater/nostr.rs, which the updater
+# matches exactly, and the archive's top-level entry must be Notedeck.app/
+# because updater::platform::find_binary_in_dir looks for a *.app at the
+# extraction root. BSD tar keeps the bundle's symlinks and exec bits.
+# COPYFILE_DISABLE keeps it from adding AppleDouble ._* entries for xattrs:
+# the updater unpacks with the Rust tar crate, which would write those out as
+# stray files inside the sealed bundle.
+UPDATE_TARBALL="packages/notedeck-${ARCH}-macos.tar.gz"
+echo "Creating update tarball $UPDATE_TARBALL..."
+mkdir -p packages
+COPYFILE_DISABLE=1 tar czf "$UPDATE_TARBALL" -C target/${TARGET}/release/bundle/osx $NAME.app
+
+# Prove the update asset survives the archive round trip still signed and
+# notarized: unpack it somewhere else and check the extracted bundle the way
+# the updater and Gatekeeper will see it.
+echo "Verifying the update tarball's bundle..."
+VERIFY_DIR=$(mktemp -d)
+trap 'rm -rf "$VERIFY_DIR"' EXIT
+tar xzf "$UPDATE_TARBALL" -C "$VERIFY_DIR"
+codesign --verify --deep --strict --verbose=2 "$VERIFY_DIR/$NAME.app"
+spctl --assess --type execute -vv "$VERIFY_DIR/$NAME.app"
 
 # Create the .dmg package
 echo "Creating .dmg package..."
