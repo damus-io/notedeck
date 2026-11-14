@@ -11,10 +11,11 @@
 use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{
-    BoardView, CardView, CommentView, EdgeRef, LineSide, Priority, ReviewCommentView,
+    BoardView, CardView, CommentView, Container, EdgeRef, LineSide, Priority, ReviewCommentView,
     ReviewLocation, ReviewView, resolve_card,
 };
 use crate::store::{self, DeclineReason};
+use crate::traversal::{self, NotReady};
 use crate::wordid;
 
 /// Text being built, with whether its muted parts are colored.
@@ -598,6 +599,193 @@ pub fn ready_line(card_ref: &str, title: &str, color: bool) -> String {
 /// What `next` says, on stderr, when its frontier is empty.
 pub const NOTHING_READY: &str =
     "nothing ready — everything is done, in progress or blocked (or filtered out by --label)";
+
+/// The text of `card`'s review source named `name`, exactly as stored, for
+/// `show <card> --source <name>`. The newest record that carries a file of
+/// that name wins, so a later record without sources doesn't hide the
+/// explainer an earlier one stored.
+pub fn review_source<'c>(card: &'c CardView, name: &str) -> Result<&'c str, String> {
+    card.reviews
+        .iter()
+        .find_map(|r| r.sources.iter().find(|s| s.name == name))
+        .map(|s| s.text.as_str())
+        .ok_or_else(|| format!("no review source named '{name}' on '{}'", card.title))
+}
+
+/// One card `next` hands out, as `next --json` prints each: its ref, hex id
+/// and title.
+#[derive(serde::Serialize, Debug)]
+pub struct ReadyCard {
+    /// The card's `headway:<board>/<word-id>` ref, ready to paste into other
+    /// commands.
+    #[serde(rename = "ref")]
+    pub card_ref: String,
+    /// The card's hex event id.
+    pub id: String,
+    pub title: String,
+}
+
+/// What `next` hands out from `container`'s ready frontier.
+///
+/// Which: `labels` keeps only cards carrying every one of them, applied
+/// before the count, so `-l x -n 1` is the first ready `x` card rather than
+/// the first ready card if it happens to be `x`. How many: `limit` caps it;
+/// otherwise `all` (`--ready`) is the whole frontier, the parallel-dispatch
+/// set, and the default is just the single next card.
+pub fn next_cards(
+    view: &BoardView,
+    container: &Container,
+    labels: &[String],
+    all: bool,
+    limit: Option<usize>,
+) -> Vec<ReadyCard> {
+    let frontier = traversal::ready_labelled(view, container, labels);
+    let count = match (all, limit) {
+        (_, Some(k)) => k,
+        (true, None) => frontier.len(),
+        (false, None) => 1,
+    };
+    frontier
+        .into_iter()
+        .take(count)
+        .map(|c| ReadyCard {
+            card_ref: plain_ref(view, &c.id),
+            id: c.id.hex(),
+            title: c.title.clone(),
+        })
+        .collect()
+}
+
+/// [`next_cards`] as text: one [`ready_line`] each, and nothing at all for an
+/// empty frontier, so `$(headway next)` is empty when nothing is ready.
+pub fn next_lines(cards: &[ReadyCard], color: bool) -> String {
+    cards
+        .iter()
+        .map(|c| ready_line(&c.card_ref, &c.title, color))
+        .collect()
+}
+
+/// A neighbour in [`SeqPlace`]: the card just before or after.
+#[derive(serde::Serialize, Debug)]
+pub struct SeqNeighbour {
+    #[serde(rename = "ref")]
+    pub card_ref: String,
+    pub title: String,
+}
+
+/// Where a card sits in a container's work-order: `seq <card>` with no
+/// position flag. It serializes as `seq --json` prints it and renders with
+/// [`SeqPlace::text`].
+///
+/// Both counts are kept because they answer different questions: "31 of 40"
+/// is the place in the order, "22 ready ahead" is how many cards `next` would
+/// hand out first.
+#[derive(serde::Serialize, Debug)]
+pub struct SeqPlace {
+    #[serde(rename = "ref")]
+    pub card_ref: String,
+    #[serde(skip)]
+    pub title: String,
+    /// The container: a card ref, or the board slug for the board root.
+    pub container: String,
+    /// The container as the text names it: `<slug> (board root)` or a ref.
+    #[serde(skip)]
+    pub in_name: String,
+    pub index: usize,
+    pub of: usize,
+    pub sequenced: bool,
+    pub before: Option<SeqNeighbour>,
+    pub after: Option<SeqNeighbour>,
+    pub ready_ahead: usize,
+    pub ready: bool,
+    pub not_ready_why: Option<String>,
+}
+
+/// Where `card` sits in `container`'s work-order; an error when the walk
+/// never reaches it.
+pub fn seq_place(
+    view: &BoardView,
+    container: &Container,
+    card: NoteId,
+) -> Result<SeqPlace, String> {
+    let container_ref = match container {
+        Container::BoardRoot(slug) => slug.clone(),
+        Container::Card(id) => plain_ref(view, &NoteId::new(*id)),
+    };
+    let in_name = match container {
+        Container::BoardRoot(_) => format!("{container_ref} (board root)"),
+        Container::Card(_) => container_ref.clone(),
+    };
+    let place = traversal::place(view, container, card).ok_or_else(|| {
+        format!(
+            "{} is not in the work order of {in_name}",
+            plain_ref(view, &card)
+        )
+    })?;
+    let title = |id: NoteId| view.card(id).map_or("", |c| c.title.as_str()).to_owned();
+    let neighbour = |id: Option<NoteId>| {
+        id.map(|id| SeqNeighbour {
+            card_ref: plain_ref(view, &id),
+            title: title(id),
+        })
+    };
+    let not_ready_why = place.not_ready.map(|r| match r {
+        NotReady::Done => "done".to_string(),
+        NotReady::InProgress => "In Progress".to_string(),
+        NotReady::Blocked { by } => format!("blocked by {}", plain_ref(view, &by)),
+        NotReady::OpenSubissues => "has open subissues".to_string(),
+    });
+    Ok(SeqPlace {
+        card_ref: plain_ref(view, &card),
+        title: title(card),
+        container: container_ref,
+        in_name,
+        index: place.index,
+        of: place.of,
+        sequenced: place.sequenced,
+        before: neighbour(place.before),
+        after: neighbour(place.after),
+        ready_ahead: place.ready_ahead,
+        ready: place.ready(),
+        not_ready_why,
+    })
+}
+
+impl SeqPlace {
+    /// The place as `seq <card>` prints it: the card, then its order, rank,
+    /// neighbours and readiness, one labelled line each.
+    pub fn text(&self, color: bool) -> String {
+        let neighbour = |n: &Option<SeqNeighbour>, end: &str| match n {
+            Some(n) => format!("{}  {}", n.card_ref, dim(color, &n.title)),
+            None => dim(color, end),
+        };
+        let mut t = Text::new(color);
+        t.line(format!("{}  {}", self.card_ref, t.dim(&self.title)));
+        t.line(format!(
+            "  order   {} of {} in {}",
+            self.index, self.of, self.in_name
+        ));
+        t.line(format!(
+            "  rank    {}",
+            if self.sequenced {
+                "sequenced"
+            } else {
+                "unsequenced: placed by when it was made"
+            }
+        ));
+        t.line(format!("  before  {}", neighbour(&self.before, "(first)")));
+        t.line(format!("  after   {}", neighbour(&self.after, "(last)")));
+        t.line(format!(
+            "  ready   {} ready ahead; {}",
+            self.ready_ahead,
+            match &self.not_ready_why {
+                None => "this one is ready".to_string(),
+                Some(why) => format!("not ready: {why}"),
+            }
+        ));
+        t.out
+    }
+}
 
 /// A card's `headway:<board>/<word-id>` ref, undimmed: unlike the muted ref a
 /// listing draws beside a title, this is the thing an agent copies.

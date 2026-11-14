@@ -10,7 +10,6 @@ use serde_json::json;
 
 use headway::event::{self, BoardView, Container};
 use headway::render;
-use headway::traversal::{self, NotReady};
 
 use nostrdb_net::relay::sync::Result;
 
@@ -97,33 +96,21 @@ pub(crate) fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> R
 }
 
 /// Print the text of the review source named `name` on card `sel`, exactly
-/// as stored, so a script can `> book/<word-id>.md`. The newest record that
-/// carries a file of that name wins, so a later record without sources doesn't
-/// hide the explainer an earlier one stored.
+/// as stored (see [`render::review_source`]), so a script can `>
+/// book/<word-id>.md`.
 pub(crate) fn print_review_source(view: &BoardView, sel: &str, name: &str) -> Result<()> {
     use std::io::Write;
     let id = event::resolve_card(view, sel)?;
     let card = render::find_card(view, &id).ok_or_else(|| format!("no card matching '{sel}'"))?;
-    let source = card
-        .card
-        .reviews
-        .iter()
-        .find_map(|r| r.sources.iter().find(|s| s.name == name))
-        .ok_or_else(|| format!("no review source named '{name}' on {sel}"))?;
-    std::io::stdout().write_all(source.text.as_bytes())?;
+    let text = render::review_source(card.card, name)?;
+    std::io::stdout().write_all(text.as_bytes())?;
     Ok(())
 }
 
-/// Print the work-order frontier for `next`: the ready cards of `container`, each
-/// as a `headway:board/word-id` ref an agent can paste straight into `move`/`show`.
-///
-/// Which: `labels` (from `--label`) keeps only cards carrying every one of them,
-/// applied to the frontier before the count, so `--label x -n 1` is the first
-/// ready `x` card rather than the first ready card if it happens to be `x`.
-///
-/// How many: `-n <k>` caps to `k`; otherwise `--ready` prints the whole ready set
-/// (the parallel-dispatch frontier) and the default prints just the single next
-/// card. In JSON mode it's an array of `{ref, id, title}` objects.
+/// Print the work-order frontier for `next` (see [`render::next_cards`]):
+/// each card as a `headway:board/word-id` ref an agent can paste straight into
+/// `move`/`show`, or in JSON mode an array of `{ref, id, title}` objects. An
+/// empty frontier says so on stderr and prints nothing to stdout.
 pub(crate) fn print_next(
     view: &BoardView,
     container: &Container,
@@ -132,127 +119,38 @@ pub(crate) fn print_next(
     labels: &[String],
     as_json: bool,
 ) {
-    let frontier = traversal::ready_labelled(view, container, labels);
-    let count = match (ready, limit) {
-        (_, Some(k)) => k,
-        (true, None) => frontier.len(),
-        (false, None) => 1,
-    };
-    let picked = frontier.into_iter().take(count);
-
+    let picked = render::next_cards(view, container, labels, ready, limit);
     if as_json {
-        let arr: Vec<_> = picked
-            .map(|c| {
-                json!({
-                    "ref": plain_ref(view, &c.id),
-                    "id": c.id.hex(),
-                    "title": c.title,
-                })
-            })
-            .collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&arr).unwrap_or_else(|_| "[]".into())
+            serde_json::to_string_pretty(&picked).unwrap_or_else(|_| "[]".into())
         );
         return;
     }
-
     let color = color();
-    let mut any = false;
-    for c in picked {
-        any = true;
-        print!(
-            "{}",
-            render::ready_line(&plain_ref(view, &c.id), &c.title, color)
-        );
-    }
-    if !any {
+    if picked.is_empty() {
         eprintln!("{}", render::dim(color, render::NOTHING_READY));
     }
+    print!("{}", render::next_lines(&picked, color));
 }
 
 /// Print where `card` sits in `container`'s work-order for `seq <card>` with no
-/// position flag: its index in the whole walk, its neighbours, whether it has
-/// a rank of its own, and how much of the ready frontier is ahead of it.
-///
-/// Both counts are printed because they answer different questions: "31 of
-/// 40" is the place in the order, "22 ready ahead" is how many cards `next`
-/// would hand out first. Errors when the walk never reaches the card.
+/// position flag (see [`render::seq_place`]). Errors when the walk never
+/// reaches the card.
 pub(crate) fn print_seq_place(
     view: &BoardView,
     container: &Container,
     card: NoteId,
     as_json: bool,
 ) -> Result<()> {
-    let container_ref = match container {
-        Container::BoardRoot(slug) => slug.clone(),
-        Container::Card(id) => plain_ref(view, &NoteId::new(*id)),
-    };
-    let in_name = match container {
-        Container::BoardRoot(_) => format!("{container_ref} (board root)"),
-        Container::Card(_) => container_ref.clone(),
-    };
-    let place = traversal::place(view, container, card).ok_or_else(|| {
-        format!(
-            "{} is not in the work order of {in_name}",
-            plain_ref(view, &card)
-        )
-    })?;
-    let title = |id: NoteId| view.card(id).map_or("", |c| c.title.as_str());
-    let why = place.not_ready.map(|r| match r {
-        NotReady::Done => "done".to_string(),
-        NotReady::InProgress => "In Progress".to_string(),
-        NotReady::Blocked { by } => format!("blocked by {}", plain_ref(view, &by)),
-        NotReady::OpenSubissues => "has open subissues".to_string(),
-    });
-
+    let place = render::seq_place(view, container, card)?;
     if as_json {
-        let neighbour = |id: Option<NoteId>| {
-            id.map(|id| json!({ "ref": plain_ref(view, &id), "title": title(id) }))
-        };
-        let obj = json!({
-            "ref": plain_ref(view, &card),
-            "container": container_ref,
-            "index": place.index,
-            "of": place.of,
-            "sequenced": place.sequenced,
-            "before": neighbour(place.before),
-            "after": neighbour(place.after),
-            "ready_ahead": place.ready_ahead,
-            "ready": place.ready(),
-            "not_ready_why": why,
-        });
         println!(
             "{}",
-            serde_json::to_string_pretty(&obj).unwrap_or_else(|_| "null".into())
+            serde_json::to_string_pretty(&place).unwrap_or_else(|_| "null".into())
         );
-        return Ok(());
+    } else {
+        print!("{}", place.text(color()));
     }
-
-    let dim = nostrdb_net::relay::sync::dim;
-    let neighbour = |id: Option<NoteId>, end: &str| match id {
-        Some(id) => format!("{}  {}", plain_ref(view, &id), dim(title(id))),
-        None => dim(end),
-    };
-    println!("{}  {}", plain_ref(view, &card), dim(title(card)));
-    println!("  order   {} of {} in {in_name}", place.index, place.of);
-    println!(
-        "  rank    {}",
-        if place.sequenced {
-            "sequenced"
-        } else {
-            "unsequenced: placed by when it was made"
-        }
-    );
-    println!("  before  {}", neighbour(place.before, "(first)"));
-    println!("  after   {}", neighbour(place.after, "(last)"));
-    println!(
-        "  ready   {} ready ahead; {}",
-        place.ready_ahead,
-        match &why {
-            None => "this one is ready".to_string(),
-            Some(why) => format!("not ready: {why}"),
-        }
-    );
     Ok(())
 }

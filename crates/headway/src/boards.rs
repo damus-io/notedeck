@@ -98,6 +98,17 @@ impl Roster {
         Self { teams, id }
     }
 
+    /// The roster from nostrdb, without registering anything: for a caller
+    /// whose process registers its roots already as its roster grows (the
+    /// app does, through its own [`teams::RootRegistry`]), so a read doesn't
+    /// pay [`teams::RootRegistry::register`]'s catch-up walk again.
+    pub fn read(ndb: &Ndb, id: Identity) -> Self {
+        Self {
+            teams: teams::teams_from_ndb(ndb, &id.me),
+            id,
+        }
+    }
+
     /// The identity this roster was loaded for, with the owner it now addresses
     /// (see [`Self::for_owner`]).
     pub fn identity(&self) -> Identity {

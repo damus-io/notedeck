@@ -7,9 +7,9 @@
 //! same curated schema the CLI emits with `--json`. Boards are folded for the
 //! currently-selected account — the pubkey that authors this user's boards.
 
-use headway::event::{self, BoardView, Container, Priority, resolve_card};
+use headway::event::{self, BoardView, Priority, resolve_card};
 use headway::store::{self, BoardAction, NewCard};
-use headway::{edit, render, traversal, wordid};
+use headway::{boards, edit, render, wordid};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
@@ -41,6 +41,12 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(SetDue),
         RegisteredTool::new(SetEstimate),
         RegisteredTool::new(SetParent),
+        RegisteredTool::new(EdgeTool(Edge::Block)),
+        RegisteredTool::new(EdgeTool(Edge::Unblock)),
+        RegisteredTool::new(EdgeTool(Edge::Relate)),
+        RegisteredTool::new(EdgeTool(Edge::Unrelate)),
+        RegisteredTool::new(Seq),
+        RegisteredTool::new(SetTerminal),
         RegisteredTool::new(CommentCard),
         RegisteredTool::new(ArchiveCard),
         RegisteredTool::new(RestoreCard),
@@ -152,18 +158,43 @@ struct ShowBoardArgs {
     /// The board id (slug) to show; the primary board when omitted.
     #[serde(default)]
     board: Option<String>,
+    /// List archived cards in full rather than as a count.
+    #[serde(default)]
+    archived: bool,
+    /// Every board this account can read, not just `board`.
+    #[serde(default)]
+    all: bool,
 }
 
-/// [`ShowBoard`]'s answer: the folded board, which goes out as
-/// [`event::board_json`] and renders as [`render::board`].
+/// [`ShowBoard`]'s answer: one folded board, which goes out as
+/// [`event::board_json`] and renders as [`render::board`], or with `all`
+/// every readable board, as `headway show --all` prints them.
 #[derive(Debug)]
-struct ShownBoard {
-    view: BoardView,
+enum ShownBoard {
+    One {
+        view: BoardView,
+        archived: bool,
+    },
+    All {
+        boards: Vec<BoardView>,
+        /// Whose boards are "own": the rest are labelled with their owner.
+        me: Pubkey,
+        archived: bool,
+    },
 }
 
 impl Serialize for ShownBoard {
+    /// One board as [`event::board_json`]; every board as an array of them,
+    /// each carrying its `owner` hex, since slugs are only unique per owner.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        event::board_json(&self.view).serialize(serializer)
+        match self {
+            Self::One { view, .. } => event::board_json(view).serialize(serializer),
+            Self::All { boards, .. } => serializer.collect_seq(boards.iter().map(|view| {
+                let mut board = event::board_json(view);
+                board["owner"] = serde_json::json!(hex::encode(view.author));
+                board
+            })),
+        }
     }
 }
 
@@ -174,13 +205,25 @@ impl AppTool for ShowBoard {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_show_board",
-            "Show a headway board's columns and their cards as JSON. Omit `board` to show the primary board.",
-            vec![ToolArg::new(
-                "board",
-                ToolArgType::String,
-                "The board id (slug) to show. Defaults to the primary board when omitted.",
-            )
-            .env(BOARD_ENV)],
+            "Show a headway board's columns and their cards as JSON. Omit `board` to show the primary board; `all` shows every board this account can read, as an array of boards each carrying its `owner`.",
+            vec![
+                ToolArg::new(
+                    "board",
+                    ToolArgType::String,
+                    "The board id (slug) to show. Defaults to the primary board when omitted.",
+                )
+                .env(BOARD_ENV),
+                ToolArg::new(
+                    "archived",
+                    ToolArgType::Boolean,
+                    "List archived cards in full rather than as a count.",
+                ),
+                ToolArg::new(
+                    "all",
+                    ToolArgType::Boolean,
+                    "Show every board this account can read (its own and those shared with it), not just one.",
+                ),
+            ],
         )
 .titled("Show board")
 .read_only()
@@ -189,14 +232,33 @@ impl AppTool for ShowBoard {
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        if args.all {
+            let me = *cx.accounts.selected_account_pubkey();
+            let roster = boards::Roster::read(cx.ndb, boards::Identity::own(me));
+            let mut all = boards::list_boards(cx.ndb, &roster);
+            all.extend(boards::list_shared_with_me(cx.ndb, &roster));
+            return Ok(ShownBoard::All {
+                boards: all,
+                me,
+                archived: args.archived,
+            });
+        }
         let board_id = args.board.as_deref().unwrap_or(store::BOARD_ID);
-        Ok(ShownBoard {
+        Ok(ShownBoard::One {
             view: board_view(cx, board_id)?,
+            archived: args.archived,
         })
     }
 
     fn render(&self, out: &Self::Output) -> Option<String> {
-        Some(render::board(&out.view, false, true))
+        Some(match out {
+            ShownBoard::One { view, archived } => render::board(view, *archived, true),
+            ShownBoard::All {
+                boards,
+                me,
+                archived,
+            } => render::all_boards(boards, me.bytes(), *archived, true),
+        })
     }
 }
 
@@ -209,6 +271,10 @@ struct ShowCardArgs {
     /// The card ref: `headway:<board>/<word-id>` (or `<board>/<word-id>`) or a hex
     /// id prefix.
     card: String,
+    /// The name of a review source on the card to answer with, instead of
+    /// the card.
+    #[serde(default)]
+    source: Option<String>,
     /// The board to resolve the card on (see [`Route::board`]).
     #[serde(flatten)]
     route: Route,
@@ -217,10 +283,13 @@ struct ShowCardArgs {
 /// [`ShowCard`]'s answer: the card's board and its id. It goes out as
 /// `headway show <card> --json` prints it ([`render::cards_json`], an array of
 /// the one card with its column) and renders as [`render::card_detail`].
+/// With `--source` it is that source's text instead, as a JSON string and as
+/// the text exactly as stored.
 #[derive(Debug)]
 struct ShownCard {
     view: BoardView,
     id: NoteId,
+    source: Option<String>,
 }
 
 impl ShownCard {
@@ -233,6 +302,9 @@ impl ShownCard {
 
 impl Serialize for ShownCard {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(text) = &self.source {
+            return text.serialize(serializer);
+        }
         let cards: Vec<render::PlacedCard> = self.placed().into_iter().collect();
         render::cards_json(&self.view, &cards).serialize(serializer)
     }
@@ -254,6 +326,11 @@ impl AppTool for ShowCard {
                 )
                 .required(true)
                 .positional(),
+                ToolArg::new(
+                    "source",
+                    ToolArgType::String,
+                    "Answer with the text of the review source of this file name instead, exactly as stored, from the newest review record carrying one.",
+                ),
                 card_board_arg(),
                 default_board_arg(),
             ],
@@ -268,13 +345,20 @@ impl AppTool for ShowCard {
         let board = args.route.board([args.card.as_str()])?;
         let view = board_view(cx, &board)?;
         let id = resolve_card(&view, &args.card)?;
-        if render::find_card(&view, &id).is_none() {
+        let Some(placed) = render::find_card(&view, &id) else {
             return Err(format!("no card matching '{}'", args.card));
-        }
-        Ok(ShownCard { view, id })
+        };
+        let source = match args.source.as_deref() {
+            Some(name) => Some(render::review_source(placed.card, name)?.to_owned()),
+            None => None,
+        };
+        Ok(ShownCard { view, id, source })
     }
 
     fn render(&self, out: &Self::Output) -> Option<String> {
+        if let Some(text) = &out.source {
+            return Some(text.clone());
+        }
         let placed = out.placed()?;
         Some(render::card_detail(
             &out.view,
@@ -285,21 +369,9 @@ impl AppTool for ShowCard {
     }
 }
 
-/// `headway_ready_items`: the ready frontier of a board — the cards workable now.
+/// `headway_ready_items`: what to work on next, from a container's ready
+/// frontier — `headway next`.
 struct ReadyItems;
-
-/// One entry in [`ReadyItems`]' output: a ready card, in work-order. Mirrors the
-/// CLI's `next --ready --json` surface (`{ref, id, title}`) so an agent copies the
-/// same refs the CLI prints.
-#[derive(Serialize, Debug)]
-struct ReadyItem {
-    /// The card's `headway:<board>/<word-id>` ref, ready to paste into other tools.
-    #[serde(rename = "ref")]
-    card_ref: String,
-    /// The card's hex event id.
-    id: String,
-    title: String,
-}
 
 /// Arguments for [`ReadyItems`].
 #[derive(Deserialize)]
@@ -308,21 +380,27 @@ struct ReadyItemsArgs {
     /// (the whole board). The board root when omitted.
     #[serde(default)]
     container: Option<String>,
-    /// Cap the number of items returned; the whole frontier when omitted.
+    /// The whole frontier rather than the single next card.
+    #[serde(default)]
+    ready: bool,
+    /// Cap the number of items returned.
     #[serde(default)]
     limit: Option<usize>,
-    #[serde(default)]
-    board: Option<String>,
+    /// Keep only cards carrying every one of these labels.
+    #[serde(default, deserialize_with = "list_or_csv")]
+    labels: Vec<String>,
+    #[serde(flatten)]
+    route: Route,
 }
 
 impl AppTool for ReadyItems {
     type Args = ReadyItemsArgs;
-    type Output = Vec<ReadyItem>;
+    type Output = Vec<render::ReadyCard>;
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_ready_items",
-            "List the ready frontier of a headway board: the cards workable right now — not done, not already In Progress (someone has it), not blocked by an unfinished prerequisite, and not a parent whose real work is its subissues — in work-order (seq-ranked, then creation order). This is the parallel-dispatch set a pool of agents can fan out over so they respect blocking prerequisites. Omit `container` for the whole board, or pass a card ref to scope to that card's subtree.",
+            "What to work on next on a headway board, as `headway next` answers it: the cards workable right now — not done, not already In Progress (someone has it), not blocked by an unfinished prerequisite, and not a parent whose real work is its subissues — in work-order (seq-ranked, then creation order), each as `{ref, id, title}`. By default only the single next card; `ready` gives the whole frontier, the parallel-dispatch set a pool of agents can fan out over, and `limit` caps either. Omit `container` for the whole board, or pass a card ref to scope to that card's subtree. `labels` keeps only cards carrying every one of them; it never changes what counts as blocked or done.",
             vec![
                 ToolArg::new(
                     "container",
@@ -331,12 +409,25 @@ impl AppTool for ReadyItems {
                 )
                 .long("in"),
                 ToolArg::new(
+                    "ready",
+                    ToolArgType::Boolean,
+                    "The whole ready frontier, not just the single next card.",
+                ),
+                ToolArg::new(
                     "limit",
                     ToolArgType::Integer,
-                    "Cap the number of items returned. Defaults to the whole ready frontier.",
+                    "Cap the number of items returned.",
                 )
                 .short('n'),
-                board_arg().env(BOARD_ENV),
+                ToolArg::new(
+                    "labels",
+                    ToolArgType::List,
+                    "Keep only cards carrying every one of these labels.",
+                )
+                .short('l')
+                .long("label"),
+                card_board_arg(),
+                default_board_arg(),
             ],
         )
 .titled("List ready cards")
@@ -345,41 +436,28 @@ impl AppTool for ReadyItems {
 .filed_under(crate::TOOL_CATEGORY)
     }
 
+    /// Unlike the CLI's `next`, this never refuses an implicit board: the
+    /// CLI's refusal guards its persisted current board, which another
+    /// session can switch between two commands, and a tool has none. Its
+    /// fallbacks, the caller's `default_board` and the primary board, can't
+    /// move under it.
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        let view = board_view(cx, board_of(&args.board))?;
-        let container = match args.container.as_deref() {
-            Some(sel) => resolve_container(&view, sel)?,
-            None => Container::BoardRoot(view.id.clone()),
-        };
-        Ok(traversal::ready(&view, &container)
-            .into_iter()
-            .take(args.limit.unwrap_or(usize::MAX))
-            .map(|c| ReadyItem {
-                card_ref: wordid::card_ref(&view.id, c.id.bytes()),
-                id: c.id.hex(),
-                title: c.title.clone(),
-            })
-            .collect())
+        let board = args.route.board(args.container.as_deref())?;
+        let view = board_view(cx, &board)?;
+        let container = edit::container_or_root(&view, args.container.as_deref())?;
+        Ok(render::next_cards(
+            &view,
+            &container,
+            &args.labels,
+            args.ready,
+            args.limit,
+        ))
     }
 
     /// One ref and title a line, as `headway next` prints them; nothing for an
     /// empty frontier, so `$(nd headway next)` is empty when nothing is ready.
     fn render(&self, out: &Self::Output) -> Option<String> {
-        Some(
-            out.iter()
-                .map(|item| render::ready_line(&item.card_ref, &item.title, true))
-                .collect(),
-        )
-    }
-}
-
-/// Resolve a container selector — a card ref (its subtree) or the board id (the
-/// whole board) — to a [`Container`], mirroring the CLI's `next --in` resolution.
-fn resolve_container(view: &BoardView, sel: &str) -> Result<Container, String> {
-    match resolve_card(view, sel) {
-        Ok(id) => Ok(Container::Card(*id.bytes())),
-        Err(_) if sel.eq_ignore_ascii_case(&view.id) => Ok(Container::BoardRoot(view.id.clone())),
-        Err(e) => Err(e),
+        Some(render::next_lines(out, true))
     }
 }
 
@@ -1309,12 +1387,14 @@ impl AppTool for SetParent {
                     "parent",
                     ToolArgType::String,
                     "The parent card ref (`headway:<board>/<word-id>` or `<board>/<word-id>`). Omit to detach the card from its parent.",
-                ),
+                )
+                .positional(),
                 card_board_arg(),
                 default_board_arg(),
             ],
         )
         .titled("Set card parent")
+        .command(&["headway", "parent"])
         .filed_under(crate::TOOL_CATEGORY)
     }
 
@@ -1328,6 +1408,330 @@ impl AppTool for SetParent {
                 None => None,
             };
             Ok(BoardAction::SetParent { card, parent })
+        })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
+    }
+}
+
+/// Which edge between two cards an [`EdgeTool`] adds or removes.
+#[derive(Clone, Copy, Debug)]
+enum Edge {
+    /// `card` is blocked by `other`: a dependency.
+    Block,
+    Unblock,
+    /// `card` and `other` are related: an undirected "see also".
+    Relate,
+    Unrelate,
+}
+
+/// `headway_block` / `headway_unblock` / `headway_relate` /
+/// `headway_unrelate`: add or remove an edge between two cards. The edge may
+/// cross boards; a block that would close a cycle is refused.
+struct EdgeTool(Edge);
+
+/// Arguments for an [`EdgeTool`]. The other card is `on` for a block (the
+/// blocker) and `other` for a relate; each is that tool's name for it.
+#[derive(Deserialize)]
+struct EdgeArgs {
+    card: String,
+    #[serde(alias = "on")]
+    other: String,
+    #[serde(flatten)]
+    route: Route,
+}
+
+impl AppTool for EdgeTool {
+    type Args = EdgeArgs;
+    type Output = EditAck;
+
+    fn spec(&self) -> ToolSpec {
+        let (name, description, title, path): (_, _, _, &'static [&'static str]) = match self.0 {
+            Edge::Block => (
+                "headway_block",
+                "Mark a headway card as blocked by another: a dependency edge, independent of the parent axis. A blocked card drops out of `headway_ready_items` until its blocker is done (in a terminal column, or a parent whose live subissues are all done). The edge may cross boards (name the other card by its full hex id); a cycle is refused.",
+                "Block card",
+                &["headway", "block"],
+            ),
+            Edge::Unblock => (
+                "headway_unblock",
+                "Remove a headway card's blocked-by edge.",
+                "Unblock card",
+                &["headway", "unblock"],
+            ),
+            Edge::Relate => (
+                "headway_relate",
+                "Relate two headway cards: an undirected \"see also\" edge, shown on both. It carries no ordering or readiness meaning and never affects what is ready. May cross boards.",
+                "Relate cards",
+                &["headway", "relate"],
+            ),
+            Edge::Unrelate => (
+                "headway_unrelate",
+                "Remove the relates edge between two headway cards. The edge is symmetric, so either card can remove it.",
+                "Unrelate cards",
+                &["headway", "unrelate"],
+            ),
+        };
+        let other = match self.0 {
+            Edge::Block | Edge::Unblock => ToolArg::new(
+                "on",
+                ToolArgType::String,
+                "The blocker's card ref, or its full hex id when it is on another board.",
+            )
+            .long("on"),
+            Edge::Relate | Edge::Unrelate => ToolArg::new(
+                "other",
+                ToolArgType::String,
+                "The other card's ref, or its full hex id when it is on another board.",
+            )
+            .long("to"),
+        };
+        ToolSpec::new(
+            name,
+            description,
+            vec![
+                card_arg(),
+                other.required(true).positional(),
+                card_board_arg(),
+                default_board_arg(),
+            ],
+        )
+        .titled(title)
+        .command(path)
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let board = args
+            .route
+            .board([args.card.as_str(), args.other.as_str()])?;
+        let edge = self.0;
+        mutate(cx, &board, |view| {
+            let card = resolve_card(view, &args.card)?;
+            let other = resolve_card(view, &args.other)?;
+            Ok(match edge {
+                Edge::Block => BoardAction::Block { card, on: other },
+                Edge::Unblock => BoardAction::Unblock { card, on: other },
+                Edge::Relate => BoardAction::Relate { card, other },
+                Edge::Unrelate => BoardAction::Unrelate { card, other },
+            })
+        })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(out.render())
+    }
+}
+
+/// `headway_seq`: where a card sits in a container's work-order, or, with a
+/// position, move it there — `headway seq`.
+struct Seq;
+
+/// Arguments for [`Seq`]: at most one of `first`, `last`, `after` and
+/// `before`; none reads the card's place.
+#[derive(Deserialize)]
+struct SeqArgs {
+    card: String,
+    #[serde(default)]
+    first: bool,
+    #[serde(default)]
+    last: bool,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    before: Option<String>,
+    /// The container: a card ref (its subissues) or the board slug.
+    #[serde(default)]
+    container: Option<String>,
+    #[serde(flatten)]
+    route: Route,
+}
+
+impl SeqArgs {
+    /// The move asked for, or `None` to read the card's place. More than one
+    /// position is an error.
+    fn position(&self) -> Result<Option<SeqSpec<'_>>, String> {
+        let given = [
+            self.first.then_some(SeqSpec::First),
+            self.last.then_some(SeqSpec::Last),
+            self.after.as_deref().map(SeqSpec::After),
+            self.before.as_deref().map(SeqSpec::Before),
+        ];
+        let mut given = given.into_iter().flatten();
+        let position = given.next();
+        if given.next().is_some() {
+            return Err("give at most one of 'first', 'last', 'after' and 'before'".to_owned());
+        }
+        Ok(position)
+    }
+}
+
+/// A `seq` move, its anchor still a raw card ref.
+#[derive(Clone, Copy)]
+enum SeqSpec<'a> {
+    First,
+    Last,
+    After(&'a str),
+    Before(&'a str),
+}
+
+impl SeqSpec<'_> {
+    /// The position on `view`, its anchor resolved.
+    fn resolve(self, view: &BoardView) -> Result<store::SeqPosition, String> {
+        Ok(match self {
+            Self::First => store::SeqPosition::First,
+            Self::Last => store::SeqPosition::Last,
+            Self::After(a) => store::SeqPosition::After(resolve_card(view, a)?),
+            Self::Before(b) => store::SeqPosition::Before(resolve_card(view, b)?),
+        })
+    }
+}
+
+/// What [`Seq`] answers: the card's place when asked for none, else the
+/// move's ack.
+#[derive(Serialize, Debug)]
+#[serde(untagged)]
+enum SeqAnswer {
+    Place(render::SeqPlace),
+    Moved(EditAck),
+}
+
+impl AppTool for Seq {
+    type Args = SeqArgs;
+    type Output = SeqAnswer;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "headway_seq",
+            "Show or set where a headway card sits in a container's work-order, the order `headway_ready_items` walks. With no position it only reads, answering `{ref, container, index, of, sequenced, before, after, ready_ahead, ready, not_ready_why}`: its place (\"31 of 40\"), the cards just before and after it, whether it has a rank of its own, how many ready cards come ahead of it, and why it isn't ready itself. With one of `first`, `last`, `after` or `before` it moves the card there instead and answers the edit's ack. An `after`/`before` anchor must be sequenced already. A card the container's walk never reaches is an error.",
+            vec![
+                card_arg(),
+                ToolArg::new("first", ToolArgType::Boolean, "Move it to the front of the order."),
+                ToolArg::new("last", ToolArgType::Boolean, "Move it to the back of the order."),
+                ToolArg::new(
+                    "after",
+                    ToolArgType::String,
+                    "Move it immediately after this card.",
+                ),
+                ToolArg::new(
+                    "before",
+                    ToolArgType::String,
+                    "Move it immediately before this card.",
+                ),
+                ToolArg::new(
+                    "container",
+                    ToolArgType::String,
+                    "The container: a card ref (its subissues) or the board slug (the board root). Defaults to the board root.",
+                )
+                .long("in"),
+                card_board_arg(),
+                default_board_arg(),
+            ],
+        )
+        .titled("Card work-order")
+        .command(&["headway", "seq"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let refs = [
+            Some(args.card.as_str()),
+            args.after.as_deref(),
+            args.before.as_deref(),
+            args.container.as_deref(),
+        ];
+        let board = args.route.board(refs.into_iter().flatten())?;
+        let Some(spec) = args.position()? else {
+            let view = board_view(cx, &board)?;
+            let card = resolve_card(&view, &args.card)?;
+            let container = edit::container_or_root(&view, args.container.as_deref())?;
+            return render::seq_place(&view, &container, card).map(SeqAnswer::Place);
+        };
+        mutate(cx, &board, |view| {
+            let card = resolve_card(view, &args.card)?;
+            let container = edit::container_or_root(view, args.container.as_deref())?;
+            let rank = store::seq_rank(view, &container, card, &spec.resolve(view)?)?;
+            Ok(BoardAction::SetSequence {
+                card,
+                container,
+                rank,
+            })
+        })
+        .map(SeqAnswer::Moved)
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(match out {
+            SeqAnswer::Place(place) => place.text(true),
+            SeqAnswer::Moved(ack) => ack.render(),
+        })
+    }
+}
+
+/// `headway_set_terminal`: mark a column terminal (a "done" column), or
+/// clear the flag — `headway terminal`.
+struct SetTerminal;
+
+/// Arguments for [`SetTerminal`].
+#[derive(Deserialize)]
+struct SetTerminalArgs {
+    column: String,
+    /// `on` (the default) or `off`.
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(flatten)]
+    route: Route,
+}
+
+impl SetTerminalArgs {
+    /// Whether the column ends up terminal: `state` read as `headway
+    /// terminal` reads it, `on` when it is left out.
+    fn terminal(&self) -> Result<bool, String> {
+        match self.state.as_deref() {
+            None | Some("on" | "true" | "yes") => Ok(true),
+            Some("off" | "false" | "no") => Ok(false),
+            Some(other) => Err(format!("terminal state must be on/off, got '{other}'")),
+        }
+    }
+}
+
+impl AppTool for SetTerminal {
+    type Args = SetTerminalArgs;
+    type Output = EditAck;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "headway_set_terminal",
+            "Mark a headway column terminal (a \"done\" column), or clear the flag with `state: off`. A card in a terminal column clears its dependents and drops out of `headway_ready_items`. Republishes the board definition.",
+            vec![
+                ToolArg::new("column", ToolArgType::String, "The column id or name.")
+                    .required(true)
+                    .positional(),
+                ToolArg::new(
+                    "state",
+                    ToolArgType::Enum(vec!["on", "off"]),
+                    "`on` to mark it terminal, `off` to clear the flag. Defaults to `on`.",
+                )
+                .positional(),
+                board_arg(),
+                default_board_arg(),
+            ],
+        )
+        .titled("Set terminal column")
+        .command(&["headway", "terminal"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let board = args.route.board([])?;
+        let terminal = args.terminal()?;
+        mutate(cx, &board, |view| {
+            Ok(BoardAction::SetColumnTerminal {
+                col: edit::resolve_col(view, &args.column)?,
+                terminal,
+            })
         })
     }
 
@@ -1670,6 +2074,8 @@ fn due_arg(description: &'static str) -> ToolArg {
 #[cfg(test)]
 mod tests {
     mod edits;
+    mod live;
+    mod structure;
 
     use super::*;
     use headway::wordid;
@@ -1894,7 +2300,7 @@ mod tests {
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
 
         let out = ShowBoard
-            .call(&mut cx, ShowBoardArgs { board: None })
+            .call(&mut cx, serde_json::from_value(json!({})).unwrap())
             .unwrap();
         let out = serde_json::to_value(&out).unwrap();
         assert_eq!(out["id"], store::BOARD_ID);
@@ -1914,9 +2320,7 @@ mod tests {
         let err = ShowBoard
             .call(
                 &mut cx,
-                ShowBoardArgs {
-                    board: Some("nope".to_string()),
-                },
+                serde_json::from_value(json!({ "board": "nope" })).unwrap(),
             )
             .unwrap_err();
         assert!(err.contains("no board 'nope'"));
@@ -1954,6 +2358,7 @@ mod tests {
                 &mut cx,
                 ShowCardArgs {
                     card: card_ref.clone(),
+                    source: None,
                     route: Route::default(),
                 },
             )
@@ -1991,7 +2396,7 @@ mod tests {
         } = seeded_env();
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
         let out = ShowBoard
-            .call(&mut cx, ShowBoardArgs { board: None })
+            .call(&mut cx, serde_json::from_value(json!({})).unwrap())
             .unwrap();
 
         let txn = Transaction::new(&ndb).expect("txn");
@@ -2021,6 +2426,7 @@ mod tests {
                 &mut cx,
                 ShowCardArgs {
                     card: "no-such-card".to_string(),
+                    source: None,
                     route: Route::default(),
                 },
             )
@@ -2060,11 +2466,7 @@ mod tests {
         let out = ReadyItems
             .call(
                 &mut cx,
-                ReadyItemsArgs {
-                    container: None,
-                    limit: None,
-                    board: None,
-                },
+                serde_json::from_value(json!({ "ready": true })).unwrap(),
             )
             .unwrap();
 
@@ -2099,11 +2501,7 @@ mod tests {
         let full = ReadyItems
             .call(
                 &mut cx,
-                ReadyItemsArgs {
-                    container: None,
-                    limit: None,
-                    board: None,
-                },
+                serde_json::from_value(json!({ "ready": true })).unwrap(),
             )
             .unwrap();
         assert!(full.len() > 1, "need a multi-card frontier to cap");
@@ -2111,11 +2509,7 @@ mod tests {
         let capped = ReadyItems
             .call(
                 &mut cx,
-                ReadyItemsArgs {
-                    container: None,
-                    limit: Some(1),
-                    board: None,
-                },
+                serde_json::from_value(json!({ "limit": 1 })).unwrap(),
             )
             .unwrap();
         assert_eq!(capped.len(), 1);
@@ -2144,11 +2538,7 @@ mod tests {
         let err = ReadyItems
             .call(
                 &mut cx,
-                ReadyItemsArgs {
-                    container: None,
-                    limit: None,
-                    board: Some("nope".to_string()),
-                },
+                serde_json::from_value(json!({ "ready": true, "board": "nope" })).unwrap(),
             )
             .unwrap_err();
         assert!(err.contains("no board 'nope'"), "{err}");
@@ -2167,11 +2557,8 @@ mod tests {
         let err = ReadyItems
             .call(
                 &mut cx,
-                ReadyItemsArgs {
-                    container: Some("no-such-card".to_string()),
-                    limit: None,
-                    board: None,
-                },
+                serde_json::from_value(json!({ "container": "no-such-card", "ready": true }))
+                    .unwrap(),
             )
             .unwrap_err();
         assert!(err.contains("no card matching"), "{err}");

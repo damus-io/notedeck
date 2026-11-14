@@ -7,8 +7,8 @@
 use nostrdb_net::NoteId;
 
 use crate::event::{
-    self, BoardView, CardView, Date, LineRange, LineSide, ReviewCommentView, ReviewLocation,
-    ReviewView,
+    self, BoardView, CardView, Container, Date, LineRange, LineSide, ReviewCommentView,
+    ReviewLocation, ReviewView,
 };
 use crate::store::{BoardAction, NewReviewComment};
 use crate::wordid;
@@ -23,6 +23,26 @@ pub fn resolve_col(view: &BoardView, sel: &str) -> Result<usize, String> {
             let names: Vec<&str> = view.columns.iter().map(|c| c.name.as_str()).collect();
             format!("no column matching '{sel}'; columns: {}", names.join(", "))
         })
+}
+
+/// Resolve an `--in` container selector: a card ref names that card's
+/// container (its subissues); anything else must be the board's own slug,
+/// naming the board-root work-order. `next`, `seq` and `grep` take it.
+pub fn resolve_container(view: &BoardView, sel: &str) -> Result<Container, String> {
+    match event::resolve_card(view, sel) {
+        Ok(id) => Ok(Container::Card(*id.bytes())),
+        Err(_) if sel.eq_ignore_ascii_case(&view.id) => Ok(Container::BoardRoot(view.id.clone())),
+        Err(e) => Err(e),
+    }
+}
+
+/// [`resolve_container`] for an optional `--in`: the board root when it is
+/// left out.
+pub fn container_or_root(view: &BoardView, sel: Option<&str>) -> Result<Container, String> {
+    match sel {
+        Some(sel) => resolve_container(view, sel),
+        None => Ok(Container::BoardRoot(view.id.clone())),
+    }
 }
 
 /// A due date as `due` and `add --due` take it: `YYYY-MM-DD`, or `none` (or

@@ -3,6 +3,7 @@
 //! folded board (with [`headway::edit`], which the app's tools share), and the
 //! [`Collect`] sink that gathers the frames an edit produces.
 
+pub(crate) use headway::edit::resolve_container;
 use headway::edit::{comment_action, parse_due, parse_estimate, resolve_col};
 use headway::event::{BoardView, Container, Priority, resolve_card};
 use headway::store::{self, BoardAction, NewCard, Publisher};
@@ -192,16 +193,5 @@ pub(crate) struct Collect(pub(crate) Vec<String>);
 impl Publisher for Collect {
     fn publish(&mut self, frame: &str) {
         self.0.push(frame.to_string());
-    }
-}
-
-/// Resolve an `--in` container selector: a card ref names that card's container
-/// (its subissues); anything else must be the board's own slug, naming the
-/// board-root work-order.
-pub(crate) fn resolve_container(view: &BoardView, sel: &str) -> Result<Container> {
-    match resolve_card(view, sel) {
-        Ok(id) => Ok(Container::Card(*id.bytes())),
-        Err(_) if sel.eq_ignore_ascii_case(&view.id) => Ok(Container::BoardRoot(view.id.clone())),
-        Err(e) => Err(e.into()),
     }
 }
