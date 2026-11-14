@@ -255,6 +255,29 @@ fn render_notedeck_tick(ui: &mut egui::Ui, state: &mut TickTestState) {
 #[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 async fn snapshot_update_bar() {
+    snapshot_update_item(UpdateItemState::Ready, "update_bar").await;
+}
+
+/// The muted "Update can't install" item that replaces the update button when
+/// the staged update can't install over this copy.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+#[tokio::test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+async fn snapshot_update_install_problem() {
+    snapshot_update_item(UpdateItemState::InstallProblem, "update_install_problem").await;
+}
+
+/// Which update item [`snapshot_update_item`] forces the updater to show.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+enum UpdateItemState {
+    Ready,
+    InstallProblem,
+}
+
+/// Render the chrome with its drawer open and the updater forced into
+/// `state`, then snapshot it as `name`.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+async fn snapshot_update_item(state: UpdateItemState, name: &str) {
     use notedeck::updater::nostr::test_helpers;
     use notedeck_chrome::Chrome;
 
@@ -306,17 +329,22 @@ async fn snapshot_update_bar() {
             .unwrap();
     }
 
-    // Force updater into ReadyToInstall (the event was ingested and would
-    // be discovered by tick(), but the download would fail in tests since
-    // the URL is fake — so we skip straight to ReadyToInstall)
-    chrome.force_update_ready("99.0.0".to_string());
+    // Force the updater's state (the event was ingested and would be
+    // discovered by tick(), but the download would fail in tests since the
+    // URL is fake, so we skip straight to the state under test)
+    match state {
+        UpdateItemState::Ready => chrome.force_update_ready("99.0.0".to_string()),
+        UpdateItemState::InstallProblem => chrome.force_update_install_problem(
+            "Can't install updates: '/Applications' isn't writable".to_string(),
+        ),
+    }
 
     // Open the drawer so the update item is visible in the snapshot
     chrome.toggle();
 
     notedeck.set_app(chrome);
 
-    let state = TickTestState {
+    let tick_state = TickTestState {
         notedeck,
         _tmpdir: tmpdir,
         fonts_installed: false,
@@ -325,9 +353,9 @@ async fn snapshot_update_bar() {
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
         .renderer(notedeck::software_renderer())
-        .build_ui_state(render_notedeck_tick, state);
+        .build_ui_state(render_notedeck_tick, tick_state);
 
-    harness.snapshot("update_bar");
+    harness.snapshot(name);
 }
 
 // ---------------------------------------------------------------------------

@@ -45,9 +45,13 @@ enum UpdateState {
     },
     /// Already up to date or user dismissed
     UpToDate,
-    /// Something went wrong (non-fatal)
-    #[allow(dead_code)]
-    Error(String),
+    /// An update exists but can't be installed over this copy: the install
+    /// check failed before downloading (translocated app, read-only install
+    /// dir, ...) or installing the staged update failed. The reason is
+    /// shown to the user, so they can fix it or install by hand.
+    CannotInstall { reason: String },
+    /// A download went wrong (non-fatal); the reason only reaches the log.
+    Error,
 }
 
 /// Auto-updater that discovers releases via Nostr events,
@@ -69,6 +73,9 @@ pub struct Updater {
     /// before each download. [`platform::can_install_in_place`] outside of
     /// tests.
     install_check: fn() -> Result<(), String>,
+    /// Installs a staged update and restarts; does not return on success.
+    /// [`platform::install_and_restart`] outside of tests.
+    installer: fn(&Path) -> Result<(), String>,
 }
 
 impl Updater {
@@ -97,6 +104,7 @@ impl Updater {
             channel,
             release_sub,
             install_check: platform::can_install_in_place,
+            installer: platform::install_and_restart,
         }
     }
 
@@ -231,20 +239,39 @@ impl Updater {
         }
     }
 
+    /// Why an available update can't be installed here, if it can't.
+    /// Borrowed from the state, so the sidebar can show it every frame
+    /// without allocating.
+    pub fn install_problem(&self) -> Option<&str> {
+        match &self.state {
+            UpdateState::CannotInstall { reason } => Some(reason),
+            _ => None,
+        }
+    }
+
     /// Apply the staged update and restart the application.
     /// This function does not return on success (the process exits).
-    pub fn apply_and_restart(&self) -> Result<(), String> {
-        match &self.state {
-            UpdateState::ReadyToInstall {
-                binary_path,
-                version,
-                ..
-            } => {
-                info!("applying update to version {version}");
-                platform::install_and_restart(binary_path)
-            }
-            _ => Err("No update ready to install".to_string()),
+    ///
+    /// On failure the updater moves to [`UpdateState::CannotInstall`] with
+    /// the reason, so the sidebar stops offering a button that can't work
+    /// and says why instead.
+    pub fn apply_and_restart(&mut self) -> Result<(), String> {
+        let UpdateState::ReadyToInstall {
+            binary_path,
+            version,
+        } = &self.state
+        else {
+            return Err("No update ready to install".to_string());
+        };
+
+        info!("applying update to version {version}");
+        let result = (self.installer)(binary_path);
+        if let Err(reason) = &result {
+            self.state = UpdateState::CannotInstall {
+                reason: reason.clone(),
+            };
         }
+        result
     }
 
     /// Unsubscribe from the current release filter and resubscribe with
@@ -291,16 +318,25 @@ impl Updater {
         };
     }
 
-    /// User dismissed the update notification
+    /// Force the updater into CannotInstall with `reason` (for snapshot tests)
+    #[cfg(feature = "snapshot-testing")]
+    pub fn force_install_problem(&mut self, reason: String) {
+        self.state = UpdateState::CannotInstall { reason };
+    }
+
+    /// User dismissed the update notification, or the install problem.
     pub fn dismiss(&mut self) {
-        if matches!(self.state, UpdateState::ReadyToInstall { .. }) {
+        if matches!(
+            self.state,
+            UpdateState::ReadyToInstall { .. } | UpdateState::CannotInstall { .. }
+        ) {
             self.state = UpdateState::UpToDate;
         }
     }
 
     /// Download `release` in the background, unless it couldn't be
     /// installed here anyway (translocated app, read-only install dir, ...).
-    /// Then park in [`UpdateState::Error`] with the reason, rather than
+    /// Then park in [`UpdateState::CannotInstall`] with the reason, rather than
     /// fetching an archive we would have to throw away.
     fn start_download(&mut self, release: ReleaseInfo) {
         if let Err(reason) = (self.install_check)() {
@@ -308,7 +344,7 @@ impl Updater {
                 "updater: v{} is available but can't be installed here: {reason}",
                 release.version
             );
-            self.state = UpdateState::Error(reason);
+            self.state = UpdateState::CannotInstall { reason };
             return;
         }
 
@@ -358,7 +394,7 @@ impl Updater {
             }
             Err(e) => {
                 error!("download failed: {e}");
-                self.state = UpdateState::Error(e);
+                self.state = UpdateState::Error;
             }
         }
     }
@@ -574,7 +610,7 @@ mod tests {
     }
 
     /// A release we couldn't install here is never downloaded: the updater
-    /// parks in `Error` with the install check's reason instead.
+    /// parks in `CannotInstall` with the install check's reason instead.
     #[test]
     fn test_start_download_refuses_when_not_installable() {
         use crate::test_util::test_config;
@@ -598,10 +634,40 @@ mod tests {
         });
 
         assert_eq!(updater.downloading_version(), None);
-        assert!(
-            matches!(&updater.state, UpdateState::Error(reason) if reason == "read-only install dir"),
-            "should park in Error with the reason"
+        assert_eq!(updater.install_problem(), Some("read-only install dir"));
+    }
+
+    /// A staged update whose install fails surfaces the reason through
+    /// `install_problem` instead of staying "ready", and `dismiss` clears it.
+    #[test]
+    fn test_failed_install_becomes_install_problem() {
+        use crate::test_util::test_config;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let mut updater = Updater::new(
+            &DataPath::new(tmp.path()),
+            &ndb,
+            crate::Waker::noop(),
+            [0u8; 32],
+            nostr::ReleaseChannel::Main,
         );
+        updater.installer = |_| Err("codesign verification failed".to_string());
+        updater.state = UpdateState::ReadyToInstall {
+            version: "99.0.0".to_string(),
+            binary_path: PathBuf::from("/dev/null"),
+        };
+
+        assert!(updater.apply_and_restart().is_err());
+        assert_eq!(updater.update_ready(), None);
+        assert_eq!(
+            updater.install_problem(),
+            Some("codesign verification failed")
+        );
+
+        updater.dismiss();
+        assert_eq!(updater.install_problem(), None);
+        assert!(matches!(updater.state, UpdateState::UpToDate));
     }
 
     #[test]

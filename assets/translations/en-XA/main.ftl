@@ -193,6 +193,9 @@ Clear_cache_dccb = {"["}Çléàr çàçhé{"]"}
 # Dave session inspector overview row: the agent CLI's own session id
 CLI_session_5cca = {"["}ÇLÍ séssíóñ{"]"}
 
+# Hint that clicking the can't-install update item opens the download page and right-clicking hides it
+Click_to_download_the_new_version__right-click_to_hide_this_29f9 = {"["}Çlíçk tó dówñlóàd thé ñéw vérsíóñ, ríght-çlíçk tó hídé thís.{"]"}
+
 # Hover text for editable zap amount
 Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 
@@ -681,6 +684,9 @@ Model_7dd2 = {"["}Módél{"]"}
 
 # Dave session inspector background: badge for a Monitor watching a command or socket
 monitor_3ba0 = {"["}móñítór{"]"}
+
+# Hint under the reason an update can't install on macOS
+Move_Notedeck_to_your_Applications_folder__then_reopen_it_1d92 = {"["}Móvé Ñótédéçk tó yóúr Àpplíçàtíóñs fóldér, théñ réópéñ ít.{"]"}
 
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = {"["}Móvés thís çólúmñ tó àñóthér pósítíóñ{"]"}
@@ -1344,6 +1350,9 @@ Unmute_User_5d5a = {"["}Úñmúté Úsér{"]"}
 
 # Unmute this user's content
 Unmute_User_bf35 = {"["}Úñmúté Úsér{"]"}
+
+# Sidebar item shown when a downloaded update can't be installed over the running app
+Update_can_t_install_5944 = {"["}Úpdàté çàñ't íñstàll{"]"}
 
 # Dave session inspector section: context, tokens and cost
 Usage_4257 = {"["}Úsàgé{"]"}

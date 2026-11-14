@@ -221,7 +221,7 @@ pub(super) fn topdown_sidebar(
     let mut action = None;
 
     #[cfg(feature = "auto-update")]
-    if let Some(update_action) = update_sidebar_item_ui(&chrome.updater, ui) {
+    if let Some(update_action) = update_sidebar_item_ui(&chrome.updater, loc, ui) {
         action = Some(update_action);
     }
 

@@ -461,6 +461,12 @@ impl Chrome {
         self.updater.force_ready(version);
     }
 
+    /// Force the updater into its can't-install state (for snapshot tests).
+    #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+    pub fn force_update_install_problem(&mut self, reason: String) {
+        self.updater.force_install_problem(reason);
+    }
+
     pub fn toggle(&mut self) {
         if self.nav.drawer_focused {
             self.nav.close();

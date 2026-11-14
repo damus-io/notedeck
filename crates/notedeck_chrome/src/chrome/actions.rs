@@ -22,6 +22,10 @@ pub enum ChromePanelAction {
     ApplyUpdate,
     #[cfg(feature = "auto-update")]
     DismissUpdate,
+    /// The update can't install here; open the download page so the user
+    /// can install it by hand.
+    #[cfg(feature = "auto-update")]
+    OpenUpdateDownloadPage,
 }
 
 impl ChromePanelAction {
@@ -82,6 +86,8 @@ impl ChromePanelAction {
 
             #[cfg(feature = "auto-update")]
             Self::ApplyUpdate => {
+                // On failure the updater keeps the reason, and the sidebar
+                // item turns into the "can't install" item that shows it.
                 if let Err(e) = chrome.updater.apply_and_restart() {
                     tracing::error!("failed to apply update: {e}");
                 }
@@ -90,6 +96,12 @@ impl ChromePanelAction {
             #[cfg(feature = "auto-update")]
             Self::DismissUpdate => {
                 chrome.updater.dismiss();
+            }
+
+            #[cfg(feature = "auto-update")]
+            Self::OpenUpdateDownloadPage => {
+                ui.ctx()
+                    .open_url(egui::OpenUrl::new_tab(super::update::DOWNLOAD_PAGE_URL));
             }
         }
     }
