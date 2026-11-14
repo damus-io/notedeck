@@ -506,7 +506,7 @@ mod tests {
             pubkey_hex,
             "99.0.0",
             platform,
-            "https://example.com/notedeck.tar.gz",
+            nostr::target_asset_name(),
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
             1700000000,
         );

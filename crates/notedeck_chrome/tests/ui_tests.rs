@@ -284,6 +284,7 @@ async fn snapshot_update_bar() {
         &test_helpers::TEST_SECRET_KEY,
         "99.0.0",
         notedeck::updater::nostr::target_platform_tag(),
+        notedeck::updater::nostr::target_asset_name(),
         "https://example.com/download/notedeck.tar.gz",
         "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
     );

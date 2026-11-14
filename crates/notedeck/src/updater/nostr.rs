@@ -265,7 +265,18 @@ fn parse_release_event(note: &Note) -> Result<ReleaseEventInfo, ReleaseParseErro
 }
 
 /// Parse a NIP-82 kind 3063 (Software Asset) event to extract download info.
-/// Returns None if the asset doesn't match the current platform.
+///
+/// Returns `None` unless the asset is the one this build installs: its `f`
+/// platform tag must equal [`target_platform_tag`] **and** its file name must
+/// equal [`target_asset_name`]. The name check matters because one release
+/// tags several files with the same platform (a macOS `.dmg` next to the
+/// `-macos.tar.gz`, Linux `.deb`/`.rpm` next to the tarball), and only the
+/// archive is something the installer can unpack. The file name is the
+/// `name` tag, falling back to the URL's last path segment.
+///
+/// Tag values are copied inside the tag loop: a `get_str` borrow can read
+/// zeros once the loop is done (see
+/// `docs/hindsight/ndb-tag-str-outlives-the-loop.md`).
 fn parse_asset_event(note: &Note) -> Option<ReleaseInfo> {
     let mut url = None;
     let mut sha256 = None;
@@ -297,25 +308,24 @@ fn parse_asset_event(note: &Note) -> Option<ReleaseInfo> {
         }
     }
 
-    // Check platform match
-    let expected_platform = target_platform_tag();
-    let plat = platform.as_deref()?;
-    if plat != expected_platform {
+    // Platform first: it rules out every other OS/arch.
+    if platform.as_deref()? != target_platform_tag() {
         return None;
     }
 
     let url = url?;
-    let sha256 = sha256?;
-    let version = version?;
     // Use name if present, otherwise derive from URL
     let asset_name =
         name.unwrap_or_else(|| url.rsplit('/').next().unwrap_or("notedeck").to_string());
+    if asset_name != target_asset_name() {
+        return None;
+    }
 
     Some(ReleaseInfo {
-        version,
+        version: version?,
         asset_url: url,
         asset_name,
-        expected_sha256: sha256,
+        expected_sha256: sha256?,
     })
 }
 
@@ -422,8 +432,9 @@ pub fn find_latest_release(
                 break;
             } else {
                 debug!(
-                    "updater: asset {} didn't match platform for v{}",
+                    "updater: asset {} isn't {} for v{}",
                     hex::encode(asset_id),
+                    target_asset_name(),
                     release_info.version,
                 );
             }
@@ -478,10 +489,14 @@ pub mod test_helpers {
     }
 
     /// Build a properly signed kind 3063 (Software Asset) event.
+    ///
+    /// `name` is the asset's file name (its `name` tag), as `notedeck_release`
+    /// publishes it; the updater only accepts [`target_asset_name`].
     pub fn build_signed_asset_event(
         seckey: &[u8; 32],
         version: &str,
         platform: &str,
+        name: &str,
         url: &str,
         sha256: &str,
     ) -> SignedAssetEvent {
@@ -504,6 +519,9 @@ pub mod test_helpers {
             .start_tag()
             .tag_str("f")
             .tag_str(platform)
+            .start_tag()
+            .tag_str("name")
+            .tag_str(name)
             .start_tag()
             .tag_str("m")
             .tag_str("application/gzip")
@@ -559,15 +577,20 @@ pub mod test_helpers {
 
     /// Construct a kind 3063 (Software Asset) event JSON string for testing.
     /// Uses a dummy sig so `skip_validation` must be enabled on the ndb.
+    ///
+    /// `name` is the asset's file name (its `name` tag); the updater only
+    /// accepts [`target_asset_name`]. The `url` tag is
+    /// `https://example.com/download/<name>`.
     pub fn make_asset_event_json(
         id: &str,
         pubkey: &str,
         version: &str,
         platform: &str,
-        url: &str,
+        name: &str,
         sha256: &str,
         created_at: u64,
     ) -> String {
+        let url = format!("https://example.com/download/{name}");
         format!(
             r#"["EVENT", "test_sub", {{
                 "id": "{id}",
@@ -580,6 +603,7 @@ pub mod test_helpers {
                     ["x", "{sha256}"],
                     ["version", "{version}"],
                     ["f", "{platform}"],
+                    ["name", "{name}"],
                     ["m", "application/gzip"],
                     ["size", "12345678"]
                 ],
@@ -744,7 +768,7 @@ mod tests {
             TEST_PUBKEY_HEX,
             "99.0.0",
             platform,
-            "https://example.com/download/notedeck.tar.gz",
+            target_asset_name(),
             expected_sha,
             1700000000,
         );
@@ -781,7 +805,7 @@ mod tests {
         assert_eq!(release.expected_sha256, expected_sha);
         assert_eq!(
             release.asset_url,
-            "https://example.com/download/notedeck.tar.gz"
+            format!("https://example.com/download/{}", target_asset_name())
         );
     }
 
@@ -803,7 +827,7 @@ mod tests {
             TEST_PUBKEY_HEX,
             "99.0.0",
             wrong_platform,
-            "https://example.com/download/wrong.tar.gz",
+            target_asset_name(),
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
             1700000000,
         );
@@ -850,7 +874,7 @@ mod tests {
             TEST_PUBKEY_HEX,
             "98.0.0",
             platform,
-            "https://example.com/download/v98.tar.gz",
+            target_asset_name(),
             "aaaa000000000000000000000000000000000000000000000000000000000000",
             1700000000,
         );
@@ -859,7 +883,7 @@ mod tests {
             TEST_PUBKEY_HEX,
             "99.0.0",
             platform,
-            "https://example.com/download/v99.tar.gz",
+            target_asset_name(),
             "bbbb000000000000000000000000000000000000000000000000000000000000",
             1700000001,
         );
@@ -921,7 +945,7 @@ mod tests {
             TEST_PUBKEY_HEX,
             "0.0.1",
             platform,
-            "https://example.com/download/old.tar.gz",
+            target_asset_name(),
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
             1700000000,
         );
@@ -955,5 +979,126 @@ mod tests {
             release.is_none(),
             "should not return older version than current"
         );
+    }
+
+    /// The installer `notedeck_release` publishes beside the archive for this
+    /// platform, carrying the same `f` tag: a `.dmg` on macOS, a `.deb` on
+    /// Linux, an `.exe` on Windows, and on Android a second APK name.
+    fn sibling_installer_name() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "notedeck-aarch64.dmg"
+        } else if cfg!(target_os = "windows") {
+            "notedeck-x86_64-setup.exe"
+        } else if cfg!(target_os = "android") {
+            "notedeck-debug.apk"
+        } else {
+            "notedeck-x86_64.deb"
+        }
+    }
+
+    /// Ingest one v99 release whose asset refs point at `names` in order,
+    /// each with this platform's `f` tag and the given file name, and return
+    /// what [`find_latest_release`] picks.
+    async fn pick_from_assets(names: &[&str]) -> Option<ReleaseInfo> {
+        let TempNdb { dir: _tmp, ndb } = test_ndb();
+        let platform = target_platform_tag();
+
+        let ids: Vec<String> = (0..names.len())
+            .map(|i| format!("{:064x}", 0x3300 + i))
+            .collect();
+        let filter = Filter::new()
+            .kinds([RELEASE_KIND, ASSET_KIND])
+            .limit(20)
+            .build();
+        let sub = ndb.subscribe(&[filter]).unwrap();
+
+        for (id, name) in ids.iter().zip(names) {
+            let asset_ev = make_asset_event_json(
+                id,
+                TEST_PUBKEY_HEX,
+                "99.0.0",
+                platform,
+                name,
+                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                1700000000,
+            );
+            ndb.process_event_with(&asset_ev, IngestMetadata::new())
+                .unwrap();
+        }
+
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let release_ev = make_release_event_json(
+            "4400000000000000000000000000000000000000000000000000000000000001",
+            TEST_PUBKEY_HEX,
+            "99.0.0",
+            "main",
+            &id_refs,
+            1700000001,
+        );
+        ndb.process_event_with(&release_ev, IngestMetadata::new())
+            .unwrap();
+
+        let _ = ndb
+            .wait_for_all_notes(sub, names.len() as u32 + 1)
+            .await
+            .unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        find_latest_release(&ndb, &txn, &TEST_PUBKEY, ReleaseChannel::Main)
+    }
+
+    /// A same-platform installer listed before the archive is skipped.
+    #[tokio::test]
+    async fn test_find_latest_release_skips_installer_listed_first() {
+        let release = pick_from_assets(&[sibling_installer_name(), target_asset_name()])
+            .await
+            .expect("should find the archive");
+        assert_eq!(release.asset_name, target_asset_name());
+        assert!(release.asset_url.ends_with(target_asset_name()));
+    }
+
+    /// Asset order doesn't matter: the archive listed first is picked too.
+    #[tokio::test]
+    async fn test_find_latest_release_picks_archive_listed_first() {
+        let release = pick_from_assets(&[target_asset_name(), sibling_installer_name()])
+            .await
+            .expect("should find the archive");
+        assert_eq!(release.asset_name, target_asset_name());
+    }
+
+    /// A release with only the installer offers nothing to install.
+    #[tokio::test]
+    async fn test_find_latest_release_ignores_lone_installer() {
+        let release = pick_from_assets(&[sibling_installer_name()]).await;
+        assert!(release.is_none(), "an installer is not an update asset");
+    }
+
+    /// Without a `name` tag the file name comes from the URL's last segment.
+    #[tokio::test]
+    async fn test_parse_asset_event_name_falls_back_to_url() {
+        let TempNdb { dir: _tmp, ndb } = test_ndb();
+        let id = "5500000000000000000000000000000000000000000000000000000000000001";
+        let name_tag = format!(r#"["name", "{}"],"#, target_asset_name());
+        let asset_ev = make_asset_event_json(
+            id,
+            TEST_PUBKEY_HEX,
+            "99.0.0",
+            target_platform_tag(),
+            target_asset_name(),
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            1700000000,
+        )
+        .replace(&name_tag, "");
+        assert!(!asset_ev.contains(r#"["name""#), "name tag stripped");
+        let filter = Filter::new().kinds([ASSET_KIND]).limit(5).build();
+        let sub = ndb.subscribe(&[filter]).unwrap();
+        ndb.process_event_with(&asset_ev, IngestMetadata::new())
+            .unwrap();
+        let keys = ndb.wait_for_all_notes(sub, 1).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let note = ndb.get_note_by_key(&txn, keys[0]).unwrap();
+        let info = parse_asset_event(&note).expect("URL name should match");
+        assert_eq!(info.asset_name, target_asset_name());
     }
 }
