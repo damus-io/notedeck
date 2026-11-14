@@ -25,6 +25,10 @@ egui-wgpu = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 nostrdb = { workspace = true }
+# The agentium data tools' grep: its smart-case pattern, and the compiled
+# regex its answer carries to highlight matches.
+cli_term = { workspace = true }
+regex = "1"
 crossbeam-channel = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }

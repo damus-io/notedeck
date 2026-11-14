@@ -41,6 +41,7 @@ use regex::Regex;
 use cli_term::{CaseMode, ColorWhen, PagerMode, compile_pattern};
 use nostrdb_net::relay::sync::Result;
 
+use agentium_core::cli::transcript::MessageFilter;
 use config_cmd::{ConfigAction, ConfigFilters, cmd_config};
 use grep::cmd_grep;
 use interrupt::cmd_interrupt;
@@ -825,9 +826,11 @@ impl Cli {
         // fails here rather than being silently dropped.
         help::check_flags(spec, &flags)?;
         let view = MessageView {
-            roles,
-            last,
-            show_tools,
+            filter: MessageFilter {
+                roles,
+                last,
+                show_tools,
+            },
             jsonl,
             color,
             pager,
@@ -1105,9 +1108,11 @@ mod tests {
     #[test]
     fn log_command_carries_selector_and_view() {
         let view = MessageView {
-            roles: vec!["assistant".into()],
-            last: Some(5),
-            show_tools: true,
+            filter: MessageFilter {
+                roles: vec!["assistant".into()],
+                last: Some(5),
+                show_tools: true,
+            },
             jsonl: true,
             ..view_all()
         };
@@ -1121,9 +1126,9 @@ mod tests {
         {
             Command::Log { session, view } => {
                 assert_eq!(session.as_deref(), Some("agentium:a-b-c"));
-                assert_eq!(view.roles, vec!["assistant".to_string()]);
-                assert_eq!(view.last, Some(5));
-                assert!(view.show_tools);
+                assert_eq!(view.filter.roles, vec!["assistant".to_string()]);
+                assert_eq!(view.filter.last, Some(5));
+                assert!(view.filter.show_tools);
                 assert!(view.jsonl);
             }
             _ => panic!("expected Log"),
@@ -1175,14 +1180,17 @@ mod tests {
         // `log` builds rides the grep command. Both axes carry a non-default
         // value, so carriage is what's actually being asserted.
         let view = MessageView {
-            roles: vec!["assistant".into()],
-            show_tools: true,
+            filter: MessageFilter {
+                roles: vec!["assistant".into()],
+                last: None,
+                show_tools: true,
+            },
             ..view_all()
         };
         match parse_command("grep", &["x".to_string()], view, CaseMode::Smart).unwrap() {
             Command::Grep { view, .. } => {
-                assert_eq!(view.roles, vec!["assistant".to_string()]);
-                assert!(view.show_tools);
+                assert_eq!(view.filter.roles, vec!["assistant".to_string()]);
+                assert!(view.filter.show_tools);
             }
             _ => panic!("expected Grep"),
         }
@@ -1200,13 +1208,27 @@ mod tests {
     #[test]
     fn show_tools_defaults_off_and_tools_opts_back_in() {
         // A bare `log`/`grep` reads as the human conversation.
-        assert!(!parsed_view(&["--nsec", TEST_NSEC, "log", "agentium:a-b-c"]).show_tools);
-        assert!(!parsed_view(&["--nsec", TEST_NSEC, "grep", "x"]).show_tools);
+        assert!(
+            !parsed_view(&["--nsec", TEST_NSEC, "log", "agentium:a-b-c"])
+                .filter
+                .show_tools
+        );
+        assert!(
+            !parsed_view(&["--nsec", TEST_NSEC, "grep", "x"])
+                .filter
+                .show_tools
+        );
         // `--tools` opts the tool traffic back in; `--no-tools` says the default
         // out loud; last flag wins either way.
-        assert!(parsed_view(&["--nsec", TEST_NSEC, "--tools", "log", "agentium:a-b-c"]).show_tools);
         assert!(
-            !parsed_view(&["--nsec", TEST_NSEC, "--no-tools", "log", "agentium:a-b-c"]).show_tools
+            parsed_view(&["--nsec", TEST_NSEC, "--tools", "log", "agentium:a-b-c"])
+                .filter
+                .show_tools
+        );
+        assert!(
+            !parsed_view(&["--nsec", TEST_NSEC, "--no-tools", "log", "agentium:a-b-c"])
+                .filter
+                .show_tools
         );
         assert!(
             !parsed_view(&[
@@ -1217,6 +1239,7 @@ mod tests {
                 "log",
                 "agentium:a-b-c"
             ])
+            .filter
             .show_tools
         );
     }

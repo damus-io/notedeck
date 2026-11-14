@@ -11,6 +11,7 @@ pub mod config;
 mod convergence_tests;
 mod conversation;
 mod conversation_feed;
+mod data_tools;
 mod focus_queue;
 pub(crate) mod git_status;
 pub mod inspector;
@@ -1707,6 +1708,11 @@ impl notedeck::App for Dave {
     /// A popped subagent entry returns to its parent's chat.
     fn cleanup_nav(&mut self, _ctx: &mut AppContext<'_>, token: &std::rc::Rc<dyn std::any::Any>) {
         self.leave_route(token);
+    }
+
+    /// The agentium read tools, over nostrdb alone (see [`data_tools`]).
+    fn tools(&self) -> Vec<notedeck::RegisteredTool> {
+        data_tools::tools()
     }
 
     /// The normal-mode chord's actions, by name (see [`ui_tools`]).

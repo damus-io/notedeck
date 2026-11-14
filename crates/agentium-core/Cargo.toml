@@ -32,6 +32,10 @@ tracing = { workspace = true }
 # Puffin scopes on the hot per-chip reads (e.g. latest_activity_created_at, run
 # once per visible agentium chip per frame).
 profiling = { workspace = true }
+# Terminal text shared with the other CLIs (`paint`, grep's smart-case
+# pattern and match highlight), for the `cli` module's renderers.
+cli_term = { workspace = true }
+regex = "1"
 # StreamExt::next drives the session-watch subscription stream.
 futures-util = { workspace = true }
 

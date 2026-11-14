@@ -4,13 +4,15 @@
 use std::io::IsTerminal;
 
 use agentium_core::Engine;
+use agentium_core::cli::log::Transcript;
+use agentium_core::cli::resolve_selected;
 use agentium_core::messages::Message;
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::term::{StatusStyle, paint, status_style};
-use crate::transcript::{MessageView, first_after, render_message, render_messages};
+use crate::transcript::{MessageView, first_after, render_message};
 
 /// `agentium log <session>` — print one session's kind-1988 conversation,
 /// one entry per message, in order.
@@ -26,7 +28,7 @@ use crate::transcript::{MessageView, first_after, render_message, render_message
 /// `--role`/`--last`/`--tools` filter the rendered stream (see [`MessageView`]);
 /// `--json` emits each message's structured [`Message::to_json`] view; `--jsonl`
 /// short-circuits to the reconstructed claude-code JSONL (a different,
-/// `seq`-ordered axis — see below). The whole thing is built into one string and
+/// `seq`-ordered axis — see [`Transcript::load`]). The whole thing is built into one string and
 /// handed to [`cli_term::emit`], which routes it through a pager (like `git log`) when
 /// appropriate.
 ///
@@ -42,19 +44,15 @@ pub(crate) fn cmd_log(
     view: &MessageView,
     as_json: bool,
 ) -> Result<()> {
-    use agentium_core::session_loader::{
-        load_deleted_session_states_for_author, load_session_messages_for_author,
-        load_session_states_for_author, resolve_session_including_deleted,
-    };
-    use agentium_core::session_reconstructor::reconstruct_jsonl_lines;
-
-    let selector = selector
-        .ok_or("no session — pass a selector (see `agentium list`) or set $AGENTIUM_SESSION")?;
-
     let txn = Transaction::new(engine.ndb())?;
-    let live = load_session_states_for_author(engine.ndb(), &txn, author);
-    let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
-    let state = resolve_session_including_deleted(&live, &deleted, selector)?;
+    let transcript = Transcript::load(
+        engine.ndb(),
+        &txn,
+        author,
+        selector,
+        &view.filter,
+        view.jsonl,
+    )?;
 
     // Resolve pager/color up front (both are output concerns). `auto` color
     // follows the effective sink: a real tty *or* a color-aware pager — so the
@@ -65,35 +63,15 @@ pub(crate) fn cmd_log(
     let use_pager = view.pager.enabled(stdout_tty);
     let color = view.color.enabled(stdout_tty || use_pager);
 
-    let output = if view.jsonl {
-        // `--jsonl`: emit the reconstructed claude-code JSONL from the lossless
-        // kind-1989 archive, raw. This is a *different* ordering axis than the
-        // display stream — `reconstruct_jsonl_lines` sorts by `seq` to reproduce
-        // the original claude-code line order of the source archive, which is
-        // correct here. The function is not author-scoped, but the engine's cache
-        // only holds this identity's own PNS-decrypted events (the device key
-        // registered at `open_ndb` is the only one whose kind-1080 envelopes ndb
-        // can decrypt), so it only ever sees our own kind-1989 events. Display
-        // filters and color don't apply.
-        let lines = reconstruct_jsonl_lines(engine.ndb(), &txn, &state.claude_session_id)
-            .map_err(|e| e.to_string())?;
-        join_lines(lines)
-    } else {
-        // The loader already returns messages in `EventOrder` and applies the
-        // shared mapping; `MessageView` only slices/hides, never re-sorts.
-        let messages =
-            load_session_messages_for_author(engine.ndb(), &txn, author, &state.claude_session_id)
-                .messages;
-        let selected = view.select(&messages);
-
-        if as_json {
-            let rows: Vec<serde_json::Value> = selected.iter().map(|m| m.to_json()).collect();
-            let mut json = serde_json::to_string_pretty(&rows)?;
+    // `--jsonl` is raw archive lines: display filters, `--json` and color
+    // don't apply to it.
+    let output = match &transcript {
+        Transcript::Messages(_) if as_json => {
+            let mut json = serde_json::to_string_pretty(&transcript.json())?;
             json.push('\n');
             json
-        } else {
-            render_messages(&selected, color)
         }
+        _ => transcript.render(color),
     };
 
     cli_term::emit(&output, use_pager, PAGER_VAR);
@@ -134,17 +112,12 @@ pub(crate) async fn cmd_follow(
         load_session_states_for_author, resolve_session_including_deleted,
     };
 
-    let selector = selector
-        .ok_or("no session — pass a selector (see `agentium list`) or set $AGENTIUM_SESSION")?;
-
     // Resolve the selector once to the stable session id (its kind-1988 `d` tag)
     // and its starting status; every watch and re-read below keys off that id.
     let (session_id, mut last_status) = {
         let txn = Transaction::new(engine.ndb())?;
-        let live = load_session_states_for_author(engine.ndb(), &txn, author);
-        let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
-        let state = resolve_session_including_deleted(&live, &deleted, selector)?;
-        (state.claude_session_id.clone(), state.status.clone())
+        let state = resolve_selected(engine.ndb(), &txn, author, selector)?;
+        (state.claude_session_id, state.status)
     };
 
     // A live follow never pages, so `auto` color just follows the real stdout
@@ -278,28 +251,6 @@ fn emit_follow_status(status: &str, color: bool, as_json: bool) {
     let _ = out.flush();
 }
 
-/// Join JSONL lines into a single newline-terminated block (empty stays empty),
-/// so the whole archive rides the same [`cli_term::emit`] path as the rendered transcript.
-fn join_lines(lines: Vec<String>) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
-}
-
 /// The variable naming agentium's own pager command, consulted before `$PAGER`
 /// by [`cli_term::emit`].
 pub(crate) const PAGER_VAR: &str = "AGENTIUM_PAGER";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn join_lines_terminates_and_keeps_empty() {
-        assert_eq!(join_lines(vec![]), "");
-        assert_eq!(join_lines(vec!["a".into(), "b".into()]), "a\nb\n");
-    }
-}

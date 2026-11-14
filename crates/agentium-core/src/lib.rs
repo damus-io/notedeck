@@ -11,6 +11,7 @@
 //! the full extraction plan; this is the scaffold with the pure protocol
 //! modules moved over.
 
+pub mod cli;
 pub mod config;
 pub mod engine;
 pub mod file_update;
