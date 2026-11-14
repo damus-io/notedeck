@@ -187,11 +187,13 @@ fn nd(socket: &Path, args: &[&str]) -> Output {
 }
 
 /// [`nd`] with `env` set, in an environment otherwise clear of the comment
-/// key an agent session exports.
+/// key an agent session exports, and with `$ND_NO_START` set, so a test
+/// never starts the real notedeck.
 fn nd_env(socket: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     Command::new(nd_bin())
         .args(args)
         .env("NOTEDECK_SOCKET", socket)
+        .env("ND_NO_START", "1")
         .env_remove("HEADWAY_COMMENT_NSEC")
         .env_remove("HEADWAY_COMMENT_NSEC_FILE")
         .envs(env.iter().copied())
@@ -372,6 +374,7 @@ fn mcp(socket: &Path, args: &[&str], lines: &[Value]) -> Vec<Value> {
         .arg("mcp")
         .args(args)
         .env("NOTEDECK_SOCKET", socket)
+        .env("ND_NO_START", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -589,6 +592,7 @@ fn an_app_command_reads_flags_and_the_callers_env() {
             "1",
         ])
         .env("NOTEDECK_SOCKET", &socket)
+        .env("ND_NO_START", "1")
         .env("HEADWAY_BOARD", "notedeck")
         .output()
         .expect("run nd");
@@ -634,6 +638,7 @@ fn an_app_command_resolves_the_callers_side() {
         ])
         .current_dir(cwd.path())
         .env("NOTEDECK_SOCKET", &socket)
+        .env("ND_NO_START", "1")
         .env("AGENTIUM_SESSION", "agentium:gaze-cross-blossom")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -767,4 +772,174 @@ fn the_comment_key_rides_only_with_a_tool_that_accepts_one() {
         },
         "a tool that doesn't accept one never gets it"
     );
+}
+
+/// Set in the environment of the fake notedeck a test's `NOTEDECK_BIN`
+/// starts, so [`fake_notedeck`] serves instead of returning.
+const FAKE_SERVE_ENV: &str = "ND_TEST_FAKE_NOTEDECK";
+
+/// How long the fake notedeck waits for a connection before it exits.
+const FAKE_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The notedeck a started test runs: not a test of its own (it returns at
+/// once) unless [`FAKE_SERVE_ENV`] is set. Then it binds `NOTEDECK_SOCKET`
+/// after a pause, answers its first `list_tools` with no tools as a notedeck
+/// does before its first tick, then with [`app_tools`], answers every call
+/// with a line of text, and exits once [`FAKE_IDLE`] passes with no
+/// connection.
+#[test]
+#[ignore = "run by a test's NOTEDECK_BIN, not on its own"]
+fn fake_notedeck() {
+    use std::time::{Duration, Instant};
+
+    if std::env::var_os(FAKE_SERVE_ENV).is_none() {
+        return;
+    }
+    thread::sleep(Duration::from_millis(200));
+    let path = notedeck_ipc::socket_path();
+    let listener = UnixListener::bind(&path).expect("bind the fake socket");
+    listener.set_nonblocking(true).unwrap();
+    let mut listed = 0;
+    let mut last = Instant::now();
+    while last.elapsed() < FAKE_IDLE {
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(_) => {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        };
+        last = Instant::now();
+        stream.set_nonblocking(false).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() {
+            continue;
+        }
+        let answer = match Request::from_line(&line) {
+            Ok(Request::ListTools) => {
+                listed += 1;
+                let tools = if listed == 1 { Vec::new() } else { app_tools() };
+                Response::ok(Reply::Tools { tools })
+            }
+            Ok(Request::CallTool { name, .. }) => Response::ok(Reply::Result {
+                result: json!({}),
+                text: Some(format!("the started notedeck ran {name}\n")),
+            }),
+            Err(e) => Response::error(e),
+        };
+        let _ = writeln!(reader.get_mut(), "{}", answer.to_line());
+    }
+}
+
+/// A `NOTEDECK_BIN` in `dir`: a script that writes its arguments to
+/// `args`, then runs `body`.
+fn notedeck_script(dir: &Path, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = dir.join("notedeck");
+    let args = dir.join("args");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\necho \"$@\" > '{}'\n{body}\n", args.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// A `NOTEDECK_BIN` that runs [`fake_notedeck`].
+fn fake_notedeck_bin(dir: &Path) -> PathBuf {
+    let test = std::env::current_exe().unwrap();
+    notedeck_script(
+        dir,
+        &format!(
+            "exec '{}' --exact fake_notedeck --ignored --nocapture --test-threads 1",
+            test.display()
+        ),
+    )
+}
+
+/// nd with nothing on the socket and `bin` as the notedeck to start.
+fn nd_starting(socket: &Path, bin: &Path, args: &[&str]) -> Output {
+    Command::new(nd_bin())
+        .args(args)
+        .env("NOTEDECK_SOCKET", socket)
+        .env("NOTEDECK_BIN", bin)
+        .env(FAKE_SERVE_ENV, "1")
+        .env_remove("ND_NO_START")
+        .env_remove("HEADWAY_COMMENT_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC_FILE")
+        .output()
+        .expect("run nd")
+}
+
+/// With no notedeck on the socket, nd starts one as `--headless --serve`,
+/// waits past its empty first tool list, and runs the command in it.
+#[test]
+fn with_no_notedeck_nd_starts_one_and_calls_it() {
+    let dir = socket_dir();
+    let socket = dir.path().join("nd.sock");
+    let bin = fake_notedeck_bin(dir.path());
+    let out = nd_starting(&socket, &bin, &["headway", "show"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "the started notedeck ran headway_show_board\n"
+    );
+    let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+    assert_eq!(args.trim(), "--headless --serve");
+    assert!(
+        dir.path().join("nd.log").exists(),
+        "its output goes beside the socket"
+    );
+
+    // The next run finds it running and starts nothing.
+    std::fs::remove_file(dir.path().join("args")).unwrap();
+    let out = nd_starting(&socket, &bin, &["headway", "show"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(!dir.path().join("args").exists(), "started a second one");
+}
+
+/// `--no-start` and `$ND_NO_START` keep the old exit 2, starting nothing.
+#[test]
+fn no_start_exits_2_without_starting_one() {
+    let dir = socket_dir();
+    let socket = dir.path().join("nd.sock");
+    let bin = notedeck_script(dir.path(), "exit 0");
+    let out = nd_starting(&socket, &bin, &["--no-start", "headway", "show"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--no-start"), "{}", stderr(&out));
+
+    let out = Command::new(nd_bin())
+        .args(["tools"])
+        .env("NOTEDECK_SOCKET", &socket)
+        .env("NOTEDECK_BIN", &bin)
+        .env("ND_NO_START", "1")
+        .output()
+        .expect("run nd");
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(!dir.path().join("args").exists(), "started a notedeck");
+}
+
+/// A notedeck that can't be found, or exits without serving, is exit 2 at
+/// once, naming why, not a 15 second wait.
+#[test]
+fn a_notedeck_that_wont_start_exits_2() {
+    let dir = socket_dir();
+    let socket = dir.path().join("nd.sock");
+
+    let missing = dir.path().join("no-such-notedeck");
+    let out = nd_starting(&socket, &missing, &["tools"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("there is no"), "{}", stderr(&out));
+
+    let bin = notedeck_script(dir.path(), "echo boom >&2; exit 3");
+    let started = std::time::Instant::now();
+    let out = nd_starting(&socket, &bin, &["tools"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("exited"), "{}", stderr(&out));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let log = std::fs::read_to_string(dir.path().join("nd.log")).unwrap();
+    assert!(log.contains("boom"), "{log}");
 }

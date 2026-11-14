@@ -63,6 +63,7 @@ notedeck_headway = { workspace = true }
 # through its `test_support`.
 notedeck_dave = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
+bin_testing = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing", "auto-update"] }
 notedeck_testing = { workspace = true }

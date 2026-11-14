@@ -21,11 +21,18 @@ pub const CLI: Cli = Cli {
 };
 
 /// The options every run takes.
-pub const GLOBALS: &[GlobalOption] = &[GlobalOption {
-    flag: "--version",
-    summary: "Print nd's version, and the running notedeck's",
-    details: "Print nd's own version and, when a notedeck is listening, the version it answers with",
-}];
+pub const GLOBALS: &[GlobalOption] = &[
+    GlobalOption {
+        flag: "--version",
+        summary: "Print nd's version, and the running notedeck's",
+        details: "Print nd's own version and, when a notedeck is listening, the version it answers with",
+    },
+    GlobalOption {
+        flag: "--no-start",
+        summary: "Exit 2 rather than start a notedeck when none is running",
+        details: "When nothing listens on the socket, exit 2 instead of starting a data-only `notedeck --headless --serve`. Goes before an app command (`nd --no-start headway show`). $ND_NO_START=1 does the same",
+    },
+];
 
 /// What `nd --help` prints after the overview: the commands that come from
 /// the running notedeck's tools, which a page printed without asking it can't
@@ -42,12 +49,20 @@ pub const OPTIONS_FOOTER: &str = "\
 EXIT CODES:
     0   the call worked (or there was nothing to call)
     1   the tool answered with an error, or the command line was wrong
-    2   notedeck isn't running: nothing is listening on the socket
+    2   notedeck isn't running, and nd couldn't start one (or --no-start)
 
 SOCKET:
     $NOTEDECK_SOCKET, else notedeck's per-user socket (the last notedeck to
     start owns it). nd fetches the tool list from it on every run, so it always
     matches the running app.
+
+STARTING NOTEDECK:
+    With nothing on the socket, nd starts `notedeck --headless --serve`
+    ($NOTEDECK_BIN, else notedeck on PATH) in the background and waits up to
+    15s for its tools. That notedeck runs the data apps only and never runs an
+    agent; it exits after 10 minutes without a request, or as soon as another
+    notedeck takes the socket, and it never takes the socket from one that is
+    running. Its output goes beside the socket, in notedeck.log.
 ";
 
 const COMMANDS: &[CommandHelp] = &[

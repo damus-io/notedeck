@@ -46,30 +46,32 @@ pub(super) enum Served {
 impl Chrome {
     /// Listen on [`notedeck_ipc::socket_path`], taking it from any notedeck
     /// that had it. `waker` brings on the tick that serves a request. Returns
-    /// whether the socket is up; a failure is logged and notedeck runs on
-    /// without it.
-    pub fn serve_ipc(&mut self, waker: notedeck::Waker) -> bool {
-        #[cfg(unix)]
-        {
-            let path = notedeck_ipc::socket_path();
-            match notedeck_ipc::Listener::bind(&path, move || waker.wake()) {
-                Ok(listener) => {
-                    tracing::info!("serving tools on {}", path.display());
-                    self.ipc.listener = Some(listener);
-                    true
-                }
-                Err(err) => {
-                    tracing::warn!("no tool socket at {}: {err}", path.display());
-                    false
-                }
+    /// the socket's [`Watch`](notedeck_ipc::Watch) when it is up, which a
+    /// `--serve` notedeck reads to know when to exit; a failure is logged and
+    /// notedeck runs on without it.
+    #[cfg(unix)]
+    pub fn serve_ipc(&mut self, waker: notedeck::Waker) -> Option<notedeck_ipc::Watch> {
+        let path = notedeck_ipc::socket_path();
+        match notedeck_ipc::Listener::bind(&path, move || waker.wake()) {
+            Ok(listener) => {
+                tracing::info!("serving tools on {}", path.display());
+                let watch = listener.watch();
+                self.ipc.listener = Some(listener);
+                Some(watch)
+            }
+            Err(err) => {
+                tracing::warn!("no tool socket at {}: {err}", path.display());
+                None
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = waker;
-            tracing::info!("the tool socket is unix only");
-            false
-        }
+    }
+
+    /// There is no socket off Unix.
+    #[cfg(not(unix))]
+    pub fn serve_ipc(&mut self, waker: notedeck::Waker) -> Option<()> {
+        let _ = waker;
+        tracing::info!("the tool socket is unix only");
+        None
     }
 
     /// Serve every request that has arrived. An intent is held for the next

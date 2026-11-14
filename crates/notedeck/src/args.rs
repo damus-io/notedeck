@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::{DataPath, DataPathType, NotedeckOptions};
 use nostrdb_net::{Keypair, Pubkey, SecretKey};
@@ -8,6 +9,10 @@ use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
 /// Default bind address for the embedded localhost nostr relay.
 pub const DEFAULT_LOCAL_RELAY_ADDR: &str = "127.0.0.1:6677";
+
+/// How long a `--serve` notedeck waits without a socket request before it
+/// exits, unless `--idle-exit <secs>` says otherwise.
+pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 
 /// What [`Args::parse`] makes of a command line.
 pub struct ParsedArgs {
@@ -29,6 +34,10 @@ pub struct Args {
     /// `127.0.0.1:6677`; `--relay-bind <addr>` overrides it and
     /// `--no-local-relay` disables the relay (`None`).
     pub local_relay: Option<String>,
+    /// How long a `--serve` notedeck goes without a socket request before it
+    /// exits: [`DEFAULT_IDLE_EXIT`] unless `--idle-exit <secs>` is passed.
+    /// Nothing else reads it.
+    pub idle_exit: Duration,
 }
 
 impl Args {
@@ -61,7 +70,10 @@ impl Args {
             locale: None,
             title: None,
             local_relay: Some(DEFAULT_LOCAL_RELAY_ADDR.to_owned()),
+            idle_exit: DEFAULT_IDLE_EXIT,
         };
+        // `--serve` gives up the local relay unless one of these asks for it.
+        let mut relay_chosen = false;
 
         let mut i = 0;
         let len = args.len();
@@ -156,6 +168,7 @@ impl Args {
                 res.relays.push(relay.clone());
             } else if arg == "--no-local-relay" {
                 res.local_relay = None;
+                relay_chosen = true;
             } else if arg == "--relay-bind" {
                 i += 1;
                 let Some(addr) = args.get(i) else {
@@ -163,6 +176,7 @@ impl Args {
                     continue;
                 };
                 res.local_relay = Some(addr.clone());
+                relay_chosen = true;
             } else if arg == "--use-keystore" {
                 res.options.set(NotedeckOptions::UseKeystore, true);
             } else if arg == "--all-apps-active" {
@@ -174,6 +188,27 @@ impl Args {
                     NotedeckOptions::Headless | NotedeckOptions::AllAppsActive,
                     true,
                 );
+            } else if arg == "--serve" {
+                // A notedeck `nd` starts: headless, data apps only. It is
+                // the fallback for a user who has no notedeck open, so it
+                // must not hold the local relay's port against the one they
+                // open next.
+                res.options.set(
+                    NotedeckOptions::Serve
+                        | NotedeckOptions::Headless
+                        | NotedeckOptions::AllAppsActive,
+                    true,
+                );
+            } else if arg == "--idle-exit" {
+                i += 1;
+                let Some(secs) = args.get(i) else {
+                    error!("idle-exit argument missing?");
+                    continue;
+                };
+                match secs.parse::<u64>() {
+                    Ok(secs) => res.idle_exit = Duration::from_secs(secs),
+                    Err(err) => error!("--idle-exit takes whole seconds, not '{secs}': {err}"),
+                }
             } else if arg == "--title" {
                 i += 1;
                 let title = if let Some(next_arg) = args.get(i) {
@@ -189,6 +224,10 @@ impl Args {
             }
 
             i += 1;
+        }
+
+        if res.options.contains(NotedeckOptions::Serve) && !relay_chosen {
+            res.local_relay = None;
         }
 
         ParsedArgs {
@@ -257,6 +296,28 @@ mod tests {
 
         assert!(unrecognized.is_empty());
         assert!(args.options.contains(NotedeckOptions::UseKeystore));
+    }
+
+    /// `--serve` is a headless run that gives up the local relay, and keeps
+    /// one only when asked for it by name.
+    #[test]
+    fn parse_serve_is_headless_without_the_local_relay() {
+        let args = parse_args(&["--serve"]);
+        assert!(args.options.contains(
+            NotedeckOptions::Serve | NotedeckOptions::Headless | NotedeckOptions::AllAppsActive
+        ));
+        assert_eq!(args.local_relay, None);
+        assert_eq!(args.idle_exit, DEFAULT_IDLE_EXIT);
+
+        let args = parse_args(&["--relay-bind", "127.0.0.1:7000", "--serve"]);
+        assert_eq!(args.local_relay.as_deref(), Some("127.0.0.1:7000"));
+
+        let args = parse_args(&["--headless", "--serve", "--idle-exit", "3"]);
+        assert_eq!(args.idle_exit, Duration::from_secs(3));
+
+        let args = parse_args(&["--headless"]);
+        assert!(!args.options.contains(NotedeckOptions::Serve));
+        assert_eq!(args.local_relay.as_deref(), Some(DEFAULT_LOCAL_RELAY_ADDR));
     }
 
     /// Verifies the test runner path never touches the host keyring.

@@ -24,9 +24,9 @@ mod client;
 mod server;
 
 #[cfg(unix)]
-pub use client::Client;
+pub use client::{probe, Client};
 #[cfg(unix)]
-pub use server::{Connection, Incoming, Listener};
+pub use server::{Connection, Incoming, Listener, Watch};
 
 /// The protocol version this crate speaks, sent as `v` on every request and
 /// response. A request carrying any other `v`, or none, is refused.

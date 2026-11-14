@@ -173,7 +173,9 @@ enum ChromeRoute {
 
 /// Some people have been running notedeck in debug, let's catch that!
 fn stop_debug_mode(options: NotedeckOptions) {
-    if !options.contains(NotedeckOptions::Tests)
+    // `nd` starts a `--serve` notedeck and nobody reads its stdout, so the
+    // warning would only crash it.
+    if !options.intersects(NotedeckOptions::Tests | NotedeckOptions::Serve)
         && cfg!(debug_assertions)
         && !options.contains(NotedeckOptions::Debug)
     {
@@ -266,6 +268,26 @@ impl Chrome {
             .join("wasm_apps");
 
         let mut chrome = Chrome::bare(&app_ref.app_ctx);
+
+        // `--serve`: the apps whose data tools `nd` calls, and nothing that
+        // syncs timelines or draws. Dave comes without its host, so a notedeck
+        // nobody is watching never runs an agent.
+        if notedeck_options.contains(NotedeckOptions::Serve) {
+            #[cfg(feature = "dave")]
+            chrome.add_app(NotedeckApp::Dave(Box::new(dave.without_host())));
+
+            #[cfg(feature = "notebook")]
+            chrome.add_app(NotedeckApp::Notebook(Box::default()));
+
+            #[cfg(feature = "headway")]
+            chrome.add_app(NotedeckApp::Headway(Box::default()));
+
+            chrome.options.set(ChromeOptions::AllAppsActive, true);
+            chrome.set_active(0);
+            drop(notedeck_ref);
+            setup_app_registries(notedeck, &chrome.apps);
+            return Ok(chrome);
+        }
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {
             let columns = Damus::new(&mut app_ref.app_ctx, app_args);

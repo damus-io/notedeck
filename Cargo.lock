@@ -5582,6 +5582,7 @@ version = "0.11.0-beta.1"
 dependencies = [
  "bin_testing",
  "cli_term",
+ "libc",
  "notedeck_ipc",
  "regex",
  "serde_json",
@@ -6084,6 +6085,7 @@ version = "0.11.0-beta.1"
 dependencies = [
  "agentium-core",
  "android-keyring",
+ "bin_testing",
  "bitflags 2.13.2",
  "eframe",
  "egui",

@@ -149,7 +149,7 @@ fn initialize(params: &Value) -> Value {
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "nd", "version": env!("CARGO_PKG_VERSION")},
         "instructions": "Tools of the running notedeck, called over its local socket. \
-            A call fails with 'notedeck isn't running' until notedeck starts.",
+            When no notedeck is running, the first call starts a data-only one.",
     })
 }
 

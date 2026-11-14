@@ -8,9 +8,13 @@
 //! subcommand, `nd headway show <card>`, built from that same list
 //! ([`commands`]).
 //!
+//! When no notedeck is listening, nd starts a data-only one itself
+//! ([`start`]), so a call works whether or not the app is open.
+//!
 //! Exit codes: 0 when it worked, 1 for a tool error or a bad command line, and
-//! 2 when no notedeck is listening, so a script can tell "not running" apart
-//! from "the tool said no".
+//! 2 when no notedeck is listening and none could be started (or `--no-start`
+//! said not to), so a script can tell "not running" apart from "the tool said
+//! no".
 
 mod caller;
 mod commands;
@@ -19,17 +23,20 @@ mod listing;
 mod mcp;
 mod output;
 mod schema;
+mod start;
 
 use cli_term::help::{CommandHelp, OPTIONS_PAGE, option_names};
-use notedeck_ipc::{Outcome, PROTOCOL_VERSION, Reply, Request, Response, ToolInfo};
+use notedeck_ipc::{Outcome, PROTOCOL_VERSION, Reply, Request, ToolInfo};
 use output::print_json;
 use serde_json::Value;
+use start::{Reach, Start};
 use std::io::Read;
 use std::process::ExitCode;
 
 /// What a command line asks for.
 enum Invocation {
-    Run(Command),
+    /// A command, and whether nd may start a notedeck to run it in.
+    Run { command: Command, no_start: bool },
     /// `nd`, or `nd --help`: the command list.
     Usage,
     /// `nd <cmd> --help` or `nd help <cmd>`.
@@ -92,7 +99,7 @@ impl From<String> for Failure {
 }
 
 /// Exit code for "nothing is listening on the socket".
-const NOT_RUNNING: u8 = 2;
+pub(crate) const NOT_RUNNING: u8 = 2;
 
 fn main() -> ExitCode {
     let invocation = match parse(std::env::args().skip(1)) {
@@ -119,10 +126,16 @@ fn main() -> ExitCode {
             Ok(())
         }
         Invocation::Version => {
-            version();
+            version(&Reach::new(Start::Never));
             Ok(())
         }
-        Invocation::Run(command) => run(command),
+        Invocation::Run { command, no_start } => {
+            let env = std::env::var(start::NO_START_ENV).ok();
+            run(
+                command,
+                &Reach::new(Start::resolve(no_start, env.as_deref())),
+            )
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -135,7 +148,8 @@ fn main() -> ExitCode {
 
 /// Parse the arguments after the program name.
 ///
-/// Before the command only `--help` and `--version` are read. After it, a
+/// Before the command only `--help`, `--version` and `--no-start` are read;
+/// `--no-start` is also read after one of nd's own commands. After it, a
 /// flag is the command's when its help page lists it, and takes a value when
 /// that entry spells one (`--json <object>`), so the parser and the page
 /// can't drift; [`check_flags`](cli_term::help::Cli::check_flags) rejects any
@@ -144,6 +158,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
     let mut args = args.into_iter();
     let mut want_help = false;
     let mut help_command = false;
+    let mut no_start = false;
 
     let name = loop {
         let Some(arg) = args.next() else {
@@ -152,6 +167,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
         match arg.as_str() {
             "-h" | "--help" => want_help = true,
             "--version" => return Ok(Invocation::Version),
+            "--no-start" => no_start = true,
             "help" if !help_command => {
                 help_command = true;
                 want_help = true;
@@ -169,10 +185,13 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
     let Some(cmd) = help::CLI.lookup(&name) else {
         // Not one of nd's own, so maybe an app's: only the tool list can say.
         let words = std::iter::once(name).chain(args).collect();
-        return Ok(Invocation::Run(Command::App {
-            words,
-            help: want_help,
-        }));
+        return Ok(Invocation::Run {
+            command: Command::App {
+                words,
+                help: want_help,
+            },
+            no_start,
+        });
     };
 
     let mut flags: Vec<String> = Vec::new();
@@ -181,6 +200,10 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
     while let Some(arg) = args.next() {
         if arg == "-h" || arg == "--help" {
             want_help = true;
+            continue;
+        }
+        if arg == "--no-start" {
+            no_start = true;
             continue;
         }
         if !arg.starts_with('-') || arg == "-" {
@@ -252,7 +275,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
         }
         other => unreachable!("'{other}' is in the help table but not dispatched"),
     };
-    Ok(Invocation::Run(command))
+    Ok(Invocation::Run { command, no_start })
 }
 
 /// Whether `flag` is one of `cmd`'s options and its entry names a value.
@@ -262,21 +285,21 @@ fn takes_value(cmd: &CommandHelp, flag: &str) -> bool {
         .any(|(key, _)| key.contains('<') && option_names(key).any(|name| name == flag))
 }
 
-/// Run `command` against the socket.
-fn run(command: Command) -> Result<(), Failure> {
+/// Run `command` against the socket `reach` names.
+fn run(command: Command, reach: &Reach) -> Result<(), Failure> {
     match command {
-        Command::Tools { json, query } => tools(json, query.as_deref()),
-        Command::Call { name, pairs, base } => call(&name, &pairs, base),
-        Command::Mcp { exposure } => mcp::serve(exposure, &mut answer),
-        Command::Spawn { json, dir } => spawn(json, dir.as_deref()),
-        Command::App { words, help } => app(&words, help),
+        Command::Tools { json, query } => tools(reach, json, query.as_deref()),
+        Command::Call { name, pairs, base } => call(reach, &name, &pairs, base),
+        Command::Mcp { exposure } => mcp::serve(exposure, &mut |request| answer(reach, request)),
+        Command::Spawn { json, dir } => spawn(reach, json, dir.as_deref()),
+        Command::App { words, help } => app(reach, &words, help),
     }
 }
 
 /// `nd <ns> <verb> …`: resolve the line against the running notedeck's
 /// tools, then call the one it names, or print the page it asks for.
-fn app(words: &[String], help: bool) -> Result<(), Failure> {
-    let tools = list_tools()?;
+fn app(reach: &Reach, words: &[String], help: bool) -> Result<(), Failure> {
+    let tools = list_tools(reach)?;
     match commands::resolve(&tools, words, help, &caller::Process)? {
         commands::Action::Help(page) => {
             eprint!("{page}");
@@ -288,13 +311,19 @@ fn app(words: &[String], help: bool) -> Result<(), Failure> {
             output,
             ns,
             signer,
-        } => send_call(tool, args, signer, Print::Command { output, ns: &ns }),
+        } => send_call(
+            reach,
+            tool,
+            args,
+            signer,
+            Print::Command { output, ns: &ns },
+        ),
     }
 }
 
 /// `nd tools`.
-fn tools(json: bool, query: Option<&str>) -> Result<(), Failure> {
-    let tools = list_tools()?;
+fn tools(reach: &Reach, json: bool, query: Option<&str>) -> Result<(), Failure> {
+    let tools = list_tools(reach)?;
 
     if let Some(tool) = query.and_then(|q| tools.iter().find(|t| t.name == q)) {
         if json {
@@ -322,9 +351,14 @@ fn tools(json: bool, query: Option<&str>) -> Result<(), Failure> {
 }
 
 /// `nd call`.
-fn call(name: &str, pairs: &[String], base: Option<JsonSource>) -> Result<(), Failure> {
+fn call(
+    reach: &Reach,
+    name: &str,
+    pairs: &[String],
+    base: Option<JsonSource>,
+) -> Result<(), Failure> {
     let base = base.map(read_json).transpose()?;
-    let tools = list_tools()?;
+    let tools = list_tools(reach)?;
     let Some(tool) = tools.iter().find(|t| t.name == name) else {
         return Err(Failure::new(format!(
             "the running notedeck has no tool '{name}' (see `nd tools`)"
@@ -332,7 +366,7 @@ fn call(name: &str, pairs: &[String], base: Option<JsonSource>) -> Result<(), Fa
     };
     let args = schema::build(name, &tool.input_schema, base, pairs)?;
     let signer = caller::signer_for(tool, &caller::Process)?;
-    send_call(name.to_owned(), args, signer, Print::Value)
+    send_call(reach, name.to_owned(), args, signer, Print::Value)
 }
 
 /// How [`send_call`] prints a tool's answer.
@@ -348,12 +382,13 @@ enum Print<'a> {
 /// Call tool `name` with `args`, already checked against its schema, and
 /// `signer` beside them, and print what it answers.
 fn send_call(
+    reach: &Reach,
     name: String,
     args: Value,
     signer: Option<notedeck_ipc::Signer>,
     print: Print,
 ) -> Result<(), Failure> {
-    match answer(Request::CallTool { name, args, signer })? {
+    match answer(reach, Request::CallTool { name, args, signer })? {
         Reply::Result { result, text } => match print {
             Print::Value => print_json(&result),
             Print::Command { output, ns } => output.print(&result, text.as_deref(), ns),
@@ -372,14 +407,14 @@ const SPAWN_SESSION: &str = "dave_spawn_session";
 /// `nd spawn`: open a Dave session in `dir` (the working directory when
 /// absent) and print its id. The chrome starts Dave for this call if it isn't
 /// running, so unlike `nd call` this doesn't look the tool up first.
-fn spawn(json: bool, dir: Option<&str>) -> Result<(), Failure> {
+fn spawn(reach: &Reach, json: bool, dir: Option<&str>) -> Result<(), Failure> {
     let cwd = spawn_dir(dir)?;
     let request = Request::CallTool {
         name: SPAWN_SESSION.to_owned(),
         args: serde_json::json!({ "cwd": cwd }),
         signer: None,
     };
-    let reply = answer(request).map_err(|failure| match failure.code {
+    let reply = answer(reach, request).map_err(|failure| match failure.code {
         NOT_RUNNING => failure,
         _ if failure.message.starts_with("unknown tool") => Failure::new(
             "the running notedeck has no Dave to spawn a session in (built without it?)",
@@ -447,17 +482,17 @@ fn read_json(source: JsonSource) -> Result<Value, Failure> {
 }
 
 /// `nd --version`: this build's version, then the running notedeck's when
-/// one answers.
-fn version() {
+/// one answers. It never starts one to ask.
+fn version(reach: &Reach) {
     println!("nd {}", env!("CARGO_PKG_VERSION"));
-    if let Ok(response) = exchange(&Request::ListTools) {
+    if let Ok(response) = reach.exchange(&Request::ListTools) {
         println!("notedeck {}", response.notedeck);
     }
 }
 
 /// The running notedeck's tools.
-fn list_tools() -> Result<Vec<ToolInfo>, Failure> {
-    match answer(Request::ListTools)? {
+fn list_tools(reach: &Reach) -> Result<Vec<ToolInfo>, Failure> {
+    match answer(reach, Request::ListTools)? {
         Reply::Tools { tools } => Ok(tools),
         _ => Err(Failure::new(
             "notedeck answered list_tools without a tool list",
@@ -466,8 +501,8 @@ fn list_tools() -> Result<Vec<ToolInfo>, Failure> {
 }
 
 /// Send `request` and unwrap its outcome: a tool's error is a [`Failure`].
-fn answer(request: Request) -> Result<Reply, Failure> {
-    let response = exchange(&request)?;
+fn answer(reach: &Reach, request: Request) -> Result<Reply, Failure> {
+    let response = reach.exchange(&request)?;
     if response.v != PROTOCOL_VERSION {
         return Err(Failure::new(format!(
             "notedeck {} speaks protocol version {}, and this nd speaks {PROTOCOL_VERSION}",
@@ -478,41 +513,6 @@ fn answer(request: Request) -> Result<Reply, Failure> {
         Outcome::Ok(reply) => Ok(reply),
         Outcome::Error { message } => Err(Failure::new(message)),
     }
-}
-
-/// One request and its response over a fresh connection.
-#[cfg(unix)]
-fn exchange(request: &Request) -> Result<Response, Failure> {
-    use std::io::ErrorKind;
-
-    let path = notedeck_ipc::socket_path();
-    let mut client = match notedeck_ipc::Client::connect(&path) {
-        Ok(client) => client,
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
-            return Err(Failure {
-                code: NOT_RUNNING,
-                message: format!("notedeck isn't running (no socket at {})", path.display()),
-            });
-        }
-        Err(e) => {
-            return Err(Failure::new(format!(
-                "connecting to {}: {e}",
-                path.display()
-            )));
-        }
-    };
-    client
-        .request(request)
-        .map_err(|e| Failure::new(format!("talking to notedeck: {e}")))
-}
-
-/// There is no socket off Unix, so no notedeck to reach.
-#[cfg(not(unix))]
-fn exchange(_request: &Request) -> Result<Response, Failure> {
-    Err(Failure {
-        code: NOT_RUNNING,
-        message: "nd needs notedeck's Unix socket, which this platform doesn't have".to_owned(),
-    })
 }
 
 /// A tool as JSON.
@@ -537,7 +537,7 @@ mod tests {
 
     fn command_of(args: &[&str]) -> Command {
         match parse_args(args) {
-            Ok(Invocation::Run(command)) => command,
+            Ok(Invocation::Run { command, .. }) => command,
             _ => panic!("{args:?} is not a run"),
         }
     }
@@ -566,6 +566,26 @@ mod tests {
             parse_args(&["--version"]),
             Ok(Invocation::Version)
         ));
+    }
+
+    /// `--no-start` reads before any command, and after one of nd's own.
+    #[test]
+    fn no_start_is_read_before_or_after_a_command() {
+        let no_start_of = |args: &[&str]| match parse_args(args) {
+            Ok(Invocation::Run { no_start, .. }) => no_start,
+            _ => panic!("{args:?} is not a run"),
+        };
+        assert!(!no_start_of(&["tools"]));
+        assert!(no_start_of(&["--no-start", "tools"]));
+        assert!(no_start_of(&["tools", "--no-start"]));
+        assert!(no_start_of(&["--no-start", "headway", "show"]));
+        assert_eq!(
+            command_of(&["--no-start", "headway", "show"]),
+            Command::App {
+                words: vec!["headway".to_owned(), "show".to_owned()],
+                help: false,
+            }
+        );
     }
 
     #[test]

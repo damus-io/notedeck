@@ -29,6 +29,12 @@ bitflags! {
         /// Implies [`AllAppsActive`](Self::AllAppsActive) since a headless run
         /// renders nothing, so every app's background loop should stay active.
         const Headless = 1 << 9;
+
+        /// Serve tools to `nd` (`--serve`): a [`Headless`](Self::Headless)
+        /// run of the data apps only, with Dave never acting as a spawn host,
+        /// that never takes the socket from a running notedeck and exits once
+        /// its socket goes idle or is taken.
+        const Serve = 1 << 10;
     }
 }
 

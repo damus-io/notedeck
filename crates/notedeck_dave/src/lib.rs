@@ -338,6 +338,12 @@ pub struct Dave {
     pending_summaries: Vec<nostrdb_net::NoteId>,
     /// Local machine hostname, included in session state events.
     hostname: String,
+    /// Whether this Dave is a host: it restores and runs its own sessions,
+    /// takes the spawn commands (kind 31989) addressed to this machine, and
+    /// dispatches messages to backends. A notedeck started for `nd`
+    /// (`--serve`) builds one that isn't ([`without_host`](Self::without_host)):
+    /// it keeps the shared session cache current and runs nothing.
+    host: bool,
     /// Last selected account used to populate Dave's local PNS-backed state.
     pns_local_state: Option<PnsLocalState>,
     /// Hidden selected-account runtime buckets. The active bucket lives in the
@@ -596,6 +602,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
             hostname,
+            host: true,
             pns_local_state: None,
             pns_local_runtimes: HashMap::new(),
             settings_serializer,
@@ -610,6 +617,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
             restored_accounts: HashSet::new(),
         }
+    }
+
+    /// This Dave, but never a host: a data-only notedeck (`--serve`) must not
+    /// take a spawn command or run an agent, since nobody is watching it and
+    /// it exits when idle. It still folds the account's session states into
+    /// the cache that `agentium:` reads come from.
+    pub fn without_host(mut self) -> Self {
+        self.host = false;
+        self
     }
 
     /// Get current settings for persistence
@@ -1301,8 +1317,19 @@ pub fn is_agentium_kind(kind: u32) -> bool {
     kind == session_events::AI_SESSION_STATE_KIND
 }
 
+/// Why a Dave that isn't a host ([`Dave::without_host`]) refuses a spawn.
+const NOT_A_HOST: &str = "this notedeck serves data only (started by nd, `--serve`) and runs \
+     no agents; open notedeck to spawn a session";
+
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>) {
+        // Not a host: keep the session cache current and touch nothing that
+        // could start, resume or message an agent.
+        if !self.host {
+            self.pump_session_cache(ctx);
+            return;
+        }
+
         // Copied out up front: the backend dispatches below hand a clone of this
         // to worker tasks, and each of those calls needs it while `ctx` is
         // mut-borrowed elsewhere.
@@ -1706,8 +1733,12 @@ impl notedeck::App for Dave {
                 None => notedeck::ToolOutcome::Error("the active session has no issue".to_owned()),
             };
         }
-        // Spawning needs no window either: `--headless` serves it.
+        // Spawning needs no window either: `--headless` serves it, unless
+        // this Dave is no host to run the session.
         if name == ui_tools::SPAWN_SESSION {
+            if !self.host {
+                return notedeck::ToolOutcome::Error(NOT_A_HOST.to_owned());
+            }
             return match ui_tools::spawn_session_cwd(args).and_then(|cwd| self.spawn_session(cwd)) {
                 Ok(id) => notedeck::ToolOutcome::Data(serde_json::json!({ "session_id": id })),
                 Err(err) => notedeck::ToolOutcome::Error(err),
@@ -1726,7 +1757,7 @@ impl notedeck::App for Dave {
             return self.active_issue().is_some();
         }
         if name == ui_tools::SPAWN_SESSION {
-            return true;
+            return self.host;
         }
         ui_tools::DaveUiTool::from_name(name)
             .is_some_and(|tool| ui_tools::available(tool, self.normal_view()))

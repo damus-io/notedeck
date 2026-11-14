@@ -29,6 +29,17 @@ use tracing_subscriber::EnvFilter;
 /// cheaply — but a quiet period would sleep forever without it.
 const HEADLESS_MAX_IDLE: Duration = Duration::from_secs(1);
 
+/// How long a `--serve` notedeck waits for another notedeck's socket to
+/// answer before deciding nobody is serving and taking the path.
+const SERVE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// When a `--serve` notedeck stops: after [`idle`](Self::idle) with no socket
+/// request, or as soon as another notedeck takes its socket.
+#[derive(Clone, Copy)]
+struct ServeExit {
+    idle: Duration,
+}
+
 fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
     #[allow(unused_variables)] // need guard to live for lifetime of program
     let (maybe_non_blocking, maybe_guard) = {
@@ -141,7 +152,13 @@ async fn async_main() {
     // background update() loop from an owned run loop on this Tokio runtime.
     let parsed = Args::parse(&args_raw).args;
     if parsed.options.contains(NotedeckOptions::Headless) {
-        run_headless(base_path, args_raw).await;
+        let serve = parsed
+            .options
+            .contains(NotedeckOptions::Serve)
+            .then_some(ServeExit {
+                idle: parsed.idle_exit,
+            });
+        run_headless(base_path, args_raw, serve).await;
         return;
     }
 
@@ -181,8 +198,26 @@ async fn async_main() {
 /// On SIGINT/SIGTERM the loop breaks so `Notedeck` (and its `AppContext`) drop
 /// cleanly, which flushes the remote outbox (`AppContext::drop` -> `remote.flush()`);
 /// the relay bridge thread stays alive until that final flush completes.
+///
+/// With `serve` (`--serve`, the notedeck `nd` starts) it first asks whether a
+/// notedeck already answers on the socket, and if one does, exits at once
+/// rather than take the socket from it. Once serving, it exits when the socket
+/// has had no request for [`ServeExit::idle`], or when another notedeck has
+/// taken the socket file.
 #[cfg(not(target_arch = "wasm32"))]
-async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
+async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>, serve: Option<ServeExit>) {
+    #[cfg(unix)]
+    if serve.is_some() {
+        let path = notedeck_ipc::socket_path();
+        if notedeck_ipc::probe(&path, SERVE_PROBE_TIMEOUT) {
+            info!(
+                "serve: a notedeck already answers on {}; leaving it the socket",
+                path.display()
+            );
+            return;
+        }
+    }
+
     // No egui::Context anywhere: nothing renders, nothing reads input, and wakes
     // reach this loop through the waker below rather than through a repaint.
     let mut notedeck = Notedeck::init_headless(base_path, &args);
@@ -194,8 +229,18 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
         }
     };
     // `agentium spawn` and `nd` reach a headless notedeck here too.
-    chrome.serve_ipc(notedeck.app_context().waker.clone());
+    let watch = chrome.serve_ipc(notedeck.app_context().waker.clone());
     notedeck.set_app(chrome);
+    // A `--serve` notedeck is there only for its socket: without one it has
+    // nothing to do.
+    let serving = match (serve, watch) {
+        (Some(exit), Some(watch)) => Some(Serving { exit, watch }),
+        (Some(_), None) => {
+            error!("serve: no socket to serve on; exiting");
+            return;
+        }
+        (None, _) => None,
+    };
 
     // Fired by every wake; present because we booted headless. Held for the life
     // of the loop so stored wake permits aren't lost between ticks.
@@ -214,6 +259,13 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
         // private-sync spawn, ...), then sleep until the next wake or the cap.
         notedeck.tick_headless();
 
+        if let Some(serving) = &serving {
+            if let Some(reason) = serving.stop_reason() {
+                info!("serve: {reason}; exiting");
+                break;
+            }
+        }
+
         let idle = tokio::time::sleep(HEADLESS_MAX_IDLE);
         tokio::select! {
             _ = &mut shutdown => break,
@@ -226,6 +278,43 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     // Drop `Notedeck` before returning so `AppContext::drop` flushes the outbox
     // while the bridge thread is still alive.
     drop(notedeck);
+}
+
+/// A `--serve` notedeck's socket, and when to stop serving it.
+#[cfg(unix)]
+struct Serving {
+    exit: ServeExit,
+    watch: notedeck_ipc::Watch,
+}
+
+#[cfg(unix)]
+impl Serving {
+    /// Why the loop should stop now, if it should. Read once a tick, and the
+    /// loop ticks at least every [`HEADLESS_MAX_IDLE`].
+    fn stop_reason(&self) -> Option<&'static str> {
+        if !self.watch.still_ours() {
+            return Some("another notedeck took the socket");
+        }
+        if self.watch.idle_for() >= self.exit.idle {
+            return Some("the socket has been idle");
+        }
+        None
+    }
+}
+
+/// Off Unix there is no socket, so nothing to serve.
+#[cfg(not(unix))]
+struct Serving {
+    exit: ServeExit,
+    watch: (),
+}
+
+#[cfg(not(unix))]
+impl Serving {
+    fn stop_reason(&self) -> Option<&'static str> {
+        let _ = (self.exit, self.watch);
+        Some("there is no socket off unix")
+    }
 }
 
 /// Resolve when the headless waker is signalled. `notify_one()` stores a permit

@@ -772,6 +772,56 @@ mod tests {
         );
     }
 
+    /// Only a host takes a spawn command. A host Dave, run frame by frame
+    /// as the chrome runs it, opens a session for a kind-31989 spawn
+    /// addressed to its machine. A Dave built
+    /// [`without_host`](crate::Dave::without_host), the one a `--serve`
+    /// notedeck runs, sees the same command over the same frames and opens
+    /// nothing.
+    #[tokio::test]
+    async fn only_a_host_takes_a_spawn_command() {
+        use notedeck::App;
+
+        for is_host in [true, false] {
+            let account = nostrdb_net::FullKeypair::generate();
+            let mut host = notedeck_testing::TestHost::with_account(&account);
+            let mut dave = {
+                let ctx = host.app_context();
+                crate::Dave::new(None, ctx.ndb.clone(), ctx.waker.clone(), ctx.path)
+            };
+            if !is_host {
+                dave = dave.without_host();
+            }
+            // The first frame subscribes to the account's commands.
+            dave.update(&mut host.app_context());
+            let before = dave.session_manager.iter().count();
+
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cmd = session_events::build_spawn_command_event(
+                &dave.hostname,
+                &cwd.path().to_string_lossy(),
+                "claude",
+                &Default::default(),
+                "spawn-serve",
+                None,
+                &account.secret_key.secret_bytes(),
+            )
+            .unwrap();
+            let ndb = host.app_context().ndb.clone();
+            let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+            ndb.process_event_with(&cmd.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+            ndb.wait_for_all_notes(sub, 1).await.unwrap();
+            for _ in 0..3 {
+                dave.update(&mut host.app_context());
+            }
+
+            let opened = dave.session_manager.iter().count() - before;
+            let expected = usize::from(is_host);
+            assert_eq!(opened, expected, "is_host={is_host}");
+        }
+    }
+
     /// A spawn under a profile keeps it the whole trip: a Dave queueing the
     /// spawn for another host (the picker's profile row, or a remote clone)
     /// puts its profile and model on the kind-31989 command, and the host that

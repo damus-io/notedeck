@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Install `nd` and the `notedeck` binary it starts onto PATH.
+#
+# nd starts `notedeck --headless --serve` itself when no notedeck is running,
+# so both have to be installed. Builds release into this checkout's own
+# target/ (so a reinstall reuses the build), and installs into ~/.cargo/bin.
+#
+# Usage:
+#     scripts/install-clis              # into ~/.cargo/bin
+#     scripts/install-clis --root ~     # into ~/bin (any `cargo install` flag passes through)
+#
+# NOTEDECK_FEATURES picks the notedeck apps to build (default
+# dave,headway,notebook,messages); a notedeck without headway serves nd no
+# headway tools.
+
+set -euo pipefail
+
+root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+features=${NOTEDECK_FEATURES:-dave,headway,notebook,messages}
+
+cargo install --locked --target-dir "$root/target" --path "$root/crates/nd_cli" "$@"
+cargo install --locked --target-dir "$root/target" --path "$root/crates/notedeck_chrome" \
+    --features "$features" "$@"

@@ -14,7 +14,25 @@ there's nothing to keep in sync. Source: `crates/nd_cli`.
 
 ```bash
 cargo run -q -p nd_cli -- tools          # or the built target/debug/nd
+scripts/install-clis                     # nd + notedeck into ~/.cargo/bin
+scripts/install-clis --root ~            # ...or into ~/bin
 ```
+
+`scripts/install-clis` installs both binaries in release, because nd starts
+`notedeck` itself when none is running (below), so both have to be on PATH.
+
+## When no notedeck is running
+
+nd starts one: `notedeck --headless --serve` (`$NOTEDECK_BIN`, else `notedeck`
+on PATH), detached in its own session, and waits up to 15s for it to list its
+tools. That notedeck runs the data apps only (Headway, Notebook, Dave), and its
+Dave is **not a host**: it never takes a kind-31989 spawn or runs an agent. It
+binds the socket only if no notedeck answers there, exits once another
+notedeck takes the socket (opening the GUI wins), and exits after 10 minutes
+without a request (`--idle-exit <secs>`). It holds no local relay. Its
+stdout/stderr go beside the socket as `notedeck.log`; its own log is in the
+data dir as always. `nd --no-start …` or `ND_NO_START=1` keeps the old exit 2
+instead.
 
 ## Commands
 
@@ -66,8 +84,11 @@ nd call headway_show_card --json '{"card":"headway:notedeck/balcony-warm-action"
   `--json` or when the tool renders none.
 - A UI tool that acted on the window prints nothing, exit 0.
 - A tool error goes to stderr, exit 1 (also for a bad command line).
-- No notedeck listening: `notedeck isn't running (no socket at …)`, exit 2.
+- No notedeck listening and none could be started, or `--no-start`:
+  `notedeck isn't running (no socket at …), and <why>`, exit 2.
 
 A headless notedeck (`--headless`) refuses UI tools whose answer is a window
 action. Tests must point `NOTEDECK_SOCKET` at a short temp path (a Unix socket
-path must fit in ~100 bytes), never the user's real socket.
+path must fit in ~100 bytes), never the user's real socket, and set
+`ND_NO_START=1` (or a fake `NOTEDECK_BIN`) so a test never starts the real
+notedeck.
