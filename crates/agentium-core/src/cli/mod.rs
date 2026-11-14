@@ -13,6 +13,7 @@ pub mod show;
 pub mod spawn;
 pub mod term;
 pub mod transcript;
+pub mod watch;
 
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;

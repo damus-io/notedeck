@@ -41,14 +41,19 @@ pub struct Exposure {
 }
 
 impl Exposure {
-    /// Whether a client may see and call `tool`.
+    /// Whether a client may see and call `tool`. A stream is never shown:
+    /// an MCP call answers once.
     fn allows(self, tool: &ToolInfo) -> bool {
-        (self.ui || tool.kind == ToolKind::Data) && (!self.read_only || tool.read_only)
+        tool.streams.is_none()
+            && (self.ui || tool.kind == ToolKind::Data)
+            && (!self.read_only || tool.read_only)
     }
 
     /// The flag that would expose `tool`, for the error a hidden call gets.
     fn hint(self, tool: &ToolInfo) -> &'static str {
-        if tool.kind == ToolKind::Ui && !self.ui {
+        if tool.streams.is_some() {
+            "it streams, and an MCP call answers once; follow it with `nd` in a shell"
+        } else if tool.kind == ToolKind::Ui && !self.ui {
             "it acts on the window; start `nd mcp --ui` to allow that"
         } else {
             "it changes data, and this server was started with --read-only"
@@ -231,6 +236,7 @@ fn tools_call(
         Ok(Reply::Result { result, .. }) => data(result),
         Ok(Reply::Intent { .. }) => text(format!("done: {name} acted on the window"), false),
         Ok(Reply::Tools { .. }) => tool_error("notedeck answered a call with a tool list"),
+        Ok(Reply::Event { .. }) => tool_error("notedeck answered a call with a stream event"),
         Err(failure) => tool_error(failure.message),
     })
 }
@@ -287,6 +293,7 @@ mod tests {
             input_schema: json!({"type": "object", "properties": {}}),
             command: Vec::new(),
             accepts_signer: false,
+            streams: None,
         }
     }
 
@@ -295,6 +302,10 @@ mod tests {
             tool("read_board", ToolKind::Data, true),
             tool("move_card", ToolKind::Data, false),
             tool("open", ToolKind::Ui, false),
+            ToolInfo {
+                streams: Some(notedeck_ipc::StreamMode::Append),
+                ..tool("follow_log", ToolKind::Data, true)
+            },
         ]
     }
 
@@ -395,6 +406,30 @@ mod tests {
             read_only: true,
         };
         assert_eq!(listed_names(read_only), ["read_board"]);
+    }
+
+    /// A tool that streams is never listed, at any exposure, and a call of
+    /// it by name is refused without reaching notedeck: an MCP call answers
+    /// once.
+    #[test]
+    fn a_stream_is_neither_listed_nor_called() {
+        let all = Exposure {
+            ui: true,
+            read_only: false,
+        };
+        assert!(!listed_names(all).iter().any(|name| name == "follow_log"));
+        let line = call_line("follow_log", json!({}));
+        let Ran { response, seen } = run(all, &line, Err("unused".to_owned()));
+        let result = &response.unwrap()["result"];
+        assert_eq!(result["isError"], json!(true));
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("it streams"),
+            "{result}"
+        );
+        assert_eq!(seen, [Request::ListTools], "no call was sent");
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-/// One connection to the running notedeck, good for one request.
+/// One connection to the running notedeck, good for one request: one answer,
+/// or a subscribe's stream of them.
 pub struct Client {
     reader: BufReader<UnixStream>,
 }
@@ -44,6 +45,18 @@ impl Client {
             ));
         }
         Ok(line.trim_end().to_owned())
+    }
+
+    /// The next line of a subscribe's stream as a [`Response`], or `None`
+    /// once notedeck hangs up: the stream is over. Blocks until one comes.
+    pub fn next_response(&mut self) -> io::Result<Option<Response>> {
+        let mut line = String::new();
+        if self.reader.read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        Response::from_line(&line)
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// [`send`](Self::send) `request` and read its [`Response`].

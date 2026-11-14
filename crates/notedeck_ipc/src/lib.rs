@@ -5,6 +5,12 @@
 //! The chrome owns the listening end ([`Listener`]); `nd` is the client
 //! ([`Client`]).
 //!
+//! A [`Request::Subscribe`] (protocol v2) keeps the connection open instead:
+//! the server writes one [`Reply::Event`] line per event until the stream ends
+//! or the client hangs up, and a stream that can't start answers one error
+//! line. Every other request is spelled in v1, so an older notedeck still
+//! answers it, and each answer carries the version its request did.
+//!
 //! This crate depends on serde alone, so a client builds without notedeck.
 //!
 //! ```text
@@ -12,6 +18,9 @@
 //! ← {"v":1,"notedeck":"0.11.0","status":"ok","tools":[{"name":"headway_open_review_queue",…}]}
 //! → {"v":1,"type":"call_tool","name":"headway_open_review_queue","args":{}}
 //! ← {"v":1,"notedeck":"0.11.0","status":"ok","intent":"applied"}
+//! → {"v":2,"type":"subscribe","name":"agentium_follow_log","args":{"follow":true}}
+//! ← {"v":2,"notedeck":"0.11.0","status":"ok","event":{"role":"user",…},"text":"…"}
+//! ← {"v":2,"notedeck":"0.11.0","status":"ok","event":{"role":"assistant",…},"text":"…"}
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -26,11 +35,16 @@ mod server;
 #[cfg(unix)]
 pub use client::{probe, Client};
 #[cfg(unix)]
-pub use server::{Connection, Incoming, Listener, Watch};
+pub use server::{Connection, EventQueue, Incoming, Listener, Watch};
 
-/// The protocol version this crate speaks, sent as `v` on every request and
-/// response. A request carrying any other `v`, or none, is refused.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// The newest protocol version this crate speaks. A request carries the
+/// oldest version that spells it ([`Request::version`]), and is answered in
+/// that version; a request carrying a version above this one, or none, is
+/// refused.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// The version that added [`Request::Subscribe`] and [`Reply::Event`].
+pub const STREAMS_VERSION: u32 = 2;
 
 /// Overrides [`socket_path`] when set, so tests and a second notedeck can
 /// listen somewhere other than the user's one socket.
@@ -99,6 +113,16 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signer: Option<Signer>,
     },
+    /// Run the streaming tool `name` with `args` (see [`ToolInfo::streams`]),
+    /// keeping the connection open: each event it emits is one
+    /// [`Reply::Event`] line, until the stream ends (the server hangs up) or
+    /// the client does. A stream that can't start answers one error line.
+    /// Protocol v2.
+    Subscribe {
+        name: String,
+        #[serde(default)]
+        args: Value,
+    },
 }
 
 /// Who signs a [`Request::CallTool`]'s comments, when not the app's account.
@@ -132,28 +156,61 @@ struct RequestLine {
     request: Request,
 }
 
+/// A parsed request line: the request and the version it was spelled in,
+/// which its answer carries back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Versioned {
+    pub v: u32,
+    pub request: Request,
+}
+
 impl Request {
+    /// The oldest protocol version that spells this request, which
+    /// [`to_line`](Self::to_line) sends: 1 for a list or a call, so a
+    /// notedeck that predates streams still answers them, and
+    /// [`STREAMS_VERSION`] for a subscribe.
+    pub fn version(&self) -> u32 {
+        match self {
+            Request::ListTools | Request::CallTool { .. } => 1,
+            Request::Subscribe { .. } => STREAMS_VERSION,
+        }
+    }
+
     /// This request as one wire line, without the newline.
     pub fn to_line(&self) -> String {
         let line = RequestLine {
-            v: Some(PROTOCOL_VERSION),
+            v: Some(self.version()),
             request: self.clone(),
         };
         serde_json::to_string(&line).expect("a request always serializes")
     }
 
-    /// Parse one wire line. Refuses a `v` other than [`PROTOCOL_VERSION`], or
-    /// a missing one.
+    /// Parse one wire line. Refuses a `v` above [`PROTOCOL_VERSION`], a
+    /// missing one, and a request newer than the `v` it came with.
     pub fn from_line(line: &str) -> Result<Self, String> {
+        Self::versioned(line).map(|versioned| versioned.request)
+    }
+
+    /// [`from_line`](Self::from_line), keeping the version the line carried.
+    pub fn versioned(line: &str) -> Result<Versioned, String> {
         let RequestLine { v, request } =
             serde_json::from_str(line.trim()).map_err(|e| format!("invalid request: {e}"))?;
-        match v {
-            Some(PROTOCOL_VERSION) => Ok(request),
-            Some(v) => Err(format!(
-                "protocol version {v} is not supported; this notedeck speaks {PROTOCOL_VERSION}"
-            )),
-            None => Err(format!("missing protocol version \"v\":{PROTOCOL_VERSION}")),
+        let v = match v {
+            Some(v @ 1..=PROTOCOL_VERSION) => v,
+            Some(v) => {
+                return Err(format!(
+                    "protocol version {v} is not supported; this notedeck speaks 1 to {PROTOCOL_VERSION}"
+                ));
+            }
+            None => return Err("missing protocol version \"v\"".to_owned()),
+        };
+        if v < request.version() {
+            return Err(format!(
+                "this request needs protocol version {}, and came with {v}",
+                request.version()
+            ));
         }
+        Ok(Versioned { v, request })
     }
 }
 
@@ -161,7 +218,8 @@ impl Request {
 /// version beside the outcome.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
-    /// Always [`PROTOCOL_VERSION`].
+    /// The version its request was spelled in: a server built here sends
+    /// [`PROTOCOL_VERSION`] until [`Connection`] writes it as the request's.
     pub v: u32,
     /// The answering notedeck's version.
     pub notedeck: String,
@@ -201,6 +259,15 @@ pub enum Reply {
     },
     /// The tool asked the window to act, and it did.
     Intent { intent: IntentStatus },
+    /// One event of a [`Request::Subscribe`] stream.
+    Event {
+        event: Value,
+        /// The event as text for a person, as [`Reply::Result`]'s `text`:
+        /// what to append for a [`StreamMode::Append`] stream, the whole
+        /// screen for a [`StreamMode::Redraw`] one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
 }
 
 /// What became of a tool's request that the window act.
@@ -237,6 +304,25 @@ impl Response {
         serde_json::to_string(self).expect("a response always serializes")
     }
 
+    /// [`to_line`](Self::to_line), carrying version `v` in place of its own:
+    /// an answer goes back in the version its request was spelled in.
+    pub fn line_as(&self, v: u32) -> String {
+        /// A [`Response`] borrowed, with another version.
+        #[derive(Serialize)]
+        struct Line<'a> {
+            v: u32,
+            notedeck: &'a str,
+            #[serde(flatten)]
+            outcome: &'a Outcome,
+        }
+        let line = Line {
+            v,
+            notedeck: &self.notedeck,
+            outcome: &self.outcome,
+        };
+        serde_json::to_string(&line).expect("a response always serializes")
+    }
+
     /// Parse one wire line.
     pub fn from_line(line: &str) -> Result<Self, String> {
         serde_json::from_str(line.trim()).map_err(|e| format!("invalid response: {e}"))
@@ -251,6 +337,17 @@ pub enum ToolKind {
     Data,
     /// Acts on the window, as a key binding would.
     Ui,
+}
+
+/// How a client shows a streaming tool's events (see [`ToolInfo::streams`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamMode {
+    /// Each event's text follows the last, as `tail -f` does: a log.
+    Append,
+    /// Each event's text is the whole screen, replacing the last: a
+    /// dashboard.
+    Redraw,
 }
 
 /// One tool as [`Request::ListTools`] lists it.
@@ -278,6 +375,11 @@ pub struct ToolInfo {
     /// false, and from an older notedeck.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub accepts_signer: bool,
+    /// Set for a tool that streams: it is run with [`Request::Subscribe`],
+    /// not called, and its events are shown as the mode says. Absent on the
+    /// wire for any other tool, and from an older notedeck.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streams: Option<StreamMode>,
 }
 
 #[cfg(test)]
@@ -296,6 +398,7 @@ mod tests {
             input_schema: json!({"type": "object", "properties": {}}),
             command: vec!["headway".to_owned(), "review".to_owned()],
             accepts_signer: false,
+            streams: None,
         }
     }
 
@@ -332,7 +435,7 @@ mod tests {
         for request in requests {
             let line = request.to_line();
             let value: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(value["v"], json!(PROTOCOL_VERSION), "{line}");
+            assert_eq!(value["v"], json!(request.version()), "{line}");
             assert_eq!(Request::from_line(&line), Ok(request));
         }
     }
@@ -403,10 +506,74 @@ mod tests {
         assert!(err.contains("missing protocol version"), "{err}");
     }
 
+    /// A list or a call is spelled in v1, so a notedeck that predates streams
+    /// still answers it, and a subscribe in v2. A v2 list still reads; a
+    /// subscribe that says v1 doesn't.
+    #[test]
+    fn each_request_carries_the_oldest_version_that_spells_it() {
+        let subscribe = Request::Subscribe {
+            name: "agentium_watch".to_owned(),
+            args: json!({}),
+        };
+        assert_eq!(Request::ListTools.version(), 1);
+        assert_eq!(subscribe.version(), STREAMS_VERSION);
+        let line = subscribe.to_line();
+        assert!(line.contains(r#""v":2"#), "{line}");
+        assert_eq!(
+            Request::versioned(&line),
+            Ok(Versioned {
+                v: 2,
+                request: subscribe
+            })
+        );
+        assert_eq!(
+            Request::versioned(r#"{"v":2,"type":"list_tools"}"#),
+            Ok(Versioned {
+                v: 2,
+                request: Request::ListTools
+            })
+        );
+        let err = Request::from_line(r#"{"v":1,"type":"subscribe","name":"x"}"#).unwrap_err();
+        assert!(err.contains("needs protocol version 2"), "{err}");
+    }
+
+    /// An answer is written in the version its request came with, so an nd
+    /// that predates streams reads the v1 it expects.
+    #[test]
+    fn an_answer_carries_the_requests_version() {
+        let response = Response::ok(Reply::Event {
+            event: json!({"n": 1}),
+            text: Some("one\n".to_owned()),
+        });
+        let line = response.line_as(1);
+        let read = Response::from_line(&line).unwrap();
+        assert_eq!(read.v, 1);
+        assert_eq!(read.outcome, response.outcome);
+        assert_eq!(
+            Response::from_line(&response.to_line()).unwrap().v,
+            PROTOCOL_VERSION
+        );
+    }
+
+    /// `streams` is off the wire for a tool that answers once, and reads
+    /// back for one that streams.
+    #[test]
+    fn streams_is_optional_on_the_wire() {
+        let line = serde_json::to_string(&tool()).unwrap();
+        assert!(!line.contains("streams"), "{line}");
+        let streams = ToolInfo {
+            streams: Some(StreamMode::Redraw),
+            ..tool()
+        };
+        let line = serde_json::to_string(&streams).unwrap();
+        assert!(line.contains(r#""streams":"redraw""#), "{line}");
+        assert_eq!(serde_json::from_str::<ToolInfo>(&line).unwrap(), streams);
+    }
+
     #[test]
     fn another_version_or_type_is_refused() {
-        let err = Request::from_line(r#"{"v":2,"type":"list_tools"}"#).unwrap_err();
-        assert!(err.contains("version 2"), "{err}");
+        let err = Request::from_line(r#"{"v":3,"type":"list_tools"}"#).unwrap_err();
+        assert!(err.contains("version 3"), "{err}");
         let err = Request::from_line(r#"{"v":1,"type":"reboot"}"#).unwrap_err();
         assert!(err.contains("invalid request"), "{err}");
         let err = Request::from_line("not json").unwrap_err();
@@ -436,6 +603,14 @@ mod tests {
             },
             Reply::Intent {
                 intent: IntentStatus::Applied,
+            },
+            Reply::Event {
+                event: json!({"role": "user"}),
+                text: Some("you: hi\n".to_owned()),
+            },
+            Reply::Event {
+                event: json!(null),
+                text: None,
             },
         ];
         for reply in replies {
@@ -483,7 +658,7 @@ mod tests {
         })
         .to_line();
         let value: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(value["v"], json!(1));
+        assert_eq!(value["v"], json!(PROTOCOL_VERSION));
         assert_eq!(value["status"], json!("ok"));
         assert_eq!(value["intent"], json!("applied"));
         assert_eq!(value["notedeck"], json!(env!("CARGO_PKG_VERSION")));

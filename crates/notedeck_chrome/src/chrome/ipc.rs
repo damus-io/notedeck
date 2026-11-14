@@ -14,6 +14,12 @@
 //! thread while the loop goes on, and the client's answer is written on the
 //! tick after it finishes, so a `git fetch` never stalls the window.
 //!
+//! A [streaming tool](notedeck::StreamTool) is subscribed to, not called: its
+//! job runs as a tokio task, emitting into the connection's bounded
+//! [`EventQueue`](notedeck_ipc::EventQueue), which a writer thread of its own
+//! drains. A client too slow to keep up is dropped rather than waited on, and
+//! one that hangs up ends the task.
+//!
 //! Only the real notedeck serves: [`Chrome::serve_ipc`] is called by its
 //! entry points, never by a constructor, so a test chrome leaves the socket of
 //! the notedeck running on the same machine alone.
@@ -21,8 +27,15 @@
 use super::actions::chrome_handle_app_action;
 use super::Chrome;
 use nostrdb_net::{FullKeypair, SecretKey};
-use notedeck::{AppAction, AppContext, Finished, PendingCall, Started, ToolOutcome, ToolSpec};
+use notedeck::{
+    AppAction, AppContext, Finished, PendingCall, Started, StreamJob, ToolOutcome, ToolSpec,
+};
 use notedeck_ipc::{IntentStatus, Reply, Request, Response, Signer, ToolInfo};
+
+/// How many events a stream holds for a client that hasn't read them yet
+/// before it drops the client: a burst of a session's messages, with room.
+#[cfg(unix)]
+const STREAM_QUEUE: usize = 256;
 
 /// The socket and the requests waiting on the window. Empty until
 /// [`Chrome::serve_ipc`].
@@ -56,11 +69,13 @@ struct PendingIntent {
 }
 
 /// What a request comes to: an answer now, an intent for the window to
-/// carry out before answering, or a slow tool's work to run before answering.
+/// carry out before answering, a slow tool's work to run before answering,
+/// or a stream to run for as long as the client listens.
 pub(super) enum Served {
     Reply(Response),
     Apply(AppAction),
     Run(PendingCall),
+    Stream(StreamJob),
 }
 
 impl Chrome {
@@ -129,6 +144,10 @@ impl Chrome {
                     }
                     continue;
                 }
+                Served::Stream(job) => {
+                    start_stream(job, connection);
+                    continue;
+                }
             };
             if let Err(err) = connection.reply(&response) {
                 tracing::debug!("ipc: the client left before its answer: {err}");
@@ -189,6 +208,53 @@ pub(super) fn serve(chrome: &mut Chrome, ctx: &mut AppContext, request: Request)
         Request::CallTool { name, args, signer } => {
             call_tool(chrome, ctx, &name, &args, signer.as_ref())
         }
+        Request::Subscribe { name, args } => {
+            chrome.start_tool_owner(&ctx.registries.tools, &name);
+            match ctx.subscribe_tool(&name, &args) {
+                Ok(job) => Served::Stream(job),
+                Err(err) => Served::Reply(Response::error(err)),
+            }
+        }
+    }
+}
+
+/// Run a stream's `job` as a tokio task, emitting into `connection` until
+/// the job ends or the client hangs up or falls behind. With no runtime to
+/// run it on (a test chrome off tokio), the client is told so.
+#[cfg(unix)]
+fn start_stream(job: StreamJob, mut connection: notedeck_ipc::Connection) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        let response = Response::error("this notedeck has no runtime to run a stream on");
+        if let Err(err) = connection.reply(&response) {
+            tracing::debug!("ipc: the client left before its answer: {err}");
+        }
+        return;
+    };
+    let (hang_up, gone) = tokio::sync::watch::channel(false);
+    let queue = match connection.into_stream(STREAM_QUEUE, move || {
+        let _ = hang_up.send(true);
+    }) {
+        Ok(queue) => queue,
+        Err(err) => {
+            tracing::warn!("ipc: no writer thread for a stream: {err}");
+            return;
+        }
+    };
+    runtime.spawn(job(notedeck::Emitter::new(QueueSink(queue), gone)));
+}
+
+/// A stream's events, on their way into its connection's queue.
+#[cfg(unix)]
+struct QueueSink(notedeck_ipc::EventQueue);
+
+#[cfg(unix)]
+impl notedeck::EventSink for QueueSink {
+    fn send(&mut self, event: serde_json::Value, text: Option<String>) -> bool {
+        self.0.push(&Response::ok(Reply::Event { event, text }))
+    }
+
+    fn fail(&mut self, message: String) {
+        self.0.push(&Response::error(message));
     }
 }
 
@@ -308,6 +374,10 @@ fn tool_info(spec: &ToolSpec) -> ToolInfo {
             .map(|word| (*word).to_owned())
             .collect(),
         accepts_signer: spec.takes_comment_signer(),
+        streams: spec.stream_mode().map(|mode| match mode {
+            notedeck::StreamMode::Append => notedeck_ipc::StreamMode::Append,
+            notedeck::StreamMode::Redraw => notedeck_ipc::StreamMode::Redraw,
+        }),
     }
 }
 
@@ -335,6 +405,33 @@ mod tests {
     const WHO_SIGNS: &str = "test_who_signs";
     /// A slow tool: its work waits for the file its `gate` arg names.
     const SLOW: &str = "test_slow";
+    /// A stream that emits its `to` numbers, then ends.
+    const COUNT: &str = "test_count";
+
+    struct Count;
+
+    impl notedeck::StreamTool for Count {
+        type Args = Value;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new(COUNT, "Counts up", Vec::new())
+                .read_only()
+                .streams(notedeck::StreamMode::Redraw)
+        }
+
+        fn prepare(&self, _cx: &mut ToolContext, args: Value) -> Result<StreamJob, String> {
+            let to = args["to"].as_u64().ok_or("no to")?;
+            Ok(Box::new(move |mut emitter: notedeck::Emitter| {
+                Box::pin(async move {
+                    for n in 0..to {
+                        if !emitter.emit(&n, Some(format!("{n}\n"))) {
+                            return;
+                        }
+                    }
+                })
+            }))
+        }
+    }
 
     struct Slow;
 
@@ -419,6 +516,7 @@ mod tests {
                 RegisteredTool::new(Echo),
                 RegisteredTool::new(WhoSigns),
                 RegisteredTool::slow(Slow),
+                RegisteredTool::stream(Count),
             ]
         }
 
@@ -586,6 +684,7 @@ mod tests {
             Served::Reply(response) => response.outcome,
             Served::Apply(_) => panic!("expected a reply, got an intent"),
             Served::Run(pending) => finished_response(pending.run()).outcome,
+            Served::Stream(_) => panic!("expected a reply, got a stream"),
         }
     }
 
@@ -866,6 +965,79 @@ mod tests {
                 intent: IntentStatus::Applied
             })
         );
+    }
+
+    /// The whole trip for a stream: a client subscribes on a temp socket,
+    /// `poll_ipc` starts the stream, and the client reads every event, in
+    /// the subscribe's v2, then the end. The tool lists as a stream; a call
+    /// of it, and a subscribe with a bad arg, answer one error each.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_socket_client_follows_a_stream_to_its_end() {
+        let mut f = fixture();
+        let mut ctx = f.notedeck.app_context();
+        let Outcome::Ok(Reply::Tools { tools }) =
+            reply(serve(&mut f.chrome, &mut ctx, Request::ListTools))
+        else {
+            panic!("expected the tool list");
+        };
+        drop(ctx);
+        let count = tools.iter().find(|t| t.name == COUNT).unwrap();
+        assert_eq!(count.streams, Some(notedeck_ipc::StreamMode::Redraw));
+        let Outcome::Error { message } = reply(call(&mut f, COUNT, json!({ "to": 1 }))) else {
+            panic!("a stream can't be called");
+        };
+        assert!(message.contains("subscribe"), "{message}");
+        let mut ctx = f.notedeck.app_context();
+        let bad = Request::Subscribe {
+            name: COUNT.to_owned(),
+            args: json!({}),
+        };
+        assert!(matches!(
+            serve(&mut f.chrome, &mut ctx, bad),
+            Served::Reply(Response {
+                outcome: Outcome::Error { .. },
+                ..
+            })
+        ));
+        drop(ctx);
+
+        let sock = f._dir.path().join("notedeck.sock");
+        f.chrome.ipc.listener = Some(notedeck_ipc::Listener::bind(&sock, || {}).unwrap());
+        let client = std::thread::spawn(move || {
+            let mut client = notedeck_ipc::Client::connect(&sock).unwrap();
+            client
+                .send(&Request::Subscribe {
+                    name: COUNT.to_owned(),
+                    args: json!({ "to": 3 }),
+                })
+                .unwrap();
+            let mut got = Vec::new();
+            while let Some(response) = client.next_response().unwrap() {
+                assert_eq!(response.v, 2);
+                got.push(response.outcome);
+            }
+            got
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !client.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the stream never ended"
+            );
+            let mut ctx = f.notedeck.app_context();
+            f.chrome.poll_ipc(&mut ctx);
+            drop(ctx);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let event = |n: u64| {
+            Outcome::Ok(Reply::Event {
+                event: json!(n),
+                text: Some(format!("{n}\n")),
+            })
+        };
+        assert_eq!(client.join().unwrap(), vec![event(0), event(1), event(2)]);
     }
 
     /// A slow tool's work runs off the loop: `poll_ipc` keeps returning while

@@ -4,7 +4,9 @@
 //! without the real notedeck or the user's real socket.
 #![cfg(unix)]
 
-use notedeck_ipc::{IntentStatus, Reply, Request, Response, ToolInfo, ToolKind};
+use notedeck_ipc::{
+    IntentStatus, PROTOCOL_VERSION, Reply, Request, Response, StreamMode, ToolInfo, ToolKind,
+};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -52,6 +54,7 @@ fn tools() -> Vec<ToolInfo> {
         }),
         command: Vec::new(),
         accepts_signer: false,
+        streams: None,
     }]
 }
 
@@ -69,6 +72,7 @@ fn app_tools() -> Vec<ToolInfo> {
         input_schema: schema,
         command: vec!["headway".to_owned(), verb.to_owned()],
         accepts_signer: false,
+        streams: None,
     };
     vec![
         tool(
@@ -162,17 +166,36 @@ struct Fake {
 
 /// Serve `answers` in order, one connection each, on a socket in `dir`.
 fn serve(dir: &TempDir, answers: Vec<Response>) -> Fake {
+    serve_lines(
+        dir,
+        answers.into_iter().map(|answer| vec![answer]).collect(),
+    )
+}
+
+/// Serve `connections` in order, one connection each, writing each
+/// connection's lines and hanging up: one line answers a call, several
+/// stream. A line is written in the version its request came with, as
+/// notedeck answers, unless a test set another to see nd refuse it.
+fn serve_lines(dir: &TempDir, connections: Vec<Vec<Response>>) -> Fake {
     let path = dir.path().join("nd.sock");
     let listener = UnixListener::bind(&path).expect("bind the fake socket");
     let server = thread::spawn(move || {
         let mut seen = Vec::new();
-        for answer in answers {
+        for lines in connections {
             let (stream, _) = listener.accept().expect("accept");
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).expect("read the request");
-            seen.push(Request::from_line(&line).expect("a request nd sent"));
-            writeln!(reader.get_mut(), "{}", answer.to_line()).expect("answer");
+            let request = Request::versioned(&line).expect("a request nd sent");
+            for answer in lines {
+                let v = match answer.v {
+                    PROTOCOL_VERSION => request.v,
+                    v => v,
+                };
+                // A stream's reader may have gone; the rest goes nowhere.
+                let _ = writeln!(reader.get_mut(), "{}", answer.line_as(v));
+            }
+            seen.push(request.request);
         }
         seen
     });
@@ -331,7 +354,7 @@ fn another_protocol_version_names_both() {
     assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
     assert!(err.contains("protocol version 9"), "{err}");
-    assert!(err.contains("this nd speaks 1"), "{err}");
+    assert!(err.contains("this nd asked in 1"), "{err}");
     server.join().unwrap();
 }
 
@@ -677,6 +700,186 @@ fn an_app_command_resolves_the_callers_side() {
     );
 }
 
+/// Tools shaped as agentium's streams write them: `log` read once or, with
+/// `--follow`, followed; `watch` a redrawn dashboard.
+fn stream_tools() -> Vec<ToolInfo> {
+    let tool = |name: &str, verb: &str, streams: Option<StreamMode>, schema: Value| ToolInfo {
+        name: name.to_owned(),
+        title: name.to_owned(),
+        description: format!("{name}."),
+        category: Some("Agentium".to_owned()),
+        kind: ToolKind::Data,
+        read_only: true,
+        input_schema: schema,
+        command: vec!["agentium".to_owned(), verb.to_owned()],
+        accepts_signer: false,
+        streams,
+    };
+    let session = json!({"type": "string", "description": "The session.", "x-nd-positional": 0});
+    vec![
+        tool(
+            "agentium_session_log",
+            "log",
+            None,
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "jsonl": {"type": "boolean", "description": "Raw."},
+                },
+                "required": [],
+                "x-nd-order": ["session", "jsonl"],
+            }),
+        ),
+        tool(
+            "agentium_follow_log",
+            "log",
+            Some(StreamMode::Append),
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": session,
+                    "follow": {"type": "boolean", "description": "Follow.", "x-nd-short": "f"},
+                },
+                "required": ["follow"],
+                "x-nd-order": ["session", "follow"],
+            }),
+        ),
+        tool(
+            "agentium_watch",
+            "watch",
+            Some(StreamMode::Redraw),
+            json!({"type": "object", "properties": {}, "required": []}),
+        ),
+    ]
+}
+
+fn stream_list() -> Response {
+    Response::ok(Reply::Tools {
+        tools: stream_tools(),
+    })
+}
+
+/// A stream event, with its text.
+fn event(n: u32, text: &str) -> Response {
+    Response::ok(Reply::Event {
+        event: json!({ "n": n }),
+        text: Some(text.to_owned()),
+    })
+}
+
+/// `-f` picks the streaming tool on `log`'s line and subscribes to it in
+/// v2: each event's text is appended as it comes, color stripped into a
+/// pipe, until notedeck ends the stream. `--json` prints each event's value
+/// as a line of its own. Without `-f` the same line is a plain call.
+#[test]
+fn a_stream_appends_each_events_text_until_it_ends() {
+    let dir = socket_dir();
+    let events = || {
+        vec![
+            event(0, "\x1b[1myou\x1b[0m\n  hi\n"),
+            event(1, "\nassistant\n  hello\n"),
+        ]
+    };
+    let Fake { socket, server } = serve_lines(
+        &dir,
+        vec![
+            vec![stream_list()],
+            events(),
+            vec![stream_list()],
+            events(),
+            vec![stream_list()],
+            vec![Response::ok(Reply::Result {
+                result: json!([]),
+                text: Some("once\n".to_owned()),
+                notice: None,
+            })],
+        ],
+    );
+    let out = nd(&socket, &["agentium", "log", "s", "-f"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "you\n  hi\n\nassistant\n  hello\n");
+    let out = nd(&socket, &["agentium", "log", "--follow", "s", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "{\"n\":0}\n{\"n\":1}\n");
+    let out = nd(&socket, &["agentium", "log", "s"]);
+    assert_eq!(stdout(&out), "once\n");
+
+    let seen = server.join().unwrap();
+    let subscribe = Request::Subscribe {
+        name: "agentium_follow_log".to_owned(),
+        args: json!({"session": "s", "follow": true}),
+    };
+    assert_eq!(seen[1], subscribe);
+    assert_eq!(seen[3], subscribe);
+    assert!(
+        matches!(&seen[5], Request::CallTool { name, .. } if name == "agentium_session_log"),
+        "{:?}",
+        seen[5]
+    );
+}
+
+/// A redrawn stream into a pipe prints each frame whole, set off from the
+/// last by a blank line.
+#[test]
+fn a_redrawn_stream_into_a_pipe_prints_each_frame() {
+    let dir = socket_dir();
+    let Fake { socket, server } = serve_lines(
+        &dir,
+        vec![
+            vec![stream_list()],
+            vec![event(0, "2 sessions\n"), event(1, "3 sessions\n")],
+        ],
+    );
+    let out = nd(&socket, &["agentium", "watch"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "2 sessions\n\n3 sessions\n");
+    server.join().unwrap();
+}
+
+/// A stream that fails mid-way exits 1 with its error after what it
+/// showed; one that can't start answers its error at once; and `--pager`
+/// is refused before anything is subscribed to.
+#[test]
+fn a_streams_error_and_pager_exit_1() {
+    let dir = socket_dir();
+    let Fake { socket, server } = serve_lines(
+        &dir,
+        vec![
+            vec![stream_list()],
+            vec![
+                event(0, "first\n"),
+                Response::error("the database went away"),
+            ],
+            vec![stream_list()],
+            vec![Response::error("no session matches 'nope'")],
+            vec![stream_list()],
+        ],
+    );
+    let out = nd(&socket, &["agentium", "log", "s", "-f"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout(&out), "first\n");
+    assert!(
+        stderr(&out).contains("the database went away"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = nd(&socket, &["agentium", "log", "nope", "-f"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("no session matches"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = nd(&socket, &["agentium", "log", "s", "-f", "--pager"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("--pager"), "{}", stderr(&out));
+    let seen = server.join().unwrap();
+    assert_eq!(seen.len(), 5, "nothing was subscribed to for --pager");
+}
+
 #[test]
 fn an_app_namespace_lists_its_commands() {
     let dir = socket_dir();
@@ -834,9 +1037,10 @@ fn fake_notedeck() {
                 text: Some(format!("the started notedeck ran {name}\n")),
                 notice: None,
             }),
+            Ok(Request::Subscribe { .. }) => Response::error("the fake notedeck doesn't stream"),
             Err(e) => Response::error(e),
         };
-        let _ = writeln!(reader.get_mut(), "{}", answer.to_line());
+        let _ = writeln!(reader.get_mut(), "{}", answer.line_as(1));
     }
 }
 

@@ -106,8 +106,15 @@ impl Live {
     /// Seed a signed kind-31988 state for `d` with the tags
     /// `SessionState::from_note` reads.
     fn state(&mut self, d: &str, title: &str, status: &str, cwd: &str) {
+        self.revise(d, title, status, cwd, now_secs());
+    }
+
+    /// [`state`](Self::state), stamped `created_at`: a later revision of a
+    /// session, which in the same second would tie with the one it replaces.
+    fn revise(&mut self, d: &str, title: &str, status: &str, cwd: &str, created_at: u64) {
         let note = NoteBuilder::new()
             .kind(AI_SESSION_STATE_KIND)
+            .created_at(created_at)
             .content("")
             .start_tag()
             .tag_str("d")
@@ -776,3 +783,4 @@ fn every_tool_is_an_agentium_command() {
 }
 
 mod control;
+mod stream;

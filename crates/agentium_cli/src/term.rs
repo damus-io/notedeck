@@ -4,7 +4,7 @@
 //! what only a process on a terminal can do: measure it and redraw it.
 
 pub(crate) use agentium_core::cli::term::{
-    SGR_BOLD, SGR_NEEDS_INPUT, StatusStyle, fit, now_secs, paint, relative_time, status_style,
+    SGR_BOLD, StatusStyle, now_secs, paint, relative_time, status_style,
 };
 
 /// The width of the terminal on stdout, in columns, or `None` when stdout isn't

@@ -6,7 +6,8 @@
 //! read `key=value` pairs as the right types and to reject a wrong key before
 //! anything is sent. A tool that declares a command path is also a
 //! subcommand, `nd headway show <card>`, built from that same list
-//! ([`commands`]).
+//! ([`commands`]), and one that streams is followed rather than called
+//! ([`stream`]): `nd agentium log <session> -f`, `nd agentium watch`.
 //!
 //! When no notedeck is listening, nd starts a data-only one itself
 //! ([`start`]), so a call works whether or not the app is open.
@@ -24,6 +25,7 @@ mod mcp;
 mod output;
 mod schema;
 mod start;
+mod stream;
 
 use cli_term::help::{CommandHelp, OPTIONS_PAGE, option_names};
 use notedeck_ipc::{Outcome, PROTOCOL_VERSION, Reply, Request, ToolInfo};
@@ -309,8 +311,16 @@ fn app(reach: &Reach, words: &[String], help: bool) -> Result<(), Failure> {
             tool,
             args,
             output,
+            streams: Some(mode),
+            ..
+        } => stream::follow(reach, tool, args, mode, output),
+        commands::Action::Call {
+            tool,
+            args,
+            output,
             ns,
             signer,
+            streams: None,
         } => send_call(
             reach,
             tool,
@@ -405,6 +415,9 @@ fn send_call(
         Reply::Intent { .. } => {}
         Reply::Tools { .. } => {
             return Err(Failure::new("notedeck answered a call with a tool list"));
+        }
+        Reply::Event { .. } => {
+            return Err(Failure::new("notedeck answered a call with a stream event"));
         }
     }
     Ok(())
@@ -511,12 +524,15 @@ fn list_tools(reach: &Reach) -> Result<Vec<ToolInfo>, Failure> {
 }
 
 /// Send `request` and unwrap its outcome: a tool's error is a [`Failure`].
+/// The answer must come back in the version the request was spelled in.
 fn answer(reach: &Reach, request: Request) -> Result<Reply, Failure> {
     let response = reach.exchange(&request)?;
-    if response.v != PROTOCOL_VERSION {
+    if response.v != request.version() {
         return Err(Failure::new(format!(
-            "notedeck {} speaks protocol version {}, and this nd speaks {PROTOCOL_VERSION}",
-            response.notedeck, response.v
+            "notedeck {} answered in protocol version {}, and this nd asked in {} (it speaks up to {PROTOCOL_VERSION})",
+            response.notedeck,
+            response.v,
+            request.version()
         )));
     }
     match response.outcome {

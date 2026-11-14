@@ -118,6 +118,7 @@ mod tests {
             input_schema: json!({"type": "object", "properties": {}}),
             command: Vec::new(),
             accepts_signer: false,
+            streams: None,
         }
     }
 

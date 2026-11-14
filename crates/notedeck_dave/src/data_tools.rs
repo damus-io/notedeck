@@ -42,6 +42,7 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(SessionRef),
     ];
     tools.extend(control::tools());
+    tools.extend(stream::tools());
     tools
 }
 
@@ -524,6 +525,7 @@ impl AppTool for SessionRef {
 }
 
 mod control;
+mod stream;
 
 #[cfg(test)]
 mod tests;

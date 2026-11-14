@@ -28,7 +28,9 @@
 //! - **nd's own flags** go with every command and are read before the
 //!   tool's: `--json` prints the tool's value rather than the text it
 //!   rendered, `--pager`/`--no-pager` force paging the text either way, and
-//!   `--color <auto|always|never>` its color (see [`Output`]).
+//!   `--color <auto|always|never>` its color (see [`Output`]). A tool that
+//!   [streams](ToolInfo::streams) is followed rather than paged, so
+//!   `--pager` is refused for it.
 //!
 //! **Two tools may share a path.** They are tried in order of how many
 //! flags each *requires*, then how many positionals, most first, and the
@@ -44,7 +46,7 @@ use crate::output::Output;
 use crate::schema::{self, Arg, ClientKind, Slot};
 use cli_term::help::{CommandHelp, NAME_COL};
 use cli_term::{ColorWhen, PagerMode};
-use notedeck_ipc::{Signer, ToolInfo};
+use notedeck_ipc::{Signer, StreamMode, ToolInfo};
 use serde_json::Value;
 
 /// What a command line resolved to.
@@ -53,13 +55,16 @@ pub enum Action {
     /// Call `tool` with `args`, printing its answer as `output` says. `ns`
     /// is the command's namespace, whose pager variable the text goes
     /// through. `signer` is the caller's comment key, set only for a tool
-    /// that accepts one (see [`caller::signer_for`]).
+    /// that accepts one (see [`caller::signer_for`]). `streams` is set for
+    /// a tool that streams: nd subscribes to it and shows its events as the
+    /// mode says, rather than calling it.
     Call {
         tool: String,
         args: Value,
         output: Output,
         ns: String,
         signer: Option<Signer>,
+        streams: Option<StreamMode>,
     },
     /// Print this help page.
     Help(String),
@@ -149,7 +154,10 @@ impl Entry<'_> {
     fn usage(&self) -> String {
         let mut line = self.path().join(" ");
         for arg in self.required_flags() {
-            line.push_str(&format!(" --{} <{}>", arg.flag(), arg.name));
+            match arg.is_switch() {
+                true => line.push_str(&format!(" --{}", arg.flag())),
+                false => line.push_str(&format!(" --{} <{}>", arg.flag(), arg.name)),
+            }
         }
         for arg in self.positionals() {
             let word = match arg.positional {
@@ -251,6 +259,12 @@ pub fn resolve(
             .map_or("an argument", |arg| arg.name);
         return Err(with_help(format!("missing <{missing}>"), path));
     };
+    if entry.tool.streams.is_some() && line.output.pager == PagerMode::Always {
+        return Err(with_help(
+            "--pager doesn't go with a stream, which is followed as it comes".to_owned(),
+            path,
+        ));
+    }
     let pairs = line.pairs(entry, caller).map_err(|e| with_help(e, path))?;
     let args = schema::assemble(&entry.tool.name, &entry.tool.input_schema, None, &pairs)
         .map_err(|e| with_help(e, path))?;
@@ -260,6 +274,7 @@ pub fn resolve(
         output: line.output,
         ns: path[0].to_owned(),
         signer: caller::signer_for(entry.tool, caller)?,
+        streams: entry.tool.streams,
     })
 }
 
@@ -777,6 +792,7 @@ mod tests {
             input_schema: schema,
             command: command.iter().map(|w| (*w).to_owned()).collect(),
             accepts_signer: false,
+            streams: None,
         }
     }
 
@@ -967,6 +983,7 @@ mod tests {
             output,
             ns: "headway".to_owned(),
             signer: None,
+            streams: None,
         })
     }
 

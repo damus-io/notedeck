@@ -37,6 +37,8 @@
 //! `note_context()`.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use nostrdb::{Ndb, Transaction};
@@ -50,7 +52,7 @@ use crate::{Accounts, AppAction, AppId, DataPath, ExplicitPublishApi, NoteCache}
 /// share it. notedeck re-exports it here so `notedeck::tool::ToolSpec` (and the
 /// crate-root `notedeck::ToolSpec`) keep resolving for the browser-level tool
 /// machinery below, which builds specs from these types.
-pub use agentium_core::tool::{ToolArg, ToolArgType, ToolKind, ToolSpec};
+pub use agentium_core::tool::{StreamMode, ToolArg, ToolArgType, ToolKind, ToolSpec};
 
 /// The canonical [`QueryCall`] — the single nostrdb query tool — is likewise
 /// owned by the engine and re-exported here, so `notedeck::tool::QueryCall`
@@ -324,6 +326,92 @@ pub trait SlowTool: Send + Sync {
     }
 }
 
+/// Where a [`StreamTool`]'s events go: the subscriber's end, as the socket
+/// holds it. Never waits: an event it can't take ends the stream.
+pub trait EventSink: Send {
+    /// Hand on one event, with its text for a person. `false` when the
+    /// subscriber is gone, or too far behind to keep: stop emitting.
+    fn send(&mut self, event: Value, text: Option<String>) -> bool;
+
+    /// End the stream with an error for the subscriber.
+    fn fail(&mut self, message: String);
+}
+
+/// What a running [`StreamJob`] emits through, and how it hears that its
+/// subscriber has left.
+pub struct Emitter {
+    sink: Box<dyn EventSink>,
+    /// Turns `true` once the subscriber hangs up.
+    gone: tokio::sync::watch::Receiver<bool>,
+}
+
+impl Emitter {
+    /// Emit into `sink` until `gone` turns `true` (or its sender drops).
+    pub fn new(sink: impl EventSink + 'static, gone: tokio::sync::watch::Receiver<bool>) -> Self {
+        Self {
+            sink: Box::new(sink),
+            gone,
+        }
+    }
+
+    /// Send `event`, with `text` for a person: the lines to append, or the
+    /// whole screen, as the spec's [`StreamMode`] says. `false` when the
+    /// subscriber is gone: stop then.
+    pub fn emit(&mut self, event: &impl Serialize, text: Option<String>) -> bool {
+        match serde_json::to_value(event) {
+            Ok(event) => self.sink.send(event, text),
+            Err(err) => {
+                self.sink
+                    .fail(format!("failed to serialize an event: {err}"));
+                false
+            }
+        }
+    }
+
+    /// End the stream with `message`, as a failed call would answer.
+    pub fn fail(&mut self, message: String) {
+        self.sink.fail(message);
+    }
+
+    /// Resolves once the subscriber has hung up, so a stream waiting on its
+    /// source stops without emitting first. Cancel-safe, for a `select!`.
+    pub async fn gone(&mut self) {
+        let _ = self.gone.wait_for(|gone| *gone).await;
+    }
+}
+
+/// The running half of a [`StreamTool`] call: owned, so the caller spawns it
+/// as a task of its own, and it emits until its source ends or its
+/// subscriber leaves.
+pub type StreamJob = Box<dyn FnOnce(Emitter) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// A data tool that streams: `agentium log --follow`, a live dashboard. A
+/// caller subscribes rather than calling, with the socket's `subscribe`
+/// request, and gets events until it hangs up.
+///
+/// Like a [`SlowTool`] it runs in two halves. [`prepare`](Self::prepare)
+/// checks the arguments and reads what the stream needs from the
+/// [`ToolContext`] (an [`Ndb`] handle, the account), quickly, on the
+/// caller's thread; a bad argument fails there, before anything streams. The
+/// [`StreamJob`] it returns owns all of that and runs as an async task, so it
+/// awaits nostrdb subscriptions and timers without holding up the loop.
+///
+/// Its spec must say how its events are shown ([`ToolSpec::streams`]);
+/// [`RegisteredTool::stream`] marks one that doesn't as
+/// [`StreamMode::Append`]. A model, a command bar or a key binding can't
+/// wait on a stream, so a [`call`](RegisteredTool::call) of one is an error.
+pub trait StreamTool: Send + Sync {
+    /// The tool's typed arguments, deserialized from the subscriber's JSON.
+    type Args: DeserializeOwned;
+
+    /// The portable [`ToolSpec`] advertised for this tool.
+    fn spec(&self) -> ToolSpec;
+
+    /// Check `args` and read what the stream needs from `cx`, returning the
+    /// stream, or an error for arguments that name nothing.
+    fn prepare(&self, cx: &mut ToolContext, args: Self::Args) -> Result<StreamJob, String>;
+}
+
 /// A type-erased [`AppTool`], ready to store in a [`ToolRegistry`] next to tools
 /// with different `Args`/`Output` types.
 ///
@@ -338,9 +426,20 @@ pub trait SlowTool: Send + Sync {
 /// [`AppTool::render`]'s text when the `bool` asks for it.
 type ErasedHandler = Box<dyn Fn(&mut ToolContext, &Value, bool) -> Started + Send + Sync>;
 
+/// The erased body of a streaming [`RegisteredTool`]: raw JSON args in, the
+/// [`StreamJob`] [`StreamTool::prepare`] made of them out.
+type ErasedStream =
+    Box<dyn Fn(&mut ToolContext, &Value) -> Result<StreamJob, String> + Send + Sync>;
+
+/// How a [`RegisteredTool`] runs: called for one answer, or subscribed to.
+enum Handler {
+    Call(ErasedHandler),
+    Stream(ErasedStream),
+}
+
 pub struct RegisteredTool {
     spec: ToolSpec,
-    handler: ErasedHandler,
+    handler: Handler,
     /// The app that contributed it, once the shell has said (see
     /// [`owned_by`](Self::owned_by)).
     owner: Option<AppId>,
@@ -374,7 +473,7 @@ impl RegisteredTool {
         });
         Self {
             spec,
-            handler,
+            handler: Handler::Call(handler),
             owner: None,
         }
     }
@@ -410,8 +509,44 @@ impl RegisteredTool {
         });
         Self {
             spec,
-            handler,
+            handler: Handler::Call(handler),
             owner: None,
+        }
+    }
+
+    /// Erase a [`StreamTool`]. Its spec is marked [`StreamMode::Append`]
+    /// unless it already says how it streams.
+    pub fn stream<T: StreamTool + 'static>(tool: T) -> Self {
+        let spec = tool.spec();
+        let spec = match spec.stream_mode() {
+            Some(_) => spec,
+            None => spec.streams(StreamMode::Append),
+        };
+        let handler = Box::new(move |cx: &mut ToolContext, args: &Value| {
+            let args = serde_json::from_value::<T::Args>(args.clone())
+                .map_err(|err| format!("invalid arguments: {err}"))?;
+            tool.prepare(cx, args)
+        });
+        Self {
+            spec,
+            handler: Handler::Stream(handler),
+            owner: None,
+        }
+    }
+
+    /// Start the stream of a tool registered with [`stream`](Self::stream),
+    /// for the caller to spawn with the subscriber's [`Emitter`]. Any other
+    /// tool answers once, so subscribing to it is an error.
+    pub fn subscribe(&self, cx: &mut ToolContext, args: &Value) -> Result<StreamJob, String> {
+        match &self.handler {
+            Handler::Stream(prepare) => {
+                cx.comment_signer = None;
+                prepare(cx, args)
+            }
+            Handler::Call(_) => Err(format!(
+                "'{}' answers once and doesn't stream; call it instead",
+                self.name()
+            )),
         }
     }
 
@@ -463,7 +598,14 @@ impl RegisteredTool {
         if !self.spec.takes_comment_signer() {
             cx.comment_signer = None;
         }
-        (self.handler)(cx, args, text)
+        match &self.handler {
+            Handler::Call(handler) => handler(cx, args, text),
+            Handler::Stream(_) => error(format!(
+                "'{}' streams, so it can't be called for one answer; subscribe to it (`nd {}`)",
+                self.name(),
+                self.spec.command_path().join(" ")
+            )),
+        }
     }
 }
 
@@ -732,6 +874,24 @@ impl ToolRegistry {
         }
     }
 
+    /// Start the stream of the streaming data tool `name` (see
+    /// [`StreamTool`]), for the caller to spawn. A name that isn't a
+    /// registered streaming tool is an error.
+    pub fn subscribe(
+        &self,
+        cx: &mut ToolContext,
+        name: &str,
+        args: &Value,
+    ) -> Result<StreamJob, String> {
+        match self.by_name.get(name) {
+            Some(&ToolSlot::Data(idx)) => self.tools[idx].subscribe(cx, args),
+            Some(&ToolSlot::Ui(_)) => Err(format!(
+                "'{name}' acts on the window and doesn't stream; call it instead"
+            )),
+            None => Err(format!("unknown tool '{name}'")),
+        }
+    }
+
     /// What a call of `name` is when no data tool by that name runs here: an
     /// intent for a UI tool's owner, else an unknown-tool error.
     fn not_here(&self, name: &str, args: &Value) -> ToolOutcome {
@@ -817,6 +977,114 @@ mod tests {
             note_cache: NoteCache::default(),
             accounts,
         }
+    }
+
+    /// A stream that counts from 0 to its `to`, one event each, then ends.
+    struct Count;
+
+    #[derive(Deserialize)]
+    struct CountArgs {
+        to: u32,
+    }
+
+    impl StreamTool for Count {
+        type Args = CountArgs;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new("count", "Count up.", Vec::new()).command(&["test", "count"])
+        }
+
+        fn prepare(&self, _cx: &mut ToolContext, args: CountArgs) -> Result<StreamJob, String> {
+            if args.to > 10 {
+                return Err("too far".to_owned());
+            }
+            Ok(Box::new(move |mut emitter: Emitter| {
+                Box::pin(async move {
+                    for n in 0..args.to {
+                        if !emitter.emit(&n, Some(format!("{n}\n"))) {
+                            return;
+                        }
+                    }
+                })
+            }))
+        }
+    }
+
+    /// An [`EventSink`] that records what it's sent, and stops taking events
+    /// after `room` of them, as a full queue does.
+    struct Recorder {
+        events: std::sync::mpsc::Sender<(Value, Option<String>)>,
+        room: usize,
+    }
+
+    impl EventSink for Recorder {
+        fn send(&mut self, event: Value, text: Option<String>) -> bool {
+            if self.room == 0 {
+                return false;
+            }
+            self.room -= 1;
+            self.events.send((event, text)).is_ok()
+        }
+
+        fn fail(&mut self, message: String) {
+            panic!("the stream failed: {message}");
+        }
+    }
+
+    /// A stream tool is marked as one, refuses a call, checks its args when
+    /// subscribed to, and its job emits through the subscriber's sink until
+    /// the sink stops taking events. A tool that answers once refuses a
+    /// subscribe.
+    #[tokio::test]
+    async fn a_stream_tool_is_subscribed_to_not_called() {
+        let ToolEnv {
+            db,
+            mut note_cache,
+            accounts,
+        } = test_tool_env();
+        let mut cx = ToolContext {
+            ndb: &db.ndb,
+            note_cache: &mut note_cache,
+            accounts: &accounts,
+            publish: None,
+            comment_signer: None,
+            path: None,
+        };
+        let mut reg = ToolRegistry::default();
+        reg.register(RegisteredTool::stream(Count));
+        reg.register(RegisteredTool::new(Echo));
+        let spec = reg.specs().find(|s| s.name() == "count").unwrap();
+        assert_eq!(spec.stream_mode(), Some(StreamMode::Append));
+
+        let ToolOutcome::Error(err) = reg.call(&mut cx, "count", &json!({ "to": 2 })) else {
+            panic!("a stream can't be called");
+        };
+        assert!(err.contains("nd test count"), "{err}");
+        let Err(err) = reg.subscribe(&mut cx, "count", &json!({ "to": 11 })) else {
+            panic!("a bad arg fails before anything streams");
+        };
+        assert_eq!(err, "too far");
+        let Err(err) = reg.subscribe(&mut cx, "echo", &json!({ "message": "hi" })) else {
+            panic!("a call isn't a stream");
+        };
+        assert!(err.contains("doesn't stream"), "{err}");
+
+        let (events, got) = std::sync::mpsc::channel();
+        let (_gone_tx, gone) = tokio::sync::watch::channel(false);
+        let job = reg
+            .subscribe(&mut cx, "count", &json!({ "to": 5 }))
+            .unwrap();
+        job(Emitter::new(Recorder { events, room: 3 }, gone)).await;
+        let got: Vec<_> = got.try_iter().collect();
+        assert_eq!(
+            got,
+            vec![
+                (json!(0), Some("0\n".to_owned())),
+                (json!(1), Some("1\n".to_owned())),
+                (json!(2), Some("2\n".to_owned())),
+            ],
+            "it stopped when the sink did"
+        );
     }
 
     #[test]

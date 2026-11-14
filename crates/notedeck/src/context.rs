@@ -246,6 +246,19 @@ impl<'a> AppContext<'a> {
         tools.start_rendered(&mut cx, name, args)
     }
 
+    /// Start the stream of the streaming app tool `name` with `args` (see
+    /// [`StreamTool`](crate::StreamTool)), for the caller to spawn with its
+    /// subscriber's [`Emitter`](crate::Emitter). A bad argument, or a name
+    /// that doesn't stream, fails here, before anything streams.
+    pub fn subscribe_tool(
+        &mut self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<crate::StreamJob, String> {
+        let tools = &self.registries.tools;
+        tools.subscribe(&mut self.tool_context(), name, args)
+    }
+
     pub fn select_account(&mut self, pubkey: &Pubkey) {
         let txn = Transaction::new(self.ndb).expect("txn");
         self.accounts

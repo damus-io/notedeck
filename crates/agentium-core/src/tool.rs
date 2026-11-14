@@ -261,6 +261,17 @@ pub enum ToolKind {
     Ui,
 }
 
+/// How a client shows a streaming tool's events (see
+/// [`ToolSpec::streams`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamMode {
+    /// Each event's text follows the last: a log, followed.
+    Append,
+    /// Each event's text is the whole screen, replacing the last: a
+    /// dashboard.
+    Redraw,
+}
+
 /// A portable, backend-agnostic description of a tool: what it's called, what it
 /// does, and the arguments it accepts. Reused to build an OpenAI
 /// `FunctionObject` (via [`json_schema`](Self::json_schema)) or an MCP
@@ -291,6 +302,9 @@ pub struct ToolSpec {
     /// Whether a UI tool is listed, and starts its app when called, while
     /// its app isn't running (see [`starts_app`](ToolSpec::starts_app)).
     starts_app: bool,
+    /// How its events are shown, for a tool that streams (see
+    /// [`streams`](ToolSpec::streams)); `None` for one that answers once.
+    streams: Option<StreamMode>,
 }
 
 impl ToolSpec {
@@ -308,6 +322,7 @@ impl ToolSpec {
             command: &[],
             comment_signer: false,
             starts_app: false,
+            streams: None,
         }
     }
 
@@ -383,6 +398,22 @@ impl ToolSpec {
     pub fn starts_app(mut self) -> Self {
         self.starts_app = true;
         self
+    }
+
+    /// Mark the tool as one that streams: a caller subscribes to it and
+    /// gets events, shown as `mode` says, until it hangs up, rather than
+    /// calling it for one answer. `nd agentium log -f` follows a session
+    /// this way. A model, a command bar or a key binding can't wait on a
+    /// stream, so none of them lists it.
+    pub fn streams(mut self, mode: StreamMode) -> Self {
+        self.streams = Some(mode);
+        self
+    }
+
+    /// How its events are shown, when it streams (see
+    /// [`streams`](Self::streams)).
+    pub fn stream_mode(&self) -> Option<StreamMode> {
+        self.streams
     }
 
     /// Whether a call starts its app (see [`starts_app`](Self::starts_app)).

@@ -9,9 +9,7 @@ use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
-pub(crate) use agentium_core::cli::list::{
-    ListFilters, ListScope, RowLayout, SessionJson, host_label, session_row,
-};
+pub(crate) use agentium_core::cli::list::{ListFilters, ListScope, SessionJson};
 
 use crate::term::now_secs;
 
@@ -42,36 +40,4 @@ pub(crate) fn cmd_list(
     let color = std::io::stdout().is_terminal();
     print!("{}", render_list(&sessions, now_secs(), color));
     Ok(())
-}
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use agentium_core::session_loader::SessionState;
-
-    /// A SessionState with sensible defaults, overriding the fields the tests
-    /// care about.
-    pub(crate) fn session(host: &str, title: &str, status: &str, created_at: u64) -> SessionState {
-        SessionState {
-            model: None,
-            claude_session_id: format!("{host}-{title}"),
-            title: title.to_string(),
-            custom_title: None,
-            cwd: "/home/u/proj".to_string(),
-            status: status.to_string(),
-            indicator: None,
-            hostname: host.to_string(),
-            home_dir: "/home/u".to_string(),
-            backend: Some("claude".to_string()),
-            permission_mode: Some("default".to_string()),
-            created_at,
-            cli_session_id: None,
-            spawn_id: None,
-            issue_url: None,
-            project: None,
-            project_root: None,
-            parent_session: None,
-            relation: Default::default(),
-            profile: None,
-        }
-    }
 }

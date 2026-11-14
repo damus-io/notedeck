@@ -96,6 +96,25 @@ impl Reach {
     /// notedeck first when none answers and [`Start`] allows it.
     #[cfg(unix)]
     pub fn exchange(&self, request: &Request) -> Result<Response, Failure> {
+        talk(self.client()?, request)
+    }
+
+    /// Send a subscribe `request` over a fresh connection, starting a
+    /// notedeck first as [`exchange`](Self::exchange) does, and hand back
+    /// the connection its events arrive on.
+    #[cfg(unix)]
+    pub fn subscribe(&self, request: &Request) -> Result<Client, Failure> {
+        let mut client = self.client()?;
+        client
+            .send(request)
+            .map_err(|e| Failure::new(format!("talking to notedeck: {e}")))?;
+        Ok(client)
+    }
+
+    /// A fresh connection to the socket, starting a notedeck first when none
+    /// answers and [`Start`] allows it.
+    #[cfg(unix)]
+    fn client(&self) -> Result<Client, Failure> {
         let client = match connect(&self.path) {
             Ok(client) => client,
             Err(Unreached::Failed(failure)) => return Err(failure),
@@ -114,7 +133,7 @@ impl Reach {
                 }
             },
         };
-        talk(client, request)
+        Ok(client)
     }
 
     /// Exit 2, saying why.

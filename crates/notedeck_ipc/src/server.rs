@@ -4,13 +4,18 @@
 //! so the UI thread never waits on a client. A request that doesn't parse is
 //! answered there; a good one is handed over as an [`Incoming`], and the host is
 //! woken to serve it on its next tick.
+//!
+//! A subscribe's connection becomes an [`EventQueue`]: the host pushes event
+//! lines into a bounded queue without waiting, and a writer thread of the
+//! connection's own drains it to the client. A client that reads too slowly
+//! fills the queue and is dropped, so a stream never waits on its reader.
 
 use crate::{Request, Response};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +23,21 @@ use std::time::{Duration, Instant};
 /// How long a client gets to send its request line before it's dropped, so a
 /// client that connects and says nothing can't hold up the ones behind it.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long one write may wait on a client that isn't reading before it
+/// fails, so an answer written on the host's loop can stall it no longer
+/// than this, and a stream's writer thread gives up on a reader that stopped.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a stream's write may wait on its client: shorter than
+/// [`WRITE_TIMEOUT`], since nothing else waits on a stream's writer and a
+/// reader this far behind has stopped. A write that makes some progress may
+/// take two of these to fail.
+const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How often a stream's writer thread, with nothing to write, checks whether
+/// its client hung up: the longest a stream outlives its reader.
+const HANGUP_CHECK: Duration = Duration::from_millis(250);
 
 /// The socket notedeck listens on, and the requests waiting to be served.
 pub struct Listener {
@@ -94,15 +114,134 @@ pub struct Incoming {
 /// hangs up on the client.
 pub struct Connection {
     stream: UnixStream,
+    /// The version the request was spelled in, which every answer carries.
+    version: u32,
 }
 
 impl Connection {
-    /// Answer the request with one line. The client reads one, so a second
-    /// reply goes nowhere.
+    /// Answer the request with one line, in the version it was spelled in.
+    /// The client reads one, so a second reply goes nowhere. A client that
+    /// doesn't read it holds this up to [`WRITE_TIMEOUT`], then it fails.
     pub fn reply(&mut self, response: &Response) -> io::Result<()> {
-        writeln!(self.stream, "{}", response.to_line())?;
+        writeln!(self.stream, "{}", response.line_as(self.version))?;
         self.stream.flush()
     }
+
+    /// Turn the connection into a stream's: an [`EventQueue`] holding up to
+    /// `capacity` lines, drained by a writer thread of its own. `on_close`
+    /// runs on that thread once the stream is over for any reason (the
+    /// client hung up or fell behind, or the queue was dropped and drained),
+    /// so the producer can stop without waiting for its next event.
+    pub fn into_stream(
+        self,
+        capacity: usize,
+        on_close: impl FnOnce() + Send + 'static,
+    ) -> io::Result<EventQueue> {
+        self.stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT))?;
+        let (lines, queued) = mpsc::sync_channel(capacity);
+        let open = Arc::new(AtomicBool::new(true));
+        let writer = StreamWriter {
+            stream: self.stream,
+            queued,
+            open: Arc::clone(&open),
+        };
+        thread::Builder::new()
+            .name("ipc-stream".to_owned())
+            .spawn(move || {
+                writer.run();
+                on_close();
+            })?;
+        Ok(EventQueue {
+            lines,
+            open,
+            version: self.version,
+        })
+    }
+}
+
+/// The host's end of a stream (see [`Connection::into_stream`]): push an
+/// event line and go on. Dropping it ends the stream once what is queued
+/// has been written.
+pub struct EventQueue {
+    lines: mpsc::SyncSender<String>,
+    /// Cleared when the stream is over, by either end.
+    open: Arc<AtomicBool>,
+    /// The version the subscribe was spelled in.
+    version: u32,
+}
+
+impl EventQueue {
+    /// Queue `response` as the next line, without waiting. `false` when the
+    /// stream is over: the client hung up, or reads so slowly that the queue
+    /// is full, which drops it. Stop producing then.
+    pub fn push(&self, response: &Response) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        match self.lines.try_send(response.line_as(self.version)) {
+            Ok(()) => true,
+            Err(mpsc::TrySendError::Full(_)) => {
+                // Too slow to keep up: the writer hangs up on it.
+                self.open.store(false, Ordering::Relaxed);
+                false
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => false,
+        }
+    }
+
+    /// Whether the stream still has a client to write to.
+    pub fn is_open(&self) -> bool {
+        self.open.load(Ordering::Relaxed)
+    }
+}
+
+/// A stream's writer thread: what it writes, and where.
+struct StreamWriter {
+    stream: UnixStream,
+    queued: mpsc::Receiver<String>,
+    open: Arc<AtomicBool>,
+}
+
+impl StreamWriter {
+    /// Write each queued line until the queue is dropped and drained, the
+    /// client hangs up, a write fails, or the queue is closed for a slow
+    /// client; then hang up.
+    fn run(self) {
+        while self.open.load(Ordering::Relaxed) {
+            match self.queued.recv_timeout(HANGUP_CHECK) {
+                Ok(mut line) => {
+                    line.push('\n');
+                    if (&self.stream).write_all(line.as_bytes()).is_err() {
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if hung_up(&self.stream) {
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        self.open.store(false, Ordering::Relaxed);
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Whether the client on `stream` has hung up, without waiting: it sends
+/// nothing after its request, so a read that finds the end means it's gone.
+/// Anything it does send is read and dropped.
+fn hung_up(stream: &UnixStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let mut buf = [0u8; 64];
+    let gone = match (&*stream).read(&mut buf) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => e.kind() != io::ErrorKind::WouldBlock,
+    };
+    gone || stream.set_nonblocking(false).is_err()
 }
 
 impl Listener {
@@ -175,9 +314,16 @@ fn accept_loop(
             }
         };
         watch.stamp();
-        let mut connection = Connection { stream };
+        if let Err(e) = stream.set_write_timeout(Some(WRITE_TIMEOUT)) {
+            eprintln!("notedeck ipc: no write timeout: {e}");
+            continue;
+        }
+        let mut connection = Connection { stream, version: 1 };
         let request = match read_request(&connection.stream) {
-            Ok(request) => request,
+            Ok(versioned) => {
+                connection.version = versioned.v;
+                versioned.request
+            }
             Err(message) => {
                 let _ = connection.reply(&Response::error(message));
                 continue;
@@ -198,7 +344,7 @@ fn accept_loop(
 }
 
 /// Read and parse the one request line a client sends.
-fn read_request(stream: &UnixStream) -> Result<Request, String> {
+fn read_request(stream: &UnixStream) -> Result<crate::Versioned, String> {
     stream
         .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|e| e.to_string())?;
@@ -207,7 +353,7 @@ fn read_request(stream: &UnixStream) -> Result<Request, String> {
     reader
         .read_line(&mut line)
         .map_err(|e| format!("reading the request: {e}"))?;
-    Request::from_line(&line)
+    Request::versioned(&line)
 }
 
 #[cfg(test)]
@@ -261,6 +407,122 @@ mod tests {
             response.outcome,
             Outcome::Ok(Reply::Tools { tools: vec![] })
         );
+    }
+
+    /// A subscriber and its stream: the client's connection, and the
+    /// server's queue with a channel that hears when the stream closes.
+    struct Subscribed {
+        client: Client,
+        queue: EventQueue,
+        closed: mpsc::Receiver<()>,
+    }
+
+    /// Subscribe on a fresh listener at `path` and turn the server's end into
+    /// a stream holding `capacity` lines.
+    fn subscribe(path: &Path, capacity: usize) -> Subscribed {
+        let listener = Listener::bind(path, || {}).unwrap();
+        let mut client = Client::connect(path).unwrap();
+        client
+            .send(&Request::Subscribe {
+                name: "test_stream".to_owned(),
+                args: serde_json::Value::Null,
+            })
+            .unwrap();
+        let incoming = next(&listener);
+        assert!(matches!(incoming.request, Request::Subscribe { .. }));
+        let (tx, closed) = mpsc::channel();
+        let queue = incoming
+            .connection
+            .into_stream(capacity, move || {
+                let _ = tx.send(());
+            })
+            .unwrap();
+        Subscribed {
+            client,
+            queue,
+            closed,
+        }
+    }
+
+    fn event(n: usize) -> Response {
+        Response::ok(Reply::Event {
+            event: serde_json::json!({ "n": n }),
+            text: Some(format!("{n}\n")),
+        })
+    }
+
+    /// A subscribe streams each event as a v2 line, in order; dropping the
+    /// queue ends the stream after what is queued, and the client reads the
+    /// end. A client that hangs up mid-stream closes it on the server.
+    #[test]
+    fn a_subscribe_streams_events_and_closes_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notedeck.sock");
+        let Subscribed {
+            mut client,
+            queue,
+            closed,
+        } = subscribe(&path, 16);
+        for n in 0..5 {
+            assert!(queue.push(&event(n)));
+        }
+        drop(queue);
+        for n in 0..5 {
+            let response = client.next_response().unwrap().expect("an event");
+            assert_eq!(response.v, 2, "answered in the subscribe's version");
+            assert_eq!(response.outcome, event(n).outcome);
+        }
+        assert!(client.next_response().unwrap().is_none(), "the end");
+        closed.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let path = dir.path().join("second.sock");
+        let Subscribed {
+            client,
+            queue,
+            closed,
+        } = subscribe(&path, 16);
+        assert!(queue.push(&event(0)));
+        drop(client);
+        closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the hang-up is heard without another event");
+        assert!(!queue.is_open());
+        assert!(!queue.push(&event(1)), "nothing more goes out");
+    }
+
+    /// A client that never reads fills its queue and is dropped: no push
+    /// ever waits on it, and the stream closes.
+    #[test]
+    fn a_slow_client_is_dropped_without_stalling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notedeck.sock");
+        let Subscribed {
+            client,
+            queue,
+            closed,
+        } = subscribe(&path, 4);
+        // Big enough lines that the socket's buffer fills long before the
+        // pushes run out.
+        let big = Response::ok(Reply::Event {
+            event: serde_json::json!("x".repeat(64 * 1024)),
+            text: None,
+        });
+        let started = Instant::now();
+        let mut pushed = 0;
+        while queue.push(&big) {
+            pushed += 1;
+            assert!(pushed < 10_000, "the queue never filled");
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a push never waits on the reader: {:?}",
+            started.elapsed()
+        );
+        assert!(!queue.is_open());
+        closed
+            .recv_timeout(STREAM_WRITE_TIMEOUT * 3)
+            .expect("the writer gives up on the reader");
+        drop(client);
     }
 
     #[test]

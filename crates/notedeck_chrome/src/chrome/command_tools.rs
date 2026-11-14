@@ -49,9 +49,13 @@ impl Chrome {
             "Command bar section for commands that name no app or part of the shell"
         );
         let mut tools = self.runnable_tools(&ctx.registries.tools);
-        // A query's answer is for an agent or a macro; the bar would throw
-        // it away.
-        tools.retain(|tool| !tool.spec.is_read_only() && !UNLISTED.contains(&tool.spec.name()));
+        // A query's answer is for an agent or a macro, and a stream's for a
+        // terminal following it; the bar would throw either away.
+        tools.retain(|tool| {
+            !tool.spec.is_read_only()
+                && tool.spec.stream_mode().is_none()
+                && !UNLISTED.contains(&tool.spec.name())
+        });
 
         let recent = self.command_bar.recent().filter_map(|name| {
             tools
