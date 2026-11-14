@@ -21,7 +21,8 @@
 //!   working directory and canonicalized, so a missing one fails here, and
 //!   one marked `x-nd-default-cwd` is that directory when left out. A
 //!   `list` flag repeats and each value may be a comma list: `-l a -l b,c`
-//!   is `["a","b","c"]`. An argument with an `x-nd-from-file` flag also
+//!   is `["a","b","c"]`. A `paths` flag repeats too, one path each, and
+//!   each is resolved as a `path` is. An argument with an `x-nd-from-file` flag also
 //!   takes `--<that flag> <path|->`, which sends the file's text, or
 //!   stdin's for `-`, trimmed at the end; giving both spellings fails.
 //! - **nd's own flags** go with every command and are read before the
@@ -460,6 +461,9 @@ fn given_value<'g, 'a: 'g>(
     if arg.client == Some(ClientKind::List) {
         return Ok(Some(list(&typed)));
     }
+    if arg.client == Some(ClientKind::Paths) {
+        return paths(arg, &typed, caller).map(Some);
+    }
     let Some(last) = typed.last() else {
         return Ok(None);
     };
@@ -474,6 +478,7 @@ fn fallback(arg: &Arg, caller: &dyn Caller) -> Result<Option<String>, String> {
     if let Some(value) = from_env.filter(|value| !value.is_empty()) {
         return match arg.client {
             Some(ClientKind::List) => Ok(Some(list(&[value.as_str()]))),
+            Some(ClientKind::Paths) => paths(arg, &[value.as_str()], caller).map(Some),
             _ => resolved(arg, &value, caller).map(Some),
         };
     }
@@ -489,6 +494,21 @@ fn resolved(arg: &Arg, raw: &str, caller: &dyn Caller) -> Result<String, String>
     if arg.client != Some(ClientKind::Path) {
         return Ok(raw.to_owned());
     }
+    canonical(arg, raw, caller)
+}
+
+/// `values` as a JSON array of paths, each resolved as [`canonical`] does.
+fn paths(arg: &Arg, values: &[&str], caller: &dyn Caller) -> Result<String, String> {
+    let paths = values
+        .iter()
+        .map(|raw| canonical(arg, raw, caller))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(serde_json::to_string(&paths).expect("strings serialize"))
+}
+
+/// `raw` made absolute against the caller's cwd and canonicalized, so a
+/// missing path fails here, naming `arg`.
+fn canonical(arg: &Arg, raw: &str, caller: &dyn Caller) -> Result<String, String> {
     let path = caller.cwd()?.join(raw);
     let path = path
         .canonicalize()
@@ -662,6 +682,9 @@ fn command_page(path: &[&str], candidates: &[&Entry]) -> String {
             if arg.client == Some(ClientKind::List) {
                 text.push_str(" Repeat it, or give a comma list.");
             }
+            if arg.client == Some(ClientKind::Paths) {
+                text.push_str(" Repeat it for more than one.");
+            }
             if let Some(var) = arg.env {
                 text.push_str(&format!(" Falls back to ${var}."));
             }
@@ -834,10 +857,11 @@ mod tests {
                             "desc": {"type": "string", "description": "The text.", "x-nd-from-file": "desc-file"},
                             "repo_dir": {"type": "string", "description": "The checkout.", "x-nd-kind": "path", "x-nd-default-cwd": true},
                             "file": {"type": "string", "description": "A file.", "x-nd-kind": "path"},
+                            "sources": {"type": "array", "items": {"type": "string"}, "description": "Files.", "x-nd-long": "source", "x-nd-kind": "paths"},
                             "session": {"type": "string", "description": "Who.", "x-nd-env": "AGENTIUM_SESSION"},
                         },
                         "required": ["card"],
-                        "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "session"],
+                        "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "sources", "session"],
                     }),
                 )
             },
@@ -1243,6 +1267,40 @@ mod tests {
         let err = args_in(&["headway", "edit", "c", "--file", "gone.md"], &root, "").unwrap_err();
         assert!(err.starts_with("file: 'gone.md': "), "{err}");
         assert!(err.ends_with("(see `nd headway edit --help`)"), "{err}");
+    }
+
+    /// A paths flag repeats, one path each (a comma stays in its path),
+    /// and each is resolved as a path is; one that isn't there fails here.
+    #[test]
+    fn a_paths_flag_repeats_and_resolves_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.md"), "a").unwrap();
+        std::fs::write(root.join("b,c.md"), "b").unwrap();
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+
+        let args = args_in(
+            &[
+                "headway",
+                "edit",
+                "c",
+                "--source",
+                "a.md",
+                "--source=b,c.md",
+            ],
+            &root,
+            "",
+        )
+        .unwrap();
+        assert_eq!(
+            args["sources"],
+            json!([path(&root.join("a.md")), path(&root.join("b,c.md"))])
+        );
+        let args = args_in(&["headway", "edit", "c"], &root, "").unwrap();
+        assert!(args.get("sources").is_none(), "{args}");
+
+        let err = args_in(&["headway", "edit", "c", "--source", "gone.md"], &root, "").unwrap_err();
+        assert!(err.starts_with("sources: 'gone.md': "), "{err}");
     }
 
     /// A list flag repeats, each value may be a comma list, and blanks

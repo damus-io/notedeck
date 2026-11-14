@@ -52,6 +52,9 @@ pub enum ClientKind {
     /// A list of strings, from a repeated flag whose values may each be a
     /// comma list.
     List,
+    /// A list of paths, from a repeated flag, one path each, every one
+    /// resolved as a [`Path`](Self::Path).
+    Paths,
 }
 
 /// Where a positional argument sits on a command line.
@@ -119,6 +122,7 @@ pub fn args(schema: &Value) -> Vec<Arg<'_>> {
             client: match prop["x-nd-kind"].as_str() {
                 Some("path") => Some(ClientKind::Path),
                 Some("list") => Some(ClientKind::List),
+                Some("paths") => Some(ClientKind::Paths),
                 _ => None,
             },
             from_file: prop["x-nd-from-file"].as_str(),

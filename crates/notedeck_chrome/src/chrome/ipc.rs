@@ -10,6 +10,10 @@
 //! a `--headless` notedeck answers them too; an intent that needs the window
 //! waits for [`render`](notedeck::App::render), and is refused headless.
 //!
+//! A [slow tool](notedeck::SlowTool) answers later: its work runs on a worker
+//! thread while the loop goes on, and the client's answer is written on the
+//! tick after it finishes, so a `git fetch` never stalls the window.
+//!
 //! Only the real notedeck serves: [`Chrome::serve_ipc`] is called by its
 //! entry points, never by a constructor, so a test chrome leaves the socket of
 //! the notedeck running on the same machine alone.
@@ -17,7 +21,7 @@
 use super::actions::chrome_handle_app_action;
 use super::Chrome;
 use nostrdb_net::{FullKeypair, SecretKey};
-use notedeck::{AppAction, AppContext, ToolOutcome, ToolSpec};
+use notedeck::{AppAction, AppContext, Finished, PendingCall, Started, ToolOutcome, ToolSpec};
 use notedeck_ipc::{IntentStatus, Reply, Request, Response, Signer, ToolInfo};
 
 /// The socket and the requests waiting on the window. Empty until
@@ -30,6 +34,18 @@ pub(super) struct IpcServer {
     /// is carried out. Empty but for the frame a request arrives on.
     #[cfg(unix)]
     applying: Vec<PendingIntent>,
+    /// Slow tools' work running on worker threads, with the client to answer
+    /// once each finishes. Empty but while one runs.
+    #[cfg(unix)]
+    running: Vec<RunningCall>,
+}
+
+/// A slow tool's work on its worker thread, and the client waiting on it.
+#[cfg(unix)]
+struct RunningCall {
+    /// Where the worker sends what the work came to.
+    done: std::sync::mpsc::Receiver<Finished>,
+    connection: notedeck_ipc::Connection,
 }
 
 /// An intent a socket request raised, held for the window.
@@ -39,11 +55,12 @@ struct PendingIntent {
     connection: notedeck_ipc::Connection,
 }
 
-/// What a request comes to: an answer now, or an intent for the window to
-/// carry out before answering.
+/// What a request comes to: an answer now, an intent for the window to
+/// carry out before answering, or a slow tool's work to run before answering.
 pub(super) enum Served {
     Reply(Response),
     Apply(AppAction),
+    Run(PendingCall),
 }
 
 impl Chrome {
@@ -81,6 +98,7 @@ impl Chrome {
     /// render, or refused if there is no window to render it.
     #[cfg(unix)]
     pub(super) fn poll_ipc(&mut self, ctx: &mut AppContext) {
+        self.answer_finished_calls();
         loop {
             let Some(incoming) = self.ipc.listener.as_ref().and_then(|l| l.try_recv()) else {
                 return;
@@ -99,11 +117,44 @@ impl Chrome {
                     }
                     Response::error("the tool acts on the window, and this notedeck is headless")
                 }
+                Served::Run(pending) => {
+                    match run_off_loop(pending, ctx.waker.clone()) {
+                        Ok(done) => self.ipc.running.push(RunningCall { done, connection }),
+                        Err(err) => {
+                            let response = Response::error(format!("no worker thread: {err}"));
+                            if let Err(err) = connection.reply(&response) {
+                                tracing::debug!("ipc: the client left before its answer: {err}");
+                            }
+                        }
+                    }
+                    continue;
+                }
             };
             if let Err(err) = connection.reply(&response) {
                 tracing::debug!("ipc: the client left before its answer: {err}");
             }
         }
+    }
+
+    /// Answer each client whose slow tool has finished. Allocates nothing.
+    #[cfg(unix)]
+    fn answer_finished_calls(&mut self) {
+        if self.ipc.running.is_empty() {
+            return;
+        }
+        self.ipc.running.retain_mut(|call| {
+            let response = match call.done.try_recv() {
+                Ok(done) => finished_response(done),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Response::error("the tool's work stopped without an answer")
+                }
+            };
+            if let Err(err) = call.connection.reply(&response) {
+                tracing::debug!("ipc: the client left before its answer: {err}");
+            }
+            false
+        });
     }
 
     /// Carry out the intents socket requests raised, and tell each client.
@@ -161,9 +212,16 @@ fn call_tool(
     // A stopped app's data tools are listed too, and its app starters; a
     // call to one starts its app, which updates from this tick on.
     chrome.start_tool_owner(&ctx.registries.tools, name);
-    // A person reads what nd prints, so ask a data tool for its text too.
-    let notedeck::Rendered { outcome, text } =
-        ctx.call_tool_rendered(name, args, comment_signer.as_ref());
+    // A person reads what nd prints, so ask a data tool for its text too. A
+    // slow tool's work is left for a worker thread.
+    let notedeck::Rendered {
+        outcome,
+        text,
+        notice,
+    } = match ctx.start_tool_rendered(name, args, comment_signer.as_ref()) {
+        Started::Done(rendered) => rendered,
+        Started::Pending(pending) => return Served::Run(pending),
+    };
     let outcome = match outcome {
         ToolOutcome::Intent(AppAction::CallTool(invocation)) => {
             match chrome.call_ui_tool(ctx, &invocation) {
@@ -178,9 +236,44 @@ fn call_tool(
         outcome => outcome,
     };
     match outcome {
-        ToolOutcome::Data(result) => Served::Reply(Response::ok(Reply::Result { result, text })),
+        ToolOutcome::Data(result) => Served::Reply(Response::ok(Reply::Result {
+            result,
+            text,
+            notice,
+        })),
         ToolOutcome::Error(err) => Served::Reply(Response::error(err)),
         ToolOutcome::Intent(action) => Served::Apply(action),
+    }
+}
+
+/// Run a slow tool's work on a thread of its own, waking the loop when it
+/// is done so [`Chrome::answer_finished_calls`] answers on the next tick. Its
+/// own thread, not the job pool's two, since the work waits on the network.
+#[cfg(unix)]
+fn run_off_loop(
+    pending: PendingCall,
+    waker: notedeck::Waker,
+) -> std::io::Result<std::sync::mpsc::Receiver<Finished>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("ipc-tool".to_owned())
+        .spawn(move || {
+            // The receiver is gone only when the notedeck is shutting down.
+            let _ = tx.send(pending.run());
+            waker.wake();
+        })?;
+    Ok(rx)
+}
+
+/// What a finished slow tool's client is told.
+fn finished_response(done: Finished) -> Response {
+    match done.result {
+        Ok(result) => Response::ok(Reply::Result {
+            result,
+            text: done.text,
+            notice: done.notice,
+        }),
+        Err(err) => Response::error(err),
     }
 }
 
@@ -221,7 +314,10 @@ fn tool_info(spec: &ToolSpec) -> ToolInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notedeck::{AppResponse, AppTool, Notedeck, RegisteredTool, ToolContext, ToolInvocation};
+    use notedeck::{
+        AppResponse, AppTool, Notedeck, RegisteredTool, SlowTool, ToolContext, ToolInvocation,
+        ToolJob,
+    };
     use notedeck_ipc::{Outcome, ToolKind};
     use serde_json::{json, Value};
     use std::cell::RefCell;
@@ -237,6 +333,41 @@ mod tests {
     const CALL_AGAIN: &str = "test_call_again";
     /// A data tool that accepts a comment signer and answers with its pubkey.
     const WHO_SIGNS: &str = "test_who_signs";
+    /// A slow tool: its work waits for the file its `gate` arg names.
+    const SLOW: &str = "test_slow";
+
+    struct Slow;
+
+    impl SlowTool for Slow {
+        type Args = Value;
+        type Output = String;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new(SLOW, "Waits for its gate file", Vec::new()).read_only()
+        }
+
+        fn prepare(&self, _cx: &mut ToolContext, args: Value) -> Result<ToolJob<String>, String> {
+            let gate = std::path::PathBuf::from(args["gate"].as_str().ok_or("no gate")?);
+            Ok(Box::new(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while !gate.exists() {
+                    if std::time::Instant::now() > deadline {
+                        return Err("the gate never opened".to_owned());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Ok("through".to_owned())
+            }))
+        }
+
+        fn render(&self, out: &String) -> Option<String> {
+            Some(format!("{out}\n"))
+        }
+
+        fn notice(&self, _out: &String) -> Option<String> {
+            Some("waited for the gate".to_owned())
+        }
+    }
 
     struct WhoSigns;
 
@@ -284,7 +415,11 @@ mod tests {
         }
 
         fn tools(&self) -> Vec<RegisteredTool> {
-            vec![RegisteredTool::new(Echo), RegisteredTool::new(WhoSigns)]
+            vec![
+                RegisteredTool::new(Echo),
+                RegisteredTool::new(WhoSigns),
+                RegisteredTool::slow(Slow),
+            ]
         }
 
         fn ui_tools(&self) -> Vec<ToolSpec> {
@@ -450,6 +585,7 @@ mod tests {
         match served {
             Served::Reply(response) => response.outcome,
             Served::Apply(_) => panic!("expected a reply, got an intent"),
+            Served::Run(pending) => finished_response(pending.run()).outcome,
         }
     }
 
@@ -486,6 +622,7 @@ mod tests {
             Outcome::Ok(Reply::Result {
                 result: json!({"a": 1}),
                 text: Some("echoed {\"a\":1}\n".to_owned()),
+                notice: None,
             })
         );
         assert!(f.calls.borrow().is_empty(), "no UI tool ran");
@@ -560,6 +697,7 @@ mod tests {
             Outcome::Ok(Reply::Result {
                 result: json!({"b": 2}),
                 text: None,
+                notice: None,
             })
         );
         assert!(f.chrome.is_running(IDLE_SLOT), "the call started its app");
@@ -578,6 +716,7 @@ mod tests {
             Outcome::Ok(Reply::Result {
                 result: json!({ "ran": IDLE_START }),
                 text: None,
+                notice: None,
             })
         );
         assert!(f.chrome.is_running(IDLE_SLOT));
@@ -603,6 +742,7 @@ mod tests {
             Outcome::Ok(Reply::Result {
                 result: json!({"peeked": true}),
                 text: None,
+                notice: None,
             })
         );
         assert_eq!(*f.calls.borrow(), vec![PEEK]);
@@ -724,6 +864,60 @@ mod tests {
             response.outcome,
             Outcome::Ok(Reply::Intent {
                 intent: IntentStatus::Applied
+            })
+        );
+    }
+
+    /// A slow tool's work runs off the loop: `poll_ipc` keeps returning while
+    /// it waits, and the client is answered, text and notice and all, on the
+    /// tick after it finishes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slow_tool_answers_after_its_work_without_holding_the_loop() {
+        let mut f = fixture();
+        let sock = f._dir.path().join("notedeck.sock");
+        let gate = f._dir.path().join("gate");
+        f.chrome.ipc.listener = Some(notedeck_ipc::Listener::bind(&sock, || {}).unwrap());
+
+        let args = json!({ "gate": gate.to_string_lossy() });
+        let client = std::thread::spawn(move || {
+            notedeck_ipc::Client::connect(&sock)
+                .unwrap()
+                .request(&Request::CallTool {
+                    name: SLOW.to_owned(),
+                    args,
+                    signer: None,
+                })
+        });
+
+        let tick = |f: &mut Fixture| {
+            let mut ctx = f.notedeck.app_context();
+            f.chrome.poll_ipc(&mut ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while f.chrome.ipc.running.is_empty() {
+            assert!(std::time::Instant::now() < deadline, "no request arrived");
+            tick(&mut f);
+        }
+        // The loop ticks on while the work waits.
+        for _ in 0..5 {
+            tick(&mut f);
+        }
+        assert_eq!(f.chrome.ipc.running.len(), 1, "still running");
+
+        std::fs::write(&gate, "").unwrap();
+        while !f.chrome.ipc.running.is_empty() {
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            tick(&mut f);
+        }
+        let response = client.join().unwrap().unwrap();
+        assert_eq!(
+            response.outcome,
+            Outcome::Ok(Reply::Result {
+                result: json!("through"),
+                text: Some("through\n".to_owned()),
+                notice: Some("waited for the gate".to_owned()),
             })
         );
     }

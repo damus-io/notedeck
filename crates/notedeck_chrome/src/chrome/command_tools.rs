@@ -103,13 +103,14 @@ impl Chrome {
             ToolArgType::String
             | ToolArgType::Path
             | ToolArgType::List
+            | ToolArgType::Paths
             | ToolArgType::Number
             | ToolArgType::Integer => {
                 // A path is typed whole: the bar runs in the app, whose
                 // working directory is no caller's to resolve against.
                 let kind = match arg.typ() {
                     ToolArgType::Number | ToolArgType::Integer => TextKind::Number,
-                    ToolArgType::List => TextKind::List,
+                    ToolArgType::List | ToolArgType::Paths => TextKind::List,
                     _ => TextKind::Text,
                 };
                 let arg = TextArg {
@@ -255,6 +256,7 @@ fn asks_for(arg: &ToolArg, args: &Value) -> bool {
         | ToolArgType::String
         | ToolArgType::Path
         | ToolArgType::List
+        | ToolArgType::Paths
         | ToolArgType::Number
         | ToolArgType::Integer => arg.is_required(),
     }

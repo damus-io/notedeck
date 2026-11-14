@@ -32,6 +32,11 @@ pub enum ToolArgType {
     /// flag repeats and each value may be a comma list: `-l a -l b,c` is
     /// `["a", "b", "c"]` (`x-nd-kind: "list"`).
     List,
+    /// A list of filesystem paths (JSON `array` of `string`). On a command
+    /// line its flag repeats, one path each (a path may hold a comma), and
+    /// the client resolves each as it does a [`Path`](Self::Path)
+    /// (`x-nd-kind: "paths"`).
+    Paths,
 }
 
 impl ToolArgType {
@@ -44,7 +49,7 @@ impl ToolArgType {
             Self::Boolean => "boolean",
             Self::Enum(_) => "string",
             Self::Path => "string",
-            Self::List => "array",
+            Self::List | Self::Paths => "array",
         }
     }
 
@@ -54,6 +59,7 @@ impl ToolArgType {
         match self {
             Self::Path => Some("path"),
             Self::List => Some("list"),
+            Self::Paths => Some("paths"),
             _ => None,
         }
     }
@@ -484,7 +490,7 @@ impl ToolSpec {
                 props.insert("default".to_string(), default.clone());
             }
 
-            if let ToolArgType::List = &arg.typ {
+            if let ToolArgType::List | ToolArgType::Paths = &arg.typ {
                 props.insert("items".to_string(), serde_json::json!({"type": "string"}));
             }
 

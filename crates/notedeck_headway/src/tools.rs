@@ -22,6 +22,8 @@ use notedeck::{
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::cursor::{self, MoveTarget, Side, Vertical};
+
+mod review;
 use crate::teams;
 use crate::ui::ViewFilter;
 use headway::query::IssueFilter;
@@ -36,6 +38,7 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(ReadyItems),
         RegisteredTool::new(Grep),
         RegisteredTool::new(List),
+        RegisteredTool::slow(review::Diff),
         // Write.
         RegisteredTool::new(AddCard),
         RegisteredTool::new(MoveCard),
@@ -53,6 +56,7 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(Seq),
         RegisteredTool::new(SetTerminal),
         RegisteredTool::new(CommentCard),
+        RegisteredTool::new(review::Review),
         RegisteredTool::new(ArchiveCard),
         RegisteredTool::new(RestoreCard),
         RegisteredTool::new(DeleteCard),
@@ -2742,6 +2746,7 @@ fn due_arg(description: &'static str) -> ToolArg {
 mod tests {
     mod edits;
     mod live;
+    mod review;
     mod search;
     mod structure;
 
@@ -2833,6 +2838,7 @@ mod tests {
             accounts,
             publish: None,
             comment_signer: None,
+            path: None,
         }
     }
 

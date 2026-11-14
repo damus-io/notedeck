@@ -172,6 +172,7 @@ impl<'a> AppContext<'a> {
             accounts: self.accounts,
             publish: Some(self.remote.publisher_explicit()),
             comment_signer: None,
+            path: Some(self.path),
         }
     }
 
@@ -223,22 +224,26 @@ impl<'a> AppContext<'a> {
     /// `comment_signer` is the caller's comment key, from the socket: a tool
     /// that [accepts one](crate::ToolSpec::accepts_comment_signer) signs its
     /// comments with it, and every other tool never sees it.
-    pub fn call_tool_rendered(
+    ///
+    /// A [`SlowTool`](crate::SlowTool)'s work is left
+    /// [pending](crate::Started::Pending), for the caller to run off the
+    /// render loop.
+    pub fn start_tool_rendered(
         &mut self,
         name: &str,
         args: &serde_json::Value,
         comment_signer: Option<&nostrdb_net::FullKeypair>,
-    ) -> crate::Rendered {
+    ) -> crate::Started {
         if crate::ToolCall::specs()
             .iter()
             .any(|spec| spec.name() == name)
         {
-            return self.call_tool(name, args).into();
+            return crate::Started::Done(self.call_tool(name, args).into());
         }
         let tools = &self.registries.tools;
         let mut cx = self.tool_context();
         cx.comment_signer = comment_signer;
-        tools.call_rendered(&mut cx, name, args)
+        tools.start_rendered(&mut cx, name, args)
     }
 
     pub fn select_account(&mut self, pubkey: &Pubkey) {

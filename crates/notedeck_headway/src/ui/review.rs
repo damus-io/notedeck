@@ -1116,11 +1116,7 @@ fn start_load(
         notes: wants_notes(record),
         card_ref: card_ref.to_string(),
         checkouts,
-        cache_root: app_ctx
-            .path
-            .path(notedeck::DataPathType::Cache)
-            .join("headway")
-            .join("git"),
+        cache_root: crate::git_cache_root(app_ctx.path),
         renderer: app_ctx.renderer3d.cloned(),
     };
     loader.start(source, job, app_ctx.waker.clone());

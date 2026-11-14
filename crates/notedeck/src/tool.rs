@@ -37,12 +37,13 @@
 //! `note_context()`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use nostrdb::{Ndb, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
-use crate::{Accounts, AppAction, AppId, ExplicitPublishApi, NoteCache};
+use crate::{Accounts, AppAction, AppId, DataPath, ExplicitPublishApi, NoteCache};
 
 /// The portable tool *type* layer — argument types, args, and the tool spec —
 /// lives in [`agentium_core::tool`] so the engine owns it and any platform can
@@ -82,6 +83,10 @@ pub struct ToolContext<'a> {
     /// spec opts in ever sees it; [`RegisteredTool`] clears it for any
     /// other. `None` for every model-driven call (Dave, MCP).
     pub comment_signer: Option<&'a nostrdb_net::FullKeypair>,
+    /// Where the host keeps its files, for a tool that caches on disk (a
+    /// git fetch's bare repos). `None` in a context with no host, where such
+    /// a tool reports an error.
+    pub path: Option<&'a DataPath>,
 }
 
 /// The result of running a [`ToolCall`].
@@ -106,6 +111,10 @@ pub struct Rendered {
     /// What [`AppTool::render`] made of a [`Data`](ToolOutcome::Data) value;
     /// `None` for a tool that renders nothing, and for any other outcome.
     pub text: Option<String>,
+    /// A line for the person beside the answer, not part of it: what `nd`
+    /// prints to stderr, so piping the text stays clean (see
+    /// [`SlowTool::notice`]). `None` for most tools.
+    pub notice: Option<String>,
 }
 
 impl From<ToolOutcome> for Rendered {
@@ -114,6 +123,61 @@ impl From<ToolOutcome> for Rendered {
         Self {
             outcome,
             text: None,
+            notice: None,
+        }
+    }
+}
+
+/// What a [`PendingCall`] came to once its work ran: a [`Rendered`] that can
+/// cross threads, since it carries no [`AppAction`].
+pub struct Finished {
+    /// The tool's value, or its error.
+    pub result: Result<Value, String>,
+    /// Its text, when asked for and the tool renders one.
+    pub text: Option<String>,
+    /// Its notice (see [`Rendered::notice`]).
+    pub notice: Option<String>,
+}
+
+impl From<Finished> for Rendered {
+    fn from(done: Finished) -> Self {
+        let outcome = match done.result {
+            Ok(value) => ToolOutcome::Data(value),
+            Err(err) => ToolOutcome::Error(err),
+        };
+        Self {
+            outcome,
+            text: done.text,
+            notice: done.notice,
+        }
+    }
+}
+
+/// A [`SlowTool`] call whose slow half hasn't run yet: owned, so a caller with
+/// a render loop runs it on another thread and answers when it
+/// [finishes](Finished).
+pub struct PendingCall(Box<dyn FnOnce() -> Finished + Send>);
+
+impl PendingCall {
+    /// Run the work, blocking until it is done.
+    pub fn run(self) -> Finished {
+        (self.0)()
+    }
+}
+
+/// A started call (see [`ToolRegistry::start_rendered`]): answered, or
+/// waiting on work to run off the render loop.
+pub enum Started {
+    Done(Rendered),
+    Pending(PendingCall),
+}
+
+impl Started {
+    /// The answer, running any pending work here and now.
+    pub fn finish(self) -> Rendered {
+        match self {
+            Self::Done(rendered) => rendered,
+            Self::Pending(pending) => pending.run().into(),
         }
     }
 }
@@ -216,6 +280,50 @@ pub trait AppTool: Send + Sync {
     }
 }
 
+/// The slow half of a [`SlowTool`] call, owned so it runs on any thread.
+pub type ToolJob<O> = Box<dyn FnOnce() -> Result<O, String> + Send>;
+
+/// A data tool whose work is too slow for a render loop: a `git fetch`, a
+/// network round trip. It runs in two halves. [`prepare`](Self::prepare)
+/// reads what the work needs from the [`ToolContext`], quickly, on the
+/// caller's thread, and hands back a [`ToolJob`] that owns it; the job does
+/// the slow part.
+///
+/// A caller that can wait for it ([`ToolRegistry::start_rendered`], the
+/// socket) runs the job on a worker thread and answers when it is done. One
+/// that can't ([`ToolRegistry::call`]: Dave, a key binding) runs it inline,
+/// as it runs any [`AppTool`].
+pub trait SlowTool: Send + Sync {
+    /// The tool's typed arguments, deserialized from the backend's JSON.
+    type Args: DeserializeOwned;
+
+    /// The tool's typed result, serialized back to the backend as JSON.
+    type Output: Serialize;
+
+    /// The portable [`ToolSpec`] advertised for this tool.
+    fn spec(&self) -> ToolSpec;
+
+    /// Read what the work needs from `cx` and return the work, or an error
+    /// for arguments that name nothing.
+    fn prepare(
+        &self,
+        cx: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<ToolJob<Self::Output>, String>;
+
+    /// `out` as text for a person to read, as [`AppTool::render`].
+    fn render(&self, _out: &Self::Output) -> Option<String> {
+        None
+    }
+
+    /// A line for the person beside the text, which `nd` prints to stderr
+    /// so the text pipes clean: where a commit was found, say. `None`, the
+    /// default, prints nothing.
+    fn notice(&self, _out: &Self::Output) -> Option<String> {
+        None
+    }
+}
+
 /// A type-erased [`AppTool`], ready to store in a [`ToolRegistry`] next to tools
 /// with different `Args`/`Output` types.
 ///
@@ -225,10 +333,10 @@ pub trait AppTool: Send + Sync {
 /// serde conversion, and caches the tool's [`ToolSpec`] up front. Build one with
 /// [`RegisteredTool::new`].
 /// The erased body of a [`RegisteredTool`]: takes raw JSON args, does the
-/// `Value` ⇆ typed serde conversion around the concrete [`AppTool::call`], and
-/// returns a [`ToolOutcome`], with [`AppTool::render`]'s text when the
-/// `bool` asks for it.
-type ErasedHandler = Box<dyn Fn(&mut ToolContext, &Value, bool) -> Rendered + Send + Sync>;
+/// `Value` ⇆ typed serde conversion around the concrete [`AppTool::call`] (or
+/// [`SlowTool::prepare`]), and returns what it [started](Started), with
+/// [`AppTool::render`]'s text when the `bool` asks for it.
+type ErasedHandler = Box<dyn Fn(&mut ToolContext, &Value, bool) -> Started + Send + Sync>;
 
 pub struct RegisteredTool {
     spec: ToolSpec,
@@ -249,19 +357,56 @@ impl RegisteredTool {
         let handler = Box::new(move |cx: &mut ToolContext, args: &Value, text: bool| {
             let args = match serde_json::from_value::<T::Args>(args.clone()) {
                 Ok(args) => args,
-                Err(err) => return ToolOutcome::Error(format!("invalid arguments: {err}")).into(),
+                Err(err) => return error(format!("invalid arguments: {err}")),
             };
             let output = match tool.call(cx, args) {
                 Ok(output) => output,
-                Err(err) => return ToolOutcome::Error(err).into(),
+                Err(err) => return error(err),
             };
-            match serde_json::to_value(&output) {
-                Ok(value) => Rendered {
-                    outcome: ToolOutcome::Data(value),
+            Started::Done(
+                Finished {
+                    result: serialize(&output),
                     text: text.then(|| tool.render(&output)).flatten(),
+                    notice: None,
+                }
+                .into(),
+            )
+        });
+        Self {
+            spec,
+            handler,
+            owner: None,
+        }
+    }
+
+    /// Erase a [`SlowTool`]: its [`prepare`](SlowTool::prepare) runs on the
+    /// caller's thread, and its job is handed back as a [`PendingCall`] that
+    /// serializes and renders the output once it has run.
+    pub fn slow<T: SlowTool + 'static>(tool: T) -> Self {
+        let spec = tool.spec();
+        let tool = Arc::new(tool);
+        let handler = Box::new(move |cx: &mut ToolContext, args: &Value, text: bool| {
+            let args = match serde_json::from_value::<T::Args>(args.clone()) {
+                Ok(args) => args,
+                Err(err) => return error(format!("invalid arguments: {err}")),
+            };
+            let job = match tool.prepare(cx, args) {
+                Ok(job) => job,
+                Err(err) => return error(err),
+            };
+            let tool = Arc::clone(&tool);
+            Started::Pending(PendingCall(Box::new(move || match job() {
+                Ok(output) => Finished {
+                    result: serialize(&output),
+                    text: text.then(|| tool.render(&output)).flatten(),
+                    notice: tool.notice(&output),
                 },
-                Err(err) => ToolOutcome::Error(format!("failed to serialize output: {err}")).into(),
-            }
+                Err(err) => Finished {
+                    result: Err(err),
+                    text: None,
+                    notice: None,
+                },
+            })))
         });
         Self {
             spec,
@@ -293,25 +438,43 @@ impl RegisteredTool {
         self.spec.name()
     }
 
-    /// Run the erased tool with raw JSON `args`.
+    /// Run the erased tool with raw JSON `args`. A [`SlowTool`]'s work runs
+    /// here too, blocking until it is done.
     pub fn call(&self, cx: &mut ToolContext, args: &Value) -> ToolOutcome {
-        self.run(cx, args, false).outcome
+        self.run(cx, args, false).finish().outcome
     }
 
     /// Run it as [`call`](Self::call) does, and render its value as text too
     /// (see [`AppTool::render`]).
     pub fn call_rendered(&self, cx: &mut ToolContext, args: &Value) -> Rendered {
+        self.run(cx, args, true).finish()
+    }
+
+    /// Start it, rendering its value as text, leaving a [`SlowTool`]'s work
+    /// [pending](Started::Pending) for the caller to run where it won't
+    /// block.
+    pub fn start_rendered(&self, cx: &mut ToolContext, args: &Value) -> Started {
         self.run(cx, args, true)
     }
 
     /// Run the handler, first taking the caller's comment key away from a
     /// tool that didn't ask for one, so no other tool can sign with it.
-    fn run(&self, cx: &mut ToolContext, args: &Value, text: bool) -> Rendered {
+    fn run(&self, cx: &mut ToolContext, args: &Value, text: bool) -> Started {
         if !self.spec.takes_comment_signer() {
             cx.comment_signer = None;
         }
         (self.handler)(cx, args, text)
     }
+}
+
+/// A call that failed before it ran, as a handler answers it.
+fn error(err: String) -> Started {
+    Started::Done(ToolOutcome::Error(err).into())
+}
+
+/// A tool's output as the JSON it answers with.
+fn serialize(output: &impl Serialize) -> Result<Value, String> {
+    serde_json::to_value(output).map_err(|err| format!("failed to serialize output: {err}"))
 }
 
 /// The shell's UI tool that saves the account's keymap overrides, called with
@@ -556,9 +719,16 @@ impl ToolRegistry {
     /// Dispatch as [`call`](Self::call) does, with a data tool's rendered text
     /// beside its value (see [`AppTool::render`]). Only a data tool renders.
     pub fn call_rendered(&self, cx: &mut ToolContext, name: &str, args: &Value) -> Rendered {
+        self.start_rendered(cx, name, args).finish()
+    }
+
+    /// Start a call as [`call_rendered`](Self::call_rendered) does, leaving a
+    /// [`SlowTool`]'s work [pending](Started::Pending) for the caller to run
+    /// off its render loop.
+    pub fn start_rendered(&self, cx: &mut ToolContext, name: &str, args: &Value) -> Started {
         match self.by_name.get(name) {
-            Some(&ToolSlot::Data(idx)) => self.tools[idx].call_rendered(cx, args),
-            _ => self.not_here(name, args).into(),
+            Some(&ToolSlot::Data(idx)) => self.tools[idx].start_rendered(cx, args),
+            _ => Started::Done(self.not_here(name, args).into()),
         }
     }
 
@@ -662,6 +832,7 @@ mod tests {
             accounts: &accounts,
             publish: None,
             comment_signer: None,
+            path: None,
         };
 
         let mut reg = ToolRegistry::default();
@@ -673,6 +844,77 @@ mod tests {
             panic!("expected data");
         };
         assert_eq!(value["echoed"], "hi");
+    }
+
+    /// A slow tool: doubles its number off the caller's thread, refusing a
+    /// negative one before any work.
+    struct Double;
+
+    impl SlowTool for Double {
+        type Args = i64;
+        type Output = i64;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new("double", "Double a number, slowly.", Vec::new())
+        }
+
+        fn prepare(&self, _cx: &mut ToolContext, n: i64) -> Result<ToolJob<i64>, String> {
+            if n < 0 {
+                return Err("negative".to_owned());
+            }
+            Ok(Box::new(move || Ok(n * 2)))
+        }
+
+        fn render(&self, out: &i64) -> Option<String> {
+            Some(format!("{out}\n"))
+        }
+
+        fn notice(&self, out: &i64) -> Option<String> {
+            Some(format!("doubled into {out}"))
+        }
+    }
+
+    /// A slow tool's work is left pending by `start_rendered`, for a caller
+    /// to run off its loop, and run inline by `call` and `call_rendered`;
+    /// either way the value, text and notice are the same. A refusal in
+    /// `prepare` is an answer straight away.
+    #[test]
+    fn a_slow_tool_runs_pending_or_inline() {
+        let ToolEnv {
+            db,
+            mut note_cache,
+            accounts,
+        } = test_tool_env();
+        let mut cx = ToolContext {
+            ndb: &db.ndb,
+            note_cache: &mut note_cache,
+            accounts: &accounts,
+            publish: None,
+            comment_signer: None,
+            path: None,
+        };
+        let mut reg = ToolRegistry::default();
+        reg.register(RegisteredTool::slow(Double));
+
+        let Started::Pending(pending) = reg.start_rendered(&mut cx, "double", &json!(21)) else {
+            panic!("the work is left pending");
+        };
+        let done = pending.run();
+        assert_eq!(done.result, Ok(json!(42)));
+        assert_eq!(done.text.as_deref(), Some("42\n"));
+        assert_eq!(done.notice.as_deref(), Some("doubled into 42"));
+
+        let ToolOutcome::Data(value) = reg.call(&mut cx, "double", &json!(4)) else {
+            panic!("call runs the work inline");
+        };
+        assert_eq!(value, json!(8));
+        let rendered = reg.call_rendered(&mut cx, "double", &json!(4));
+        assert_eq!(rendered.notice.as_deref(), Some("doubled into 8"));
+
+        let Started::Done(refused) = reg.start_rendered(&mut cx, "double", &json!(-1)) else {
+            panic!("a refusal needs no worker");
+        };
+        assert!(matches!(refused.outcome, ToolOutcome::Error(e) if e == "negative"));
     }
 
     /// Asked for text, a data tool renders the value it answers with; an
@@ -690,11 +932,12 @@ mod tests {
             accounts: &accounts,
             publish: None,
             comment_signer: None,
+            path: None,
         };
         let mut reg = ToolRegistry::default();
         reg.register(RegisteredTool::new(Echo));
 
-        let Rendered { outcome, text } =
+        let Rendered { outcome, text, .. } =
             reg.call_rendered(&mut cx, "echo", &json!({ "message": "hi" }));
         let ToolOutcome::Data(value) = outcome else {
             panic!("expected data");
@@ -760,6 +1003,7 @@ mod tests {
                 accounts: &accounts,
                 publish: None,
                 comment_signer: Some(&key),
+                path: None,
             };
             let outcome = if rendered {
                 reg.call_rendered(&mut cx, name, &json!({})).outcome
@@ -791,6 +1035,7 @@ mod tests {
             accounts: &accounts,
             publish: None,
             comment_signer: None,
+            path: None,
         };
 
         let mut reg = ToolRegistry::default();
@@ -856,6 +1101,7 @@ mod tests {
             accounts: &accounts,
             publish: None,
             comment_signer: None,
+            path: None,
         };
 
         let mut reg = ToolRegistry::default();

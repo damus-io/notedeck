@@ -50,6 +50,15 @@ use event::BoardView;
 /// ([`notedeck::ToolSpec::category`]).
 pub(crate) const TOOL_CATEGORY: &str = "Headway";
 
+/// Where Headway keeps its bare git cache repos, the commits it fetched from
+/// other hosts: shared by the review pane and the `headway_diff` tool, so a
+/// commit one fetched the other finds.
+pub(crate) fn git_cache_root(path: &notedeck::DataPath) -> std::path::PathBuf {
+    path.path(notedeck::DataPathType::Cache)
+        .join("headway")
+        .join("git")
+}
+
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
 /// The board is backed by nostr events in the local nostrdb: [`BoardCache`] keeps

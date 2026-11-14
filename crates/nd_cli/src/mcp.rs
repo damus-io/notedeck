@@ -414,6 +414,7 @@ mod tests {
         let reply = Ok(Reply::Result {
             result: json!({"cards": [1, 2]}),
             text: None,
+            notice: None,
         });
         let line = call_line("read_board", json!({"board": "notedeck"}));
         let Ran { response, seen } = run(DATA, &line, reply);

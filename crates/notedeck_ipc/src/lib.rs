@@ -192,6 +192,12 @@ pub enum Reply {
         /// notedeck, and ignored by an older nd.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
+        /// A line for the person beside the answer, not part of it: where a
+        /// commit was found, say. nd prints it to stderr, so the text pipes
+        /// clean. Absent from an older notedeck and most tools, and ignored
+        /// by an older nd.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notice: Option<String>,
     },
     /// The tool asked the window to act, and it did.
     Intent { intent: IntentStatus },
@@ -416,14 +422,17 @@ mod tests {
             Reply::Result {
                 result: json!({"cards": 3}),
                 text: None,
+                notice: None,
             },
             Reply::Result {
                 result: Value::Null,
                 text: None,
+                notice: None,
             },
             Reply::Result {
                 result: json!([]),
                 text: Some("Todo (0)\n".to_owned()),
+                notice: Some("found locally in /x".to_owned()),
             },
             Reply::Intent {
                 intent: IntentStatus::Applied,
@@ -438,12 +447,14 @@ mod tests {
         assert_eq!(Response::from_line(&response.to_line()), Ok(response));
     }
 
-    /// `text` is optional both ways: a reply from a notedeck that predates it
-    /// still reads, and one without text writes no `text` key.
+    /// `text` and `notice` are optional both ways: a reply from a notedeck
+    /// that predates them still reads, and one without them writes neither
+    /// key.
     #[test]
     fn result_text_is_optional_on_the_wire() {
         let old = r#"{"v":1,"notedeck":"0","status":"ok","result":{"a":1}}"#;
-        let Outcome::Ok(Reply::Result { result, text }) = Response::from_line(old).unwrap().outcome
+        let Outcome::Ok(Reply::Result { result, text, .. }) =
+            Response::from_line(old).unwrap().outcome
         else {
             panic!("a result");
         };
@@ -452,11 +463,14 @@ mod tests {
         let bare = Response::ok(Reply::Result {
             result: json!(1),
             text: None,
+            notice: None,
         });
         assert!(!bare.to_line().contains("\"text\""), "{}", bare.to_line());
+        assert!(!bare.to_line().contains("\"notice\""), "{}", bare.to_line());
         let with = Response::ok(Reply::Result {
             result: json!(1),
             text: Some("one\n".to_owned()),
+            notice: None,
         });
         let value: Value = serde_json::from_str(&with.to_line()).unwrap();
         assert_eq!(value["text"], json!("one\n"));

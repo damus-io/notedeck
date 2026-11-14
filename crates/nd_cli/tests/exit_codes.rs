@@ -282,6 +282,7 @@ fn data_prints_as_json_and_exits_0() {
     let result = Response::ok(Reply::Result {
         result: json!({"cards": [1, 2]}),
         text: None,
+        notice: None,
     });
     let Fake { socket, server } = serve(&dir, vec![list(), result]);
     let out = nd(&socket, &["call", "open", "--json", r#"{"reference":"x"}"#]);
@@ -458,6 +459,7 @@ fn spawn_sends_the_resolved_dir_and_prints_the_session() {
         Response::ok(Reply::Result {
             result: json!({"session_id": 7}),
             text: None,
+            notice: None,
         })
     };
     // No tool list first: the chrome starts Dave for a spawn, so nd doesn't
@@ -510,6 +512,7 @@ fn an_app_command_calls_the_tool_it_names() {
     let result = Response::ok(Reply::Result {
         result: json!({"ref": "headway:notedeck/a-b-c"}),
         text: None,
+        notice: None,
     });
     let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
     let out = nd(
@@ -541,6 +544,7 @@ fn an_app_command_prints_the_tools_text() {
         Response::ok(Reply::Result {
             result: json!({"id": "notedeck"}),
             text: Some("Todo (1)\n  One  \x1b[90mheadway:notedeck/a-b-c\x1b[0m\n".to_owned()),
+            notice: None,
         })
     };
     let lines = [
@@ -580,6 +584,7 @@ fn an_app_command_reads_flags_and_the_callers_env() {
     let result = Response::ok(Reply::Result {
         result: json!([]),
         text: None,
+        notice: None,
     });
     let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
     let out = Command::new(nd_bin())
@@ -622,6 +627,7 @@ fn an_app_command_resolves_the_callers_side() {
     let result = Response::ok(Reply::Result {
         result: json!({}),
         text: None,
+        notice: None,
     });
     let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
     let mut child = Command::new(nd_bin())
@@ -737,6 +743,7 @@ fn the_comment_key_rides_only_with_a_tool_that_accepts_one() {
         Response::ok(Reply::Result {
             result: json!({"ok": true}),
             text: None,
+            notice: None,
         })
     };
     let Fake { socket, server } = serve(
@@ -825,6 +832,7 @@ fn fake_notedeck() {
             Ok(Request::CallTool { name, .. }) => Response::ok(Reply::Result {
                 result: json!({}),
                 text: Some(format!("the started notedeck ran {name}\n")),
+                notice: None,
             }),
             Err(e) => Response::error(e),
         };

@@ -25,6 +25,9 @@
 //! - [`git`] — thin `git` shell-outs (commit, toplevel, repo identity) for
 //!   review records, and the resolver that finds (or fetches) a record's
 //!   commit on this host and reads it back as a patch.
+//! - [`review`] and [`diff`] — `review`'s record gathered from git in the
+//!   caller's checkout, and `diff`'s read-back of a record's commit, for the
+//!   CLI and the app's tools alike.
 //! - [`title`] — splits a card title into `CODE: headline — detail` for
 //!   surfaces that show it in little room.
 //! - [`views`] — saved list views: an account's [`query::ViewSpec`]s, kept
@@ -36,6 +39,7 @@
 //!   read boards outside the egui app.
 
 pub mod boards;
+pub mod diff;
 pub mod edit;
 pub mod event;
 pub mod fmt;
@@ -45,6 +49,7 @@ pub mod grep;
 pub mod list;
 pub mod query;
 pub mod render;
+pub mod review;
 pub mod store;
 /// Backstop for the tests' nostrdb-ingest waits (see
 /// [`nostrdb::SubscriptionStream::wait_for_notes`]). A local ingest commits in

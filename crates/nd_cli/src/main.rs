@@ -389,10 +389,19 @@ fn send_call(
     print: Print,
 ) -> Result<(), Failure> {
     match answer(reach, Request::CallTool { name, args, signer })? {
-        Reply::Result { result, text } => match print {
-            Print::Value => print_json(&result),
-            Print::Command { output, ns } => output.print(&result, text.as_deref(), ns),
-        },
+        Reply::Result {
+            result,
+            text,
+            notice,
+        } => {
+            if let Some(notice) = &notice {
+                output::print_notice(notice);
+            }
+            match print {
+                Print::Value => print_json(&result),
+                Print::Command { output, ns } => output.print(&result, text.as_deref(), ns),
+            }
+        }
         Reply::Intent { .. } => {}
         Reply::Tools { .. } => {
             return Err(Failure::new("notedeck answered a call with a tool list"));

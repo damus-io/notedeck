@@ -6,6 +6,10 @@
 //! is no text. The text arrives with its muted parts colored; nd keeps the
 //! color for a terminal or a pager and strips it otherwise, since only nd
 //! knows where its stdout goes.
+//!
+//! A tool's `notice` (`Reply::Result::notice`) is a line for the person, not
+//! the answer, and goes to stderr either way, so the text or the value pipes
+//! clean.
 
 use cli_term::{ColorWhen, PagerMode};
 use serde_json::Value;
@@ -49,6 +53,15 @@ impl Output {
             false => strip_color(text),
         };
         cli_term::emit(&text, use_pager, &pager_var(ns));
+    }
+}
+
+/// A tool's notice on stderr, muted when stderr is a terminal (as the
+/// `headway` CLI printed its `diff` resolution line).
+pub fn print_notice(notice: &str) {
+    match std::io::stderr().is_terminal() {
+        true => eprintln!("\x1b[2m{notice}\x1b[0m"),
+        false => eprintln!("{notice}"),
     }
 }
 
