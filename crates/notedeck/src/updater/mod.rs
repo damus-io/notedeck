@@ -65,6 +65,10 @@ pub struct Updater {
     release_pubkey: [u8; 32],
     channel: nostr::ReleaseChannel,
     release_sub: Subscription,
+    /// Whether an update could be installed over the running copy; checked
+    /// before each download. [`platform::can_install_in_place`] outside of
+    /// tests.
+    install_check: fn() -> Result<(), String>,
 }
 
 impl Updater {
@@ -92,6 +96,7 @@ impl Updater {
             release_pubkey,
             channel,
             release_sub,
+            install_check: platform::can_install_in_place,
         }
     }
 
@@ -293,7 +298,20 @@ impl Updater {
         }
     }
 
+    /// Download `release` in the background, unless it couldn't be
+    /// installed here anyway (translocated app, read-only install dir, ...).
+    /// Then park in [`UpdateState::Error`] with the reason, rather than
+    /// fetching an archive we would have to throw away.
     fn start_download(&mut self, release: ReleaseInfo) {
+        if let Err(reason) = (self.install_check)() {
+            info!(
+                "updater: v{} is available but can't be installed here: {reason}",
+                release.version
+            );
+            self.state = UpdateState::Error(reason);
+            return;
+        }
+
         let version = release.version.clone();
         self.state = UpdateState::Downloading {
             version: version.clone(),
@@ -541,6 +559,9 @@ mod tests {
             TEST_PUBKEY,
             nostr::ReleaseChannel::Main,
         );
+        // The test binary isn't an installable app (on macOS it's not in a
+        // .app at all); this test is about discovery, not installability.
+        updater.install_check = || Ok(());
 
         // First poll should find the cached release and start downloading
         updater.poll(&ndb);
@@ -549,6 +570,37 @@ mod tests {
             updater.downloading_version(),
             Some("99.0.0"),
             "updater should start downloading cached release on first poll"
+        );
+    }
+
+    /// A release we couldn't install here is never downloaded: the updater
+    /// parks in `Error` with the install check's reason instead.
+    #[test]
+    fn test_start_download_refuses_when_not_installable() {
+        use crate::test_util::test_config;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let mut updater = Updater::new(
+            &DataPath::new(tmp.path()),
+            &ndb,
+            crate::Waker::noop(),
+            [0u8; 32],
+            nostr::ReleaseChannel::Main,
+        );
+        updater.install_check = || Err("read-only install dir".to_string());
+
+        updater.start_download(ReleaseInfo {
+            version: "99.0.0".to_string(),
+            asset_url: "http://127.0.0.1:1/never-fetched.tar.gz".to_string(),
+            asset_name: "never-fetched.tar.gz".to_string(),
+            expected_sha256: String::new(),
+        });
+
+        assert_eq!(updater.downloading_version(), None);
+        assert!(
+            matches!(&updater.state, UpdateState::Error(reason) if reason == "read-only install dir"),
+            "should park in Error with the reason"
         );
     }
 

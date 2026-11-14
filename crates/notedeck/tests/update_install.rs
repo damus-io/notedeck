@@ -146,6 +146,107 @@ mod unix_tests {
         );
     }
 
+    /// Build a minimal `<name>.app` (Info.plist plus a shell-script
+    /// executable that prints `tag`) under `dir`, ad-hoc signed.
+    #[cfg(target_os = "macos")]
+    fn make_signed_fake_app(dir: &Path, name: &str, tag: &str) -> std::path::PathBuf {
+        let app = dir.join(format!("{name}.app"));
+        let macos = app.join("Contents/MacOS");
+        fs::create_dir_all(&macos).unwrap();
+        fs::write(
+            app.join("Contents/Info.plist"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>fake</string>
+<key>CFBundleIdentifier</key><string>com.example.{name}</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+"#
+            ),
+        )
+        .unwrap();
+        let exe = macos.join("fake");
+        fs::write(&exe, format!("#!/bin/sh\necho {tag}\n")).unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = Command::new("/usr/bin/codesign")
+            .args(["-s", "-", "--force", "--deep"])
+            .arg(&app)
+            .status()
+            .expect("run codesign");
+        assert!(status.success(), "ad-hoc signing failed");
+        app
+    }
+
+    /// `verify_bundle_signature` accepts an intact ad-hoc signed bundle and
+    /// rejects one whose executable changed after signing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore] // shells out to codesign
+    fn test_verify_bundle_signature() {
+        use notedeck::updater::platform::verify_bundle_signature;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let good = make_signed_fake_app(&tmp.path().join("good"), "Fake", "good");
+        verify_bundle_signature(&good).expect("intact bundle should verify");
+
+        let bad = make_signed_fake_app(&tmp.path().join("bad"), "Fake", "bad");
+        fs::write(
+            bad.join("Contents/MacOS/fake"),
+            "#!/bin/sh\necho tampered\n",
+        )
+        .unwrap();
+        let err = verify_bundle_signature(&bad).expect_err("tampered bundle must not verify");
+        assert!(err.contains("Signature check failed"), "{err}");
+    }
+
+    /// An ad-hoc signed running app has no TeamIdentifier, so there is
+    /// nothing to match an update against: `verify_staged_bundle` refuses,
+    /// even when the staged bundle itself verifies.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore] // shells out to codesign
+    fn test_verify_staged_bundle_refuses_teamless_running_app() {
+        use notedeck::updater::platform::verify_staged_bundle;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let running = make_signed_fake_app(&tmp.path().join("installed"), "Fake", "v1");
+        let staged = make_signed_fake_app(&tmp.path().join("staging"), "Fake", "v2");
+
+        let err = verify_staged_bundle(&staged, &running).expect_err("no team to match");
+        assert!(err.contains("has no signing team"), "{err}");
+    }
+
+    /// `swap_bundle` puts the staged bundle in place of the running one,
+    /// leaves no `.app.old`/`.app.new` behind, and the result still verifies.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore] // shells out to codesign
+    fn test_swap_bundle_replaces_whole_app() {
+        use notedeck::updater::platform::{swap_bundle, verify_bundle_signature};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let installed_dir = tmp.path().join("Applications");
+        let running = make_signed_fake_app(&installed_dir, "Fake", "v1");
+        let staged = make_signed_fake_app(&tmp.path().join("staging"), "Fake", "v2");
+
+        swap_bundle(&staged, &running).expect("swap");
+
+        let out = Command::new(running.join("Contents/MacOS/fake"))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "v2");
+        verify_bundle_signature(&running).expect("swapped-in bundle should still verify");
+        assert!(!staged.exists(), "staged bundle was moved, not copied");
+        let leftovers: Vec<_> = fs::read_dir(&installed_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(leftovers, vec![std::ffi::OsString::from("Fake.app")]);
+    }
+
     /// Test `self_replace::self_replace()` + relaunch using the real
     /// `update_test_helper` binary.
     ///
