@@ -20,34 +20,7 @@ use nostrdb_net::relay::sync::Result;
 use crate::review::{self, ReviewFlags, SourceFlag};
 use crate::{APP, help};
 
-/// `list`'s saved-view flags (see [`crate::list::run_list`]). At most one of
-/// `--views`/`--delete-view` makes sense alone; `--view` and `--save-view`
-/// combine, saving the applied view with the run's other flags over it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ListViews {
-    /// `--view <name>`: lay the list out as this saved or built-in view.
-    pub(crate) apply: Option<String>,
-    /// `--save-view <name>`: save the run's query and layout as this view.
-    pub(crate) save: Option<String>,
-    /// `--delete-view <name>`: delete this saved view.
-    pub(crate) delete: Option<String>,
-    /// `--views`: list the views instead of the cards.
-    pub(crate) list: bool,
-    /// Which layout flags the run passed, so they override the applied
-    /// view's rather than its being overridden by their defaults.
-    pub(crate) given: LayoutGiven,
-}
-
-/// Which of `list`'s layout flag groups were passed on the command line.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LayoutGiven {
-    /// `--show`/`--hide`.
-    pub(crate) display: bool,
-    /// `--group`/`--sub-group`/`--empty`.
-    pub(crate) grouping: bool,
-    /// `--sort`/`--descending`/`--ascending`/`--completed-by-recency`.
-    pub(crate) sorting: bool,
-}
+pub(crate) use headway::list::ListViews;
 
 /// A parsed command. Card arguments are still raw strings here; they're resolved
 /// against the board once it's folded.
@@ -1328,6 +1301,7 @@ fn read_desc_source(path: &str) -> Result<String> {
 mod tests {
     use super::*;
     use headway::event::LineRange;
+    use headway::list::LayoutGiven;
     use headway::query::DisplayProp;
 
     /// Parse args in the empty environment: no `HEADWAY_*` variables and no

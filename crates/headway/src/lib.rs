@@ -13,6 +13,9 @@
 //! - [`edit`] — reading an edit's arguments against a board: columns, review
 //!   records, due dates, estimates and what a comment answers, for the CLI and
 //!   the app's tools alike.
+//! - [`grep`] and [`list`] — `headway grep`'s search and `headway list`'s
+//!   listing and saved views, each as JSON or text, shared by the CLI and
+//!   the app's tools.
 //! - [`query`] — the issue-list query model: the shared filter parser and
 //!   predicate behind the board filter, the list view and `headway list`.
 //! - [`render`] — the human text view of a board, a card, the `next`
@@ -38,6 +41,8 @@ pub mod event;
 pub mod fmt;
 pub mod git;
 pub mod graph;
+pub mod grep;
+pub mod list;
 pub mod query;
 pub mod render;
 pub mod store;

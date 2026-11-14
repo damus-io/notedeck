@@ -4105,6 +4105,7 @@ dependencies = [
 name = "headway"
 version = "0.11.0-beta.1"
 dependencies = [
+ "cli_term",
  "gethostname",
  "hex",
  "ndb_testing",
@@ -4112,6 +4113,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "profiling",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

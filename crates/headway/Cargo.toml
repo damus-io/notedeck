@@ -4,6 +4,8 @@ edition = "2024"
 version.workspace = true
 
 [dependencies]
+cli_term = { workspace = true }
+regex = "1"
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
 gethostname = "1"

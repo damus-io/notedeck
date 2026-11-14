@@ -8,7 +8,10 @@
 //! currently-selected account — the pubkey that authors this user's boards.
 
 use headway::event::{self, BoardView, Priority, resolve_card};
+use headway::list::{self, LayoutGiven, ListViews, Listing};
+use headway::query::{DisplayProps, GroupBy, Grouping, ListQuery, SortBy, Sorting, ViewSpec};
 use headway::store::{self, BoardAction, NewCard};
+use headway::views::{self, SavedView};
 use headway::{boards, edit, render, wordid};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
@@ -31,6 +34,8 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(ShowBoard),
         RegisteredTool::new(ShowCard),
         RegisteredTool::new(ReadyItems),
+        RegisteredTool::new(Grep),
+        RegisteredTool::new(List),
         // Write.
         RegisteredTool::new(AddCard),
         RegisteredTool::new(MoveCard),
@@ -52,6 +57,8 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(RestoreCard),
         RegisteredTool::new(DeleteCard),
         RegisteredTool::new(RenameBoard),
+        RegisteredTool::new(SaveView),
+        RegisteredTool::new(DeleteView),
     ]
 }
 
@@ -458,6 +465,544 @@ impl AppTool for ReadyItems {
     /// empty frontier, so `$(nd headway next)` is empty when nothing is ready.
     fn render(&self, out: &Self::Output) -> Option<String> {
         Some(render::next_lines(out, true))
+    }
+}
+
+/// The boards a cross-board read (`grep`, `list`) reads, and the `--in` card
+/// whose subtree it narrows to.
+struct ReadScope {
+    boards: Vec<BoardView>,
+    /// `--in <card>`: that card and its descendants; `None` for a whole board
+    /// (no `--in`, or `--in <board-slug>`).
+    subtree: Option<[u8; 32]>,
+}
+
+/// Gather a [`ReadScope`], as the `headway` CLI's `read_scope` does: with no
+/// `board`, every board this account can read (its own and those shared
+/// with it, as `show --all` lists them); otherwise the one board `board`
+/// ([`board_view`]), narrowed to `container`'s subtree when it names a card.
+/// Each board is folded once.
+fn read_scope(
+    cx: &ToolContext,
+    board: Option<&str>,
+    container: Option<&str>,
+) -> Result<ReadScope, String> {
+    let Some(board) = board else {
+        if container.is_some() {
+            return Err("--in reads one card's subtree on its own board — drop --all".into());
+        }
+        let me = *cx.accounts.selected_account_pubkey();
+        let roster = boards::Roster::read(cx.ndb, boards::Identity::own(me));
+        let mut all = boards::list_boards(cx.ndb, &roster);
+        all.extend(boards::list_shared_with_me(cx.ndb, &roster));
+        return Ok(ReadScope {
+            boards: all,
+            subtree: None,
+        });
+    };
+    let view = board_view(cx, board)?;
+    // `--in <board-slug>` is the whole board, the same as no `--in`.
+    let subtree = match container.map(|sel| edit::resolve_container(&view, sel)) {
+        Some(Ok(event::Container::Card(id))) => Some(id),
+        Some(Err(e)) => return Err(e),
+        _ => None,
+    };
+    Ok(ReadScope {
+        boards: vec![view],
+        subtree,
+    })
+}
+
+/// Whether `container` is a self-routing card ref, one that names its own
+/// board (`headway:<board>/<word-id>`), which the CLI counts as naming the
+/// board outright.
+fn names_board(container: Option<&str>) -> bool {
+    container.and_then(wordid::parse_ref).is_some()
+}
+
+/// `headway_grep`: search card text — `headway grep`.
+struct Grep;
+
+/// Arguments for [`Grep`].
+#[derive(Deserialize)]
+struct GrepArgs {
+    /// The regular expression to search for, smart-case unless told.
+    pattern: String,
+    /// Keep only this card and its descendants (`--in`).
+    #[serde(default)]
+    container: Option<String>,
+    /// Every board. The default already, unless `board` or `container`
+    /// narrows the search; with `board`, it widens it again.
+    #[serde(default)]
+    all: bool,
+    /// `-i`: always fold case.
+    #[serde(default)]
+    ignore_case: bool,
+    /// `-s`: never fold case.
+    #[serde(default)]
+    case_sensitive: bool,
+    #[serde(flatten)]
+    route: Route,
+}
+
+impl GrepArgs {
+    /// The pattern compiled under its case mode, smart-case by default.
+    fn compile(&self) -> Result<headway::grep::Regex, String> {
+        let case = match (self.ignore_case, self.case_sensitive) {
+            (true, true) => return Err("pass one of --ignore-case and --case-sensitive".into()),
+            (true, false) => headway::grep::CaseMode::Insensitive,
+            (false, true) => headway::grep::CaseMode::Sensitive,
+            (false, false) => headway::grep::CaseMode::Smart,
+        };
+        headway::grep::compile_pattern(&self.pattern, case)
+    }
+
+    /// The board the search is narrowed to, or `None` for every board: the
+    /// CLI searches every board unless `--board` or `--in` narrows it, and
+    /// the caller's own board (`$HEADWAY_BOARD`) never does.
+    fn board(&self) -> Result<Option<String>, String> {
+        let container = self.container.as_deref();
+        if self.all || (self.route.board.is_none() && container.is_none()) {
+            return Ok(None);
+        }
+        self.route.board(container).map(Some)
+    }
+}
+
+/// [`Grep`]'s answer: the boards searched and the pattern, which go out as
+/// [`headway::grep::hits_json`] and render as [`headway::grep::text`].
+struct Grepped {
+    scope: ReadScope,
+    pattern: headway::grep::Regex,
+}
+
+impl Grepped {
+    /// The cards that matched, most recent first.
+    fn hits(&self) -> Vec<headway::grep::GrepHit<'_>> {
+        headway::grep::search(&self.scope.boards, self.scope.subtree, &self.pattern)
+    }
+}
+
+impl Serialize for Grepped {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        headway::grep::hits_json(&self.hits()).serialize(serializer)
+    }
+}
+
+impl AppTool for Grep {
+    type Args = GrepArgs;
+    type Output = Grepped;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "headway_grep",
+            "Search headway card text — titles, descriptions, comments and review comments — as `headway grep` does: every board this account can read, archived cards included, unless `board` or `container` narrows it. Smart-case: a pattern with an uppercase letter is case-sensitive. Answers an array of cards, most recent match first, each `{ref, id, board, title, column, matches: [{field, text, created_at}]}`, one row per matching line.",
+            vec![
+                ToolArg::new(
+                    "pattern",
+                    ToolArgType::String,
+                    "The regular expression to search for; quote it if it has spaces.",
+                )
+                .required(true)
+                .positional(),
+                ToolArg::new(
+                    "container",
+                    ToolArgType::String,
+                    "Search only this card (`headway:<board>/<word-id>`) and its descendants, on its own board.",
+                )
+                .long("in"),
+                ToolArg::new(
+                    "all",
+                    ToolArgType::Boolean,
+                    "Search every board even when `board` names one. Every board is the default already.",
+                ),
+                ToolArg::new(
+                    "archived",
+                    ToolArgType::Boolean,
+                    "Accepted for the CLI's sake: archived cards are always searched.",
+                ),
+                ToolArg::new(
+                    "ignore_case",
+                    ToolArgType::Boolean,
+                    "Always fold case.",
+                )
+                .short('i'),
+                ToolArg::new(
+                    "case_sensitive",
+                    ToolArgType::Boolean,
+                    "Never fold case.",
+                )
+                .short('s'),
+                ToolArg::new(
+                    "board",
+                    ToolArgType::String,
+                    "Search only this board (slug). Defaults to every board.",
+                ),
+                default_board_arg(),
+            ],
+        )
+        .titled("Search cards")
+        .read_only()
+        .command(&["headway", "grep"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let pattern = args.compile()?;
+        let board = args.board()?;
+        let scope = read_scope(cx, board.as_deref(), args.container.as_deref())?;
+        Ok(Grepped { scope, pattern })
+    }
+
+    /// Each card's header and its matching lines, as `headway grep` prints
+    /// them, or `no matches`.
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        let text = headway::grep::text(&out.hits(), &out.pattern, true);
+        if text.is_empty() {
+            return Some(format!("{}\n", headway::grep::NO_MATCHES));
+        }
+        Some(text)
+    }
+}
+
+/// The query and layout arguments `list` and `--save-view` share: what a
+/// `headway list` command line says beyond the saved-view flags.
+#[derive(Deserialize)]
+struct ListLayoutArgs {
+    /// The query's terms, as one string.
+    #[serde(default)]
+    query: Option<String>,
+    /// Keep only this card and its descendants (`--in`).
+    #[serde(default)]
+    container: Option<String>,
+    /// Done cards too, when the query says nothing about state.
+    #[serde(default)]
+    all: bool,
+    /// `--show`: the properties a row shows, a comma list.
+    #[serde(default)]
+    show: Option<String>,
+    /// `--hide`: properties taken from what a row shows, a comma list.
+    #[serde(default)]
+    hide: Option<String>,
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    sub_group: Option<String>,
+    /// `--empty`: groups no card is in, too.
+    #[serde(default)]
+    empty: bool,
+    #[serde(default)]
+    sort: Option<String>,
+    #[serde(default)]
+    descending: bool,
+    #[serde(default)]
+    ascending: bool,
+    #[serde(default)]
+    completed_by_recency: bool,
+    /// `--view`: lay the list out as this saved or built-in view.
+    #[serde(default)]
+    view: Option<String>,
+    #[serde(flatten)]
+    route: Route,
+}
+
+/// A `list` run read off [`ListLayoutArgs`]: its own view and the board it
+/// names outright.
+struct ListRun {
+    /// The query words and layout flags, as a view.
+    spec: ViewSpec,
+    /// `--view`, and which layout flag groups were passed over it.
+    views: ListViews,
+    /// The board `board` or a self-routing `container` names, which narrows
+    /// the list to it; `None` reads every board.
+    explicit: Option<String>,
+}
+
+impl ListLayoutArgs {
+    /// The run's own view, as the `headway` CLI reads its flags.
+    fn run(&self) -> Result<ListRun, String> {
+        let mut given = LayoutGiven::default();
+        let parse_props = |list: &str| DisplayProps::parse_list(list).map_err(|e| e.to_string());
+        let show = self.show.as_deref().map(parse_props).transpose()?;
+        let hide = match self.hide.as_deref() {
+            Some(list) => parse_props(list)?,
+            None => DisplayProps::NONE,
+        };
+        given.display = self.show.is_some() || self.hide.is_some();
+
+        let mut grouping = Grouping::default();
+        if let Some(by) = &self.group {
+            grouping.by = by.parse::<GroupBy>().map_err(|e| e.to_string())?;
+        }
+        if let Some(sub) = &self.sub_group {
+            grouping.sub = sub.parse::<GroupBy>().map_err(|e| e.to_string())?;
+        }
+        grouping.show_empty = self.empty;
+        given.grouping = self.group.is_some() || self.sub_group.is_some() || self.empty;
+
+        let by = match &self.sort {
+            Some(by) => by.parse::<SortBy>().map_err(|e| e.to_string())?,
+            None => SortBy::default(),
+        };
+        let descending = match (self.descending, self.ascending) {
+            (true, true) => return Err("pass one of --descending and --ascending".into()),
+            (true, false) => true,
+            (false, true) => false,
+            (false, false) => by.natural_descending(),
+        };
+        let sorting = Sorting {
+            descending,
+            completed_by_recency: self.completed_by_recency,
+            ..Sorting::by(by)
+        };
+        given.sorting =
+            self.sort.is_some() || self.descending || self.ascending || self.completed_by_recency;
+
+        let container = self.container.as_deref();
+        let explicit = match self.route.board.is_some() || names_board(container) {
+            true => Some(self.route.board(container)?),
+            false => None,
+        };
+        Ok(ListRun {
+            spec: ViewSpec {
+                name: String::new(),
+                query: self.query.clone().unwrap_or_default(),
+                grouping,
+                sorting,
+                display: DisplayProps::shown_hidden(show, hide),
+                hide_subissues: false,
+                board: explicit.clone(),
+            },
+            views: ListViews {
+                apply: self.view.clone(),
+                given,
+                ..ListViews::default()
+            },
+            explicit,
+        })
+    }
+
+    /// The view the run shows: its own over `--view`'s (see
+    /// [`list::compose_view`]), `--all` adding done cards.
+    fn compose(&self, saved: &[SavedView]) -> Result<ViewSpec, String> {
+        let run = self.run()?;
+        list::compose_view(saved, &run.views, run.spec, self.all)
+    }
+}
+
+/// The arguments [`ListLayoutArgs`] reads, in the order `nd headway list
+/// --help` lists them: the query words, then the flags.
+fn list_layout_args() -> Vec<ToolArg> {
+    vec![
+        ToolArg::new(
+            "query",
+            ToolArgType::String,
+            "The query, as the board filter reads it: terms AND, e.g. `p:high label:ui is:done col:backlog due:any`, or a pasted card ref. With no `is:` term, only open cards.",
+        )
+        .rest(),
+        ToolArg::new(
+            "container",
+            ToolArgType::String,
+            "List only this card (`headway:<board>/<word-id>`) and its descendants, on its own board.",
+        )
+        .long("in"),
+        ToolArg::new(
+            "all",
+            ToolArgType::Boolean,
+            "Done cards too, when the query says nothing about state (`is:any`).",
+        ),
+        ToolArg::new(
+            "show",
+            ToolArgType::String,
+            "The properties a row shows, a comma list: priority, id, status, subissues, labels, estimate, blockers, due, created, updated, board.",
+        ),
+        ToolArg::new(
+            "hide",
+            ToolArgType::String,
+            "Properties to take from what a row shows, a comma list.",
+        ),
+        ToolArg::new(
+            "group",
+            ToolArgType::String,
+            "Group the rows: none, status, priority, label, board or parent.",
+        ),
+        ToolArg::new(
+            "sub_group",
+            ToolArgType::String,
+            "Group each group's rows again, by the same names as `group`.",
+        ),
+        ToolArg::new(
+            "empty",
+            ToolArgType::Boolean,
+            "Show the groups no card is in too.",
+        ),
+        ToolArg::new(
+            "sort",
+            ToolArgType::String,
+            "Order the rows: manual (board order, the default), priority, updated, created, due or work-order (which marks the ready frontier).",
+        ),
+        ToolArg::new(
+            "descending",
+            ToolArgType::Boolean,
+            "Sort descending, over the order's natural direction.",
+        ),
+        ToolArg::new(
+            "ascending",
+            ToolArgType::Boolean,
+            "Sort ascending, over the order's natural direction.",
+        ),
+        ToolArg::new(
+            "completed_by_recency",
+            ToolArgType::Boolean,
+            "Order done cards by when they were finished.",
+        ),
+        ToolArg::new(
+            "view",
+            ToolArgType::String,
+            "Lay the list out as this saved or built-in view (Active, Backlog, All issues); the query narrows it and a layout flag passed replaces its own.",
+        ),
+        ToolArg::new(
+            "board",
+            ToolArgType::String,
+            "List only this board (slug). Defaults to every board, or a view's own board.",
+        ),
+        default_board_arg(),
+    ]
+}
+
+/// `headway_list`: the cards a query keeps, or the views — `headway list`.
+struct List;
+
+/// Arguments for [`List`].
+#[derive(Deserialize)]
+struct ListArgs {
+    #[serde(flatten)]
+    layout: ListLayoutArgs,
+    /// `-n`: keep the first rows.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// `--views`: list the views instead of the cards.
+    #[serde(default)]
+    views: bool,
+}
+
+/// [`List`]'s answer: the cards, which go out as [`Listing::json`] and
+/// render as [`Listing::text`], or with `views` the views.
+enum Listed {
+    Cards {
+        scope: ReadScope,
+        query: ListQuery,
+        limit: Option<usize>,
+    },
+    Views {
+        saved: Vec<SavedView>,
+        /// The list's own layout, which a built-in view takes.
+        layout: ViewSpec,
+    },
+}
+
+impl Serialize for Listed {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Listed::Cards {
+                scope,
+                query,
+                limit,
+            } => Listing::new(&scope.boards, query, *limit)
+                .json()
+                .serialize(serializer),
+            Listed::Views { saved, layout } => {
+                list::views_json(saved, layout).serialize(serializer)
+            }
+        }
+    }
+}
+
+impl AppTool for List {
+    type Args = ListArgs;
+    type Output = Listed;
+
+    fn spec(&self) -> ToolSpec {
+        let mut args = list_layout_args();
+        args.extend([
+            ToolArg::new(
+                "limit",
+                ToolArgType::Integer,
+                "Keep the first rows of the sorted list.",
+            )
+            .short('n'),
+            ToolArg::new(
+                "views",
+                ToolArgType::Boolean,
+                "List the views — built-in, then saved — instead of the cards.",
+            ),
+        ]);
+        ToolSpec::new(
+            "headway_list",
+            "List the headway cards a query keeps, as `headway list` does: every board this account can read unless `board` or `container` narrows it, open cards unless the query or `all` says otherwise. Answers an array of cards as `show <card> --json` renders them plus their `board`, `column` and, sorted by work-order, `ready`; grouped, an array of `{group, count, rows, subgroups}`. `views` lists the saved and built-in views instead.",
+            args,
+        )
+        .titled("List cards")
+        .read_only()
+        .command(&["headway", "list"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    /// As the CLI reads it: a view scoped to a board reads that board,
+    /// unless the run named a board or a container itself.
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let me = *cx.accounts.selected_account_pubkey();
+        let saved = views::load_views(cx.ndb, &me);
+        let layout = args.layout;
+        if args.views {
+            let layout = layout.run()?.spec;
+            return Ok(Listed::Views { saved, layout });
+        }
+        let explicit = layout.run()?.explicit;
+        let spec = layout.compose(&saved)?;
+        let container = layout.container.as_deref();
+        let view_board = spec
+            .board
+            .clone()
+            .filter(|_| explicit.is_none() && container.is_none());
+        let board = match (&view_board, &explicit, container) {
+            (Some(board), _, _) => Some(board.clone()),
+            (None, None, None) => None,
+            (None, _, _) => Some(layout.route.board(container)?),
+        };
+        let scope = read_scope(cx, board.as_deref(), container)?;
+        let query = ListQuery {
+            filter: spec.filter(),
+            within: scope.subtree,
+            board: view_board,
+            display: spec.display,
+            grouping: spec.grouping,
+            sorting: spec.sorting,
+        };
+        Ok(Listed::Cards {
+            scope,
+            query,
+            limit: args.limit,
+        })
+    }
+
+    /// One row per card, or the groups' headers and rows, as `headway list`
+    /// prints them, or `no cards`; with `views`, one view a line.
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        match out {
+            Listed::Views { saved, layout } => Some(list::views_text(saved, layout)),
+            Listed::Cards {
+                scope,
+                query,
+                limit,
+            } => {
+                let text = Listing::new(&scope.boards, query, *limit).text(true);
+                match text.is_empty() {
+                    true => Some(format!("{}\n", list::NO_CARDS)),
+                    false => Some(text),
+                }
+            }
+        }
     }
 }
 
@@ -2007,6 +2552,128 @@ impl AppTool for RenameBoard {
     }
 }
 
+/// The selected account's signing key, for a write that isn't a board edit.
+fn account_secret(cx: &ToolContext) -> Result<[u8; 32], String> {
+    cx.accounts
+        .selected_filled()
+        .map(|f| f.secret_key.secret_bytes())
+        .ok_or_else(|| "the selected account is watch-only and cannot sign changes".to_owned())
+}
+
+/// A saved view as `list --save-view --json` prints it
+/// ([`list::view_json`]), and the line `--save-view` or `--delete-view`
+/// says.
+struct ViewAnswer {
+    view: SavedView,
+    line: String,
+}
+
+impl Serialize for ViewAnswer {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        list::view_json(&self.view.spec, Some(&self.view.slug)).serialize(serializer)
+    }
+}
+
+/// `headway_save_view`: save a list's query and layout as a named view —
+/// `headway list --save-view <name>`. Personal and local, like the app's own
+/// view tabs: PNS-wrapped and signed by the account, never a board edit.
+struct SaveView;
+
+/// Arguments for [`SaveView`].
+#[derive(Deserialize)]
+struct SaveViewArgs {
+    /// The view's name; saving over an existing name replaces that view.
+    save_view: String,
+    #[serde(flatten)]
+    layout: ListLayoutArgs,
+}
+
+impl AppTool for SaveView {
+    type Args = SaveViewArgs;
+    type Output = ViewAnswer;
+
+    fn spec(&self) -> ToolSpec {
+        let mut args = vec![
+            ToolArg::new(
+                "save_view",
+                ToolArgType::String,
+                "The view's name. Saving over a view of that name replaces it.",
+            )
+            .required(true),
+        ];
+        args.extend(list_layout_args());
+        ToolSpec::new(
+            "headway_save_view",
+            "Save a headway list's query and layout as a named view, as `headway list --save-view <name>` does: the same arguments as `headway_list`, saved rather than listed (over `view` when one is applied). The view is this account's own, kept encrypted; answers it as `{name, query, display, grouping, sorting, board, slug, builtin}`.",
+            args,
+        )
+        .titled("Save list view")
+        .command(&["headway", "list"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let me = *cx.accounts.selected_account_pubkey();
+        let secret = account_secret(cx)?;
+        let saved = views::load_views(cx.ndb, &me);
+        let spec = args.layout.compose(&saved)?;
+        let view = list::save_named_view(cx.ndb, &me, &secret, &saved, &args.save_view, spec)?;
+        let line = list::saved_view_line(&view);
+        Ok(ViewAnswer { view, line })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(format!("{}\n", out.line))
+    }
+}
+
+/// `headway_delete_view`: delete a saved list view — `headway list
+/// --delete-view <name>`.
+struct DeleteView;
+
+/// Arguments for [`DeleteView`].
+#[derive(Deserialize)]
+struct DeleteViewArgs {
+    /// The view's name or slug.
+    delete_view: String,
+}
+
+impl AppTool for DeleteView {
+    type Args = DeleteViewArgs;
+    type Output = ViewAnswer;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(
+            "headway_delete_view",
+            "Delete one of this account's saved headway list views, by name or slug, as `headway list --delete-view <name>` does. Answers the view deleted, as `headway_save_view` answers one.",
+            vec![
+                ToolArg::new(
+                    "delete_view",
+                    ToolArgType::String,
+                    "The saved view's name or slug.",
+                )
+                .required(true),
+            ],
+        )
+        .titled("Delete list view")
+        .command(&["headway", "list"])
+        .filed_under(crate::TOOL_CATEGORY)
+    }
+
+    fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        let me = *cx.accounts.selected_account_pubkey();
+        let secret = account_secret(cx)?;
+        let saved = views::load_views(cx.ndb, &me);
+        let view = list::delete_named_view(cx.ndb, &me, &secret, &saved, &args.delete_view)?;
+        let line = list::deleted_view_line(&view);
+        Ok(ViewAnswer { view, line })
+    }
+
+    fn render(&self, out: &Self::Output) -> Option<String> {
+        Some(format!("{}\n", out.line))
+    }
+}
+
 /// The shared `card` argument: a card ref accepted by [`resolve_card`], the
 /// first bare word on a command line.
 fn card_arg() -> ToolArg {
@@ -2075,6 +2742,7 @@ fn due_arg(description: &'static str) -> ToolArg {
 mod tests {
     mod edits;
     mod live;
+    mod search;
     mod structure;
 
     use super::*;
@@ -2922,8 +3590,15 @@ mod tests {
         assert_eq!(shown[0]["comments"][0]["body"], "from the agent");
         assert_eq!(shown[0]["comments"][0]["author"], agent.pubkey.hex());
 
-        // So does `show --all`: each sealed board is folded by its
-        // coordinate there too, not only by the account's own events.
+        // So do the reads across every board: each sealed board is folded
+        // by its coordinate there too, not only by the account's own events.
+        let found = call_registered(
+            &mut cx,
+            "headway_grep",
+            json!({ "pattern": "from the agent" }),
+        )
+        .expect("greps every board");
+        assert_eq!(found[0]["ref"], sealed_ref.as_str(), "{found}");
         let all = call_registered(&mut cx, "headway_show_board", json!({ "all": true }))
             .expect("shows every board");
         let sealed = all

@@ -30,10 +30,12 @@
 //!   `--color <auto|always|never>` its color (see [`Output`]).
 //!
 //! **Two tools may share a path.** They are tried in order of how many
-//! positionals each *requires*, most first, and the first whose required
-//! positionals the line supplies wins: `headway show` alone is
-//! `headway_show_board`, and `headway show <card>` is `headway_show_card`.
-//! Tools that tie keep the order notedeck listed them in.
+//! flags each *requires*, then how many positionals, most first, and the
+//! first whose required flags and positionals the line supplies wins:
+//! `headway show` alone is `headway_show_board`, `headway show <card>` is
+//! `headway_show_card`, and `headway list --save-view <name>` is the tool
+//! that requires `--save-view` rather than `headway_list`. Tools that tie
+//! keep the order notedeck listed them in.
 
 use crate::caller::{self, Caller};
 use crate::help::CLI;
@@ -79,6 +81,28 @@ impl Entry<'_> {
         self.positionals().filter(|arg| arg.required).count()
     }
 
+    /// Its required flags: arguments that are neither positional nor read
+    /// from the environment, so only a flag on the line can give them.
+    /// A tool is picked only when the line gives every one, which is how
+    /// one path holds a read and a write: `headway list` lists, and
+    /// `headway list --save-view <name>` is the tool that requires
+    /// `--save-view`.
+    fn required_flags(&self) -> impl Iterator<Item = &Arg<'_>> {
+        self.args
+            .iter()
+            .filter(|arg| arg.required && arg.positional.is_none() && arg.env.is_none())
+    }
+
+    /// Whether `line` gives every one of its [required
+    /// flags](Self::required_flags).
+    fn flags_given(&self, line: &Line) -> bool {
+        self.required_flags().all(|arg| {
+            line.flags
+                .iter()
+                .any(|(flag, _)| self.flag(flag).is_some_and(|hit| hit.arg.name == arg.name))
+        })
+    }
+
     /// The required positionals `line` must still give as bare words: those
     /// it doesn't already give by a flag, such as a comment body read with
     /// `--body-file`.
@@ -119,10 +143,13 @@ impl Entry<'_> {
         Some(FlagHit { arg, file: true })
     }
 
-    /// Its usage line: the path, its positionals, and `[OPTIONS]` when it
-    /// has flags.
+    /// Its usage line: the path, its required flags, its positionals, and
+    /// `[OPTIONS]` when it has flags.
     fn usage(&self) -> String {
         let mut line = self.path().join(" ");
+        for arg in self.required_flags() {
+            line.push_str(&format!(" --{} <{}>", arg.flag(), arg.name));
+        }
         for arg in self.positionals() {
             let word = match arg.positional {
                 Some(Slot::Rest) => format!("<{}>...", arg.name),
@@ -212,7 +239,7 @@ pub fn resolve(
     let line = Line::read(&candidates, &words[path_len..]).map_err(|e| with_help(e, path))?;
     let Some(entry) = candidates
         .iter()
-        .find(|e| e.words_needed(&line).count() <= line.positionals.len())
+        .find(|e| e.words_needed(&line).count() <= line.positionals.len() && e.flags_given(&line))
     else {
         // Nothing runs on this few words, so name what the least demanding
         // tool still needs.
@@ -236,8 +263,8 @@ pub fn resolve(
 }
 
 /// The tools `path` runs, in the order a command line tries them: most
-/// required positionals first, and ties in notedeck's order (the sort is
-/// stable).
+/// required flags first, then most required positionals, and ties in
+/// notedeck's order (the sort is stable).
 fn candidates<'e, 't, S: PartialEq<String>>(
     entries: &'e [Entry<'t>],
     path: &[S],
@@ -246,7 +273,7 @@ fn candidates<'e, 't, S: PartialEq<String>>(
         .iter()
         .filter(|e| e.path().len() == path.len() && path.iter().zip(e.path()).all(|(a, b)| a == b))
         .collect();
-    candidates.sort_by_key(|e| std::cmp::Reverse(e.required_slots()));
+    candidates.sort_by_key(|e| std::cmp::Reverse((e.required_flags().count(), e.required_slots())));
     candidates
 }
 
@@ -815,6 +842,33 @@ mod tests {
                 )
             },
             tool(
+                "headway_list",
+                &["headway", "list"],
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Terms.", "x-nd-positional": "rest"},
+                        "group": {"type": "string", "description": "Grouping."},
+                    },
+                    "required": [],
+                    "x-nd-order": ["query", "group"],
+                }),
+            ),
+            tool(
+                "headway_save_view",
+                &["headway", "list"],
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "save_view": {"type": "string", "description": "The name."},
+                        "query": {"type": "string", "description": "Terms.", "x-nd-positional": "rest"},
+                        "group": {"type": "string", "description": "Grouping."},
+                    },
+                    "required": ["save_view"],
+                    "x-nd-order": ["save_view", "query", "group"],
+                }),
+            ),
+            tool(
                 "headway_open_review_queue",
                 &[],
                 json!({"type": "object", "properties": {}}),
@@ -912,6 +966,35 @@ mod tests {
         assert_eq!(
             run(&["headway", "show", "x", "--board=dave"]),
             call("headway_show_card", json!({"card": "x", "board": "dave"}))
+        );
+    }
+
+    /// A required flag picks its tool over one that doesn't require it,
+    /// listed earlier or not, and only when the line gives it.
+    #[test]
+    fn a_shared_path_picks_by_required_flags() {
+        assert_eq!(
+            run(&["headway", "list", "p:high", "--group", "board"]),
+            call("headway_list", json!({"query": "p:high", "group": "board"}))
+        );
+        assert_eq!(
+            run(&["headway", "list", "p:high", "--save-view", "Hot"]),
+            call(
+                "headway_save_view",
+                json!({"query": "p:high", "save_view": "Hot"})
+            )
+        );
+        assert_eq!(
+            run(&["headway", "list", "--save-view=Hot"]),
+            call("headway_save_view", json!({"save_view": "Hot"}))
+        );
+        // The usage line names the flag that picks the tool.
+        let Ok(Action::Help(page)) = run(&["headway", "list", "--help"]) else {
+            panic!("a help page");
+        };
+        assert!(
+            page.contains("nd headway list --save-view <save_view> [<query>...] [OPTIONS]"),
+            "{page}"
         );
     }
 

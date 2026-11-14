@@ -44,10 +44,7 @@ fn epic(live: &mut Live, n: usize) -> Epic {
 
 /// Add a card and wait for it to read back: its ref.
 fn add(live: &mut Live, args: serde_json::Value) -> String {
-    let added = live.edit("headway_add_card", args);
-    let card_ref = added.json["ref"].as_str().unwrap().to_owned();
-    live.card_until(&card_ref, "the added card", |_| true);
-    card_ref
+    live.add(args)
 }
 
 /// `next` with `args` once `ready` holds of the refs it hands out, with the

@@ -10,10 +10,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(super) struct Live {
     _dir: TempDir,
     pub(super) notedeck: notedeck::Notedeck,
+    account: FullKeypair,
 }
 
 /// [`Live`], ready to edit.
 pub(super) fn live() -> Live {
+    let mut live = bare();
+    let ndb = live.notedeck.app_context().ndb.clone();
+    store::seed_demo_board(
+        &ndb,
+        &live.account.pubkey,
+        &live.account.secret_key.secret_bytes(),
+        store::BOARD_ID,
+        1_700_000_000,
+        &mut store::NoPublish,
+    );
+    settled_view(
+        &ndb,
+        &live.account.pubkey,
+        store::BOARD_ID,
+        "the demo board",
+        |v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7,
+    );
+    live
+}
+
+/// A notedeck signed in as a fresh account with no boards at all, for the
+/// tests that read every board and count what comes back (see
+/// [`Live::seed`]).
+pub(super) fn bare() -> Live {
     let dir = TempDir::new().expect("tmp dir");
     let account = FullKeypair::generate();
     let args: Vec<String> = [
@@ -25,30 +50,40 @@ pub(super) fn live() -> Live {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let mut notedeck = notedeck::Notedeck::init(&egui::Context::default(), dir.path(), &args);
-    let ndb = notedeck.app_context().ndb.clone();
-    store::seed_demo_board(
-        &ndb,
-        &account.pubkey,
-        &account.secret_key.secret_bytes(),
-        store::BOARD_ID,
-        1_700_000_000,
-        &mut store::NoPublish,
-    );
-    settled_view(
-        &ndb,
-        &account.pubkey,
-        store::BOARD_ID,
-        "the demo board",
-        |v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7,
-    );
+    let notedeck = notedeck::Notedeck::init(&egui::Context::default(), dir.path(), &args);
     Live {
         _dir: dir,
         notedeck,
+        account,
     }
 }
 
 impl Live {
+    /// Seed an empty board `board_id`, with the default columns and no
+    /// cards, and wait for it to settle.
+    pub(super) fn seed(&mut self, board_id: &str) {
+        let ndb = self.notedeck.app_context().ndb.clone();
+        store::seed_board(
+            &ndb,
+            &self.account.pubkey,
+            &self.account.secret_key.secret_bytes(),
+            board_id,
+            board_id,
+            &mut store::NoPublish,
+        );
+        settled_view(&ndb, &self.account.pubkey, board_id, "a new board", |_| {
+            true
+        });
+    }
+
+    /// Add a card with the add tool and wait for it to read back: its ref.
+    pub(super) fn add(&mut self, args: serde_json::Value) -> String {
+        let added = self.edit("headway_add_card", args);
+        let card_ref = added.json["ref"].as_str().unwrap().to_owned();
+        self.card_until(&card_ref, "the added card", |_| true);
+        card_ref
+    }
+
     /// Call the registered tool `name`, as `nd` would.
     pub(super) fn call(
         &mut self,

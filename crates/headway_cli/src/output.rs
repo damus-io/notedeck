@@ -13,10 +13,7 @@ use headway::render;
 
 use nostrdb_net::relay::sync::Result;
 
-pub(crate) use headway::render::{
-    BLOCKED_GLYPH, PlacedCard, card_count, declined_message, deleted_board_error, labels_suffix,
-    placed_cards, plain_ref, priority_glyph,
-};
+pub(crate) use headway::render::{card_count, declined_message, deleted_board_error, plain_ref};
 
 /// Whether text goes out colored: when stdout is a terminal, as the CLI has
 /// always decided.
