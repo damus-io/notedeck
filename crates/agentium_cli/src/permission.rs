@@ -12,29 +12,15 @@
 //! back, so the CLI can't tell.
 
 use agentium_core::Engine;
-use agentium_core::session_loader::{PendingPermission, SessionState};
+pub(crate) use agentium_core::cli::control::Decision;
+use agentium_core::cli::control::{
+    DeletedMiss, pick_request, question_approve_error, resolve_live, short_perm_id,
+};
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::publish::{flush_publish, json_line};
-
-/// Whether a permission response allows or denies the request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Decision {
-    Approve,
-    Deny,
-}
-
-impl Decision {
-    /// The past-tense verb the report prints (`approved`/`denied`).
-    fn verb(self) -> &'static str {
-        match self {
-            Decision::Approve => "approved",
-            Decision::Deny => "denied",
-        }
-    }
-}
 
 /// What `approve`/`deny` were asked to do, as parsed.
 pub(crate) struct ResponseOpts {
@@ -70,7 +56,7 @@ pub(crate) async fn cmd_respond(
 
     let (session_id, uri, pending) = {
         let txn = Transaction::new(engine.ndb())?;
-        let state = resolve_live(engine, &txn, author, selector)?;
+        let state = resolve_live(engine.ndb(), &txn, author, selector, DeletedMiss::Running)?;
         let loaded =
             load_session_messages_for_author(engine.ndb(), &txn, author, &state.claude_session_id);
         (
@@ -82,12 +68,7 @@ pub(crate) async fn cmd_respond(
 
     let request = pick_request(&pending, opts.request.as_deref(), &uri)?;
     if request.is_question && opts.decision == Decision::Approve {
-        return Err(format!(
-            "request {} on {uri} is an AskUserQuestion — it needs answers, which a bare \
-             approve can't send; answer it in Dave, or `agentium deny` it",
-            short_id(&request.perm_id)
-        )
-        .into());
+        return Err(question_approve_error(request, &uri).into());
     }
 
     let perm_id = request.perm_id.to_string();
@@ -124,7 +105,7 @@ pub(crate) async fn cmd_respond(
         "{} {} request {} on {uri}{stop} (event {}…)",
         opts.decision.verb(),
         request.tool_name,
-        short_id(&request.perm_id),
+        short_perm_id(&request.perm_id),
         &event_id[..8],
     );
     Ok(())
@@ -144,7 +125,7 @@ pub(crate) async fn cmd_mode(
 ) -> Result<()> {
     let (session_id, uri) = {
         let txn = Transaction::new(engine.ndb())?;
-        let state = resolve_live(engine, &txn, author, selector)?;
+        let state = resolve_live(engine.ndb(), &txn, author, selector, DeletedMiss::Running)?;
         (state.claude_session_id.clone(), state.agentium_uri())
     };
 
@@ -160,156 +141,4 @@ pub(crate) async fn cmd_mode(
     }
     println!("set {uri} to {mode} mode (event {}…)", &event_id[..8]);
     Ok(())
-}
-
-/// Resolve `selector` against the live sessions. A match among only the
-/// tombstoned ones is reported as such (there's no running backend to answer),
-/// and any other miss surfaces the resolver's own error.
-pub(crate) fn resolve_live(
-    engine: &Engine,
-    txn: &Transaction,
-    author: &Pubkey,
-    selector: &str,
-) -> Result<SessionState> {
-    use agentium_core::session_loader::{
-        load_deleted_session_states_for_author, load_session_states_for_author, resolve_session,
-    };
-
-    let live = load_session_states_for_author(engine.ndb(), txn, author);
-    match resolve_session(&live, selector) {
-        Ok(state) => Ok(state.clone()),
-        Err(live_err) => {
-            let deleted = load_deleted_session_states_for_author(engine.ndb(), txn, author);
-            if let Ok(gone) = resolve_session(&deleted, selector) {
-                return Err(
-                    format!("{} is deleted — nothing is running", gone.agentium_uri()).into(),
-                );
-            }
-            Err(live_err.into())
-        }
-    }
-}
-
-/// Choose the request to answer from a session's pending ones (oldest first).
-///
-/// With no `prefix`, the newest: that is the one blocking the agent right now.
-/// With one, the single pending request whose perm-id starts with it; a prefix
-/// that matches none or several errors, listing what is pending.
-fn pick_request<'p>(
-    pending: &'p [PendingPermission],
-    prefix: Option<&str>,
-    uri: &str,
-) -> Result<&'p PendingPermission> {
-    let Some(prefix) = prefix else {
-        return pending
-            .last()
-            .ok_or_else(|| format!("no pending permission request for {uri}").into());
-    };
-
-    let prefix = prefix.to_ascii_lowercase();
-    let mut matches = pending
-        .iter()
-        .filter(|p| p.perm_id.to_string().starts_with(&prefix));
-    let first = matches.next();
-    let ambiguous = matches.next().is_some();
-    match first {
-        Some(request) if !ambiguous => Ok(request),
-        _ => {
-            let why = if ambiguous {
-                "matches more than one"
-            } else {
-                "matches no"
-            };
-            Err(format!(
-                "--request {prefix} {why} pending request on {uri}; pending: {}",
-                describe_pending(pending)
-            )
-            .into())
-        }
-    }
-}
-
-/// The pending requests as `<short-id> <tool>` pairs for an error message, or
-/// `none`.
-fn describe_pending(pending: &[PendingPermission]) -> String {
-    if pending.is_empty() {
-        return "none".to_string();
-    }
-    pending
-        .iter()
-        .map(|p| format!("{} {}", short_id(&p.perm_id), p.tool_name))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// A perm-id's first 8 hex digits — enough to pick it out with `--request`.
-pub(crate) fn short_id(perm_id: &uuid::Uuid) -> String {
-    perm_id.to_string()[..8].to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use uuid::Uuid;
-
-    fn pending(id: &str, tool: &str) -> PendingPermission {
-        PendingPermission {
-            perm_id: Uuid::parse_str(id).unwrap(),
-            tool_name: tool.into(),
-            created_ms: 0,
-            is_question: false,
-        }
-    }
-
-    fn two() -> Vec<PendingPermission> {
-        vec![
-            pending("aaaa1111-0000-0000-0000-000000000000", "Bash"),
-            pending("aaaa2222-0000-0000-0000-000000000000", "Edit"),
-        ]
-    }
-
-    #[test]
-    fn pick_defaults_to_the_newest() {
-        let p = two();
-        assert_eq!(
-            pick_request(&p, None, "agentium:x").unwrap().tool_name,
-            "Edit"
-        );
-    }
-
-    #[test]
-    fn pick_errors_when_nothing_is_pending() {
-        let err = pick_request(&[], None, "agentium:x")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("no pending permission request for agentium:x"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn pick_by_unique_prefix_case_insensitively() {
-        let p = two();
-        let got = pick_request(&p, Some("AAAA1"), "agentium:x").unwrap();
-        assert_eq!(got.tool_name, "Bash");
-    }
-
-    #[test]
-    fn pick_rejects_ambiguous_and_unknown_prefixes_listing_candidates() {
-        let p = two();
-        let ambiguous = pick_request(&p, Some("aaaa"), "agentium:x")
-            .unwrap_err()
-            .to_string();
-        assert!(ambiguous.contains("more than one"), "{ambiguous}");
-        assert!(
-            ambiguous.contains("aaaa1111 Bash, aaaa2222 Edit"),
-            "{ambiguous}"
-        );
-
-        let unknown = pick_request(&p, Some("ffff"), "agentium:x")
-            .unwrap_err()
-            .to_string();
-        assert!(unknown.contains("matches no"), "{unknown}");
-    }
 }

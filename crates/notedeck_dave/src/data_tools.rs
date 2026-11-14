@@ -34,13 +34,15 @@ const SESSION_ENV: &str = "AGENTIUM_SESSION";
 
 /// Every data tool Dave contributes, ready to register.
 pub fn tools() -> Vec<RegisteredTool> {
-    vec![
+    let mut tools = vec![
         RegisteredTool::new(ListSessions),
         RegisteredTool::new(ShowSession),
         RegisteredTool::new(SessionLog),
         RegisteredTool::new(GrepSessions),
         RegisteredTool::new(SessionRef),
-    ]
+    ];
+    tools.extend(control::tools());
+    tools
 }
 
 /// A read transaction, its error worded for the caller.
@@ -520,6 +522,8 @@ impl AppTool for SessionRef {
         Some(out.iter().map(|r| format!("{r}\n")).collect())
     }
 }
+
+mod control;
 
 #[cfg(test)]
 mod tests;

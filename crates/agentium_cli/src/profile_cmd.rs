@@ -26,9 +26,9 @@ use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
-use crate::config_cmd::replacing;
 use crate::publish::{flush_publish, json_line};
 use crate::term::{SGR_BOLD, now_secs, paint, relative_time};
+use agentium_core::cli::config::replacing;
 
 /// The `profile` subcommand, as parsed.
 pub(crate) enum ProfileAction {

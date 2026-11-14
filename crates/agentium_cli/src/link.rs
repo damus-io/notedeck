@@ -4,12 +4,12 @@
 use std::time::Duration;
 
 use agentium_core::Engine;
+use agentium_core::cli::control::{DeletedMiss, resolve_live};
 use agentium_core::session_loader::latest_valid_session_for_author;
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
-use crate::permission::resolve_live;
 use crate::publish::{flush_publish, json_line};
 
 /// How long `link`/`unlink` waits for the host to republish the session with
@@ -45,7 +45,7 @@ pub(crate) async fn cmd_link(
 ) -> Result<()> {
     let (session_id, uri, current) = {
         let txn = Transaction::new(engine.ndb())?;
-        let state = resolve_live(engine, &txn, author, selector)?;
+        let state = resolve_live(engine.ndb(), &txn, author, selector, DeletedMiss::Running)?;
         (
             state.claude_session_id.clone(),
             state.agentium_uri(),

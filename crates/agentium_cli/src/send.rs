@@ -1,6 +1,7 @@
 //! `agentium send` — publish a `user` message to a live session.
 
 use agentium_core::Engine;
+use agentium_core::cli::control::{DeletedMiss, resolve_live, turn_running};
 use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
@@ -47,10 +48,6 @@ pub(crate) async fn cmd_send(
     immediate: bool,
     as_json: bool,
 ) -> Result<()> {
-    use agentium_core::session_loader::{
-        load_deleted_session_states_for_author, load_session_states_for_author, resolve_session,
-    };
-
     // Resolve to the session id + URI against the live set, dropping the borrow
     // of the loaded state vectors before we publish. A miss that turns out to be
     // a tombstoned session is redirected to `resume`; any other miss propagates
@@ -61,25 +58,11 @@ pub(crate) async fn cmd_send(
         status,
     } = {
         let txn = Transaction::new(engine.ndb())?;
-        let live = load_session_states_for_author(engine.ndb(), &txn, author);
-        let state = match resolve_session(&live, selector) {
-            Ok(state) => state,
-            Err(live_err) => {
-                let deleted = load_deleted_session_states_for_author(engine.ndb(), &txn, author);
-                if let Ok(gone) = resolve_session(&deleted, selector) {
-                    return Err(format!(
-                        "{} is deleted — reopen it with `agentium resume {selector}` before sending",
-                        gone.agentium_uri()
-                    )
-                    .into());
-                }
-                return Err(live_err.into());
-            }
-        };
+        let state = resolve_live(engine.ndb(), &txn, author, selector, DeletedMiss::Send)?;
         Target {
-            session_id: state.claude_session_id.clone(),
             uri: state.agentium_uri(),
-            status: state.status.clone(),
+            session_id: state.claude_session_id,
+            status: state.status,
         }
     };
 
@@ -134,13 +117,6 @@ struct Target {
     status: String,
 }
 
-/// Whether a session in `status` has a turn in flight that an interrupt would
-/// stop: one streaming (`working`), or one blocked on a permission answer
-/// (`needs_input`). Idle, done, waiting, errored and pending sessions have none.
-fn turn_running(status: &str) -> bool {
-    matches!(status, "working" | "needs_input")
-}
-
 /// The `agentium:` ref of the session this command runs inside, from
 /// `$AGENTIUM_SESSION`, which a Dave host sets for every agent it runs. `None`
 /// when a person runs `agentium send` from their own shell, so their message
@@ -149,18 +125,4 @@ fn sender_session() -> Option<String> {
     std::env::var("AGENTIUM_SESSION")
         .ok()
         .filter(|s| !s.is_empty())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::turn_running;
-
-    #[test]
-    fn only_working_and_needs_input_have_a_turn_to_interrupt() {
-        assert!(turn_running("working"));
-        assert!(turn_running("needs_input"));
-        for status in ["idle", "done", "waiting", "error", "pending", ""] {
-            assert!(!turn_running(status), "{status}");
-        }
-    }
 }

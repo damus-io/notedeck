@@ -73,59 +73,19 @@ const SYNC_MAX: Duration = Duration::from_secs(6);
 /// canonical spelling it returns is what rides the event, so aliases
 /// (`manual`, `acceptEdits`, `accept-edits`) never reach the wire.
 fn parse_mode_flag(value: &str) -> Result<String> {
-    agentium_core::permission_mode::parse_permission_mode(value)
-        .map(str::to_string)
-        .ok_or_else(|| {
-            format!(
-                "unknown permission mode '{value}' — expected one of: {}",
-                agentium_core::permission_mode::PERMISSION_MODES.join(", "),
-            )
-            .into()
-        })
+    Ok(agentium_core::cli::control::parse_mode(value)?)
+}
+
+/// Validate a `--model` value (see [`agentium_core::cli::control::parse_model`]).
+fn parse_model_flag(value: &str) -> Result<String> {
+    Ok(agentium_core::cli::control::parse_model(value)?)
 }
 
 /// Validate an issue URL — `spawn --issue-url`'s value or `link`'s argument,
-/// named by `what` in the error: a URI naming the issue the session works.
-///
-/// Stored verbatim, so this only checks it *is* a URI — a non-empty
-/// `scheme:rest` with an RFC 3986 scheme. That rejects a bare headway word-id
-/// (or `board/word-id`), which looks plausible but names no board and so can't
-/// be opened from the session; the error points at the routable form instead.
-/// Validate a `--model` value: trimmed, non-empty, and a single word.
-///
-/// Which models exist is the backend's business (Claude takes `opus`/`sonnet`
-/// aliases or full ids, Codex its own ids), so the name itself is passed
-/// through. What is caught here is a value no backend could take — empty, or
-/// with whitespace inside, which is usually a stray word swallowed as the
-/// flag's value — so it fails before anything is published.
-fn parse_model_flag(value: &str) -> Result<String> {
-    let value = value.trim();
-    if value.is_empty() || value.contains(char::is_whitespace) {
-        return Err(format!(
-            "--model '{value}' is not a model name — pass an alias the backend \
-             knows (e.g. opus, sonnet) or a full model id"
-        )
-        .into());
-    }
-    Ok(value.to_string())
-}
-
+/// named by `what` in the error (see
+/// [`agentium_core::cli::control::parse_issue_url`]).
 fn parse_issue_url(value: &str, what: &str) -> Result<String> {
-    let value = value.trim();
-    let has_scheme = value.split_once(':').is_some_and(|(scheme, rest)| {
-        let mut chars = scheme.chars();
-        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-            && !rest.is_empty()
-    });
-    if !has_scheme {
-        return Err(format!(
-            "{what} '{value}' is not a URI — for a headway card use \
-             headway:<board>/<word-id>"
-        )
-        .into());
-    }
-    Ok(value.to_string())
+    Ok(agentium_core::cli::control::parse_issue_url(value, what)?)
 }
 
 #[tokio::main]

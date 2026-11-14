@@ -10,7 +10,8 @@ use agentium_core::config::{RunConfig, AI_RUN_CONFIG_KIND};
 use agentium_core::messages::{SubagentInfo, SubagentStatus};
 use agentium_core::session_events::{
     build_permission_request_event, build_run_config_event_at, build_subagent_event,
-    ThreadingState, AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND, AI_SOURCE_DATA_KIND,
+    ThreadingState, AI_CONVERSATION_KIND, AI_SESSION_COMMAND_KIND, AI_SESSION_STATE_KIND,
+    AI_SOURCE_DATA_KIND,
 };
 use nostrdb::{Filter, NoteBuilder, SubscriptionStream};
 use nostrdb_net::FullKeypair;
@@ -34,6 +35,7 @@ struct Live {
 
 /// What a tool answered: its JSON and the text `nd` prints for it, with its
 /// color stripped.
+#[derive(Debug)]
 struct Answer {
     json: Value,
     text: String,
@@ -59,6 +61,7 @@ fn live() -> Live {
             AI_CONVERSATION_KIND as u64,
             AI_SOURCE_DATA_KIND as u64,
             AI_RUN_CONFIG_KIND as u64,
+            AI_SESSION_COMMAND_KIND as u64,
         ])
         .build();
     let sub = ndb
@@ -741,14 +744,24 @@ fn id_prints_each_d_tags_ref() {
         .is_err());
 }
 
-/// Every tool is a read with an `agentium` command path, and `show`/`log`
-/// take their session from `$AGENTIUM_SESSION` when none is named.
+/// Every tool has an `agentium` command path, the five reads are read-only,
+/// and `show`/`log` take their session from `$AGENTIUM_SESSION` when none is
+/// named.
 #[test]
-fn every_tool_is_an_agentium_read() {
+fn every_tool_is_an_agentium_command() {
     for tool in tools() {
         let spec = tool.spec();
-        assert!(spec.is_read_only(), "{}", spec.name());
         assert_eq!(spec.command_path()[0], "agentium", "{}", spec.name());
+    }
+    let reads = [
+        ListSessions.spec(),
+        ShowSession.spec(),
+        SessionLog.spec(),
+        GrepSessions.spec(),
+        SessionRef.spec(),
+    ];
+    for spec in &reads {
+        assert!(spec.is_read_only(), "{}", spec.name());
     }
     for tool in ShowSession
         .spec()
@@ -761,3 +774,5 @@ fn every_tool_is_an_agentium_read() {
         }
     }
 }
+
+mod control;

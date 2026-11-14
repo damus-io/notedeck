@@ -4,10 +4,13 @@
 //! transaction and returns owned values, so the CLI prints them and a tool
 //! answers with them.
 
+pub mod config;
+pub mod control;
 pub mod grep;
 pub mod list;
 pub mod log;
 pub mod show;
+pub mod spawn;
 pub mod term;
 pub mod transcript;
 
