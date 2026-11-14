@@ -14,6 +14,7 @@ profiling = { workspace = true }
 nostrdb_net = { workspace = true }
 nostrdb = { workspace = true }
 nostr = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 
@@ -26,3 +27,4 @@ egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
 notedeck_testing = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

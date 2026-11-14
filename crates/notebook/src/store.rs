@@ -424,6 +424,10 @@ pub fn delete_longform(
 /// implies. `view` is the pre-action snapshot, used to read a node's current
 /// z-rank/color (a transform is a full snapshot) and to stamp superseding
 /// timestamps.
+///
+/// Returns the id of the node an [`AddNode`](CanvasAction::AddNode) created, so
+/// a caller can address it; `None` for every other action, and for an add whose
+/// node failed to sign or ingest.
 pub fn apply(
     ndb: &Ndb,
     canvas_id: &str,
@@ -432,19 +436,17 @@ pub fn apply(
     secret: &[u8; 32],
     action: CanvasAction,
     publisher: &mut dyn Publisher,
-) {
+) -> Option<NoteId> {
     let addr = canvas_address(author, canvas_id);
 
     match action {
         CanvasAction::AddNode { kind, geo, content } => {
-            let Some(node) = ingest(
+            let node = ingest(
                 ndb,
                 build_node(&addr, kind, &geo, &content),
                 secret,
                 publisher,
-            ) else {
-                return;
-            };
+            )?;
             // Stack it on top: a rank above every current node's.
             let top = view.nodes.last().map(|n| n.z.as_str());
             let z = rank_between(top, None);
@@ -454,6 +456,7 @@ pub fn apply(
                 secret,
                 publisher,
             );
+            return Some(node);
         }
         CanvasAction::SetGeometry { node, geo } => {
             let TransformBasis {
@@ -578,6 +581,7 @@ pub fn apply(
             publisher,
         ),
     }
+    None
 }
 
 /// The basis for a re-published transform of `node`: its current z-rank (a

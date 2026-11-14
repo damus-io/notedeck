@@ -4,6 +4,7 @@ mod keymap_editor;
 mod reference;
 pub mod render;
 mod search;
+mod tools;
 mod ui;
 
 // The nostr-backed model, persistence, and word-id refs live in the `notebook`
@@ -1140,6 +1141,13 @@ impl Default for Notebook {
 }
 
 impl notedeck::App for Notebook {
+    /// The notebook's data tools, one per `notebook` CLI command, so
+    /// `nd notebook …` runs them (see [`tools`]). They answer from nostrdb
+    /// alone, so they run before this app has updated once.
+    fn tools(&self) -> Vec<notedeck::RegisteredTool> {
+        tools::tools()
+    }
+
     /// Contribute the notebook's inline renderers:
     /// - the **longform** (kind 30023) renderer, so a `nostr:naddr…` reference —
     ///   inline in a text node, or as a note-embed node — previews the note.

@@ -8,7 +8,10 @@
 //!   notes) and the reducer that folds events into views;
 //! - [`store`] — persistence into nostrdb, translating UI intents into signed
 //!   events and sealing the vault into its team-of-one SNS workspace;
-//! - [`wordid`] — stable, lossy word-id references to notebook entities.
+//! - [`wordid`] — stable, lossy word-id references to notebook entities;
+//! - [`resolve`] — resolving the refs and prefixes a person types against the
+//!   folded vault;
+//! - [`render`] — the human text the CLI and the app's tools print.
 //!
 //! The egui-facing pieces (rendering, the canvas UI, the longform editor, the
 //! `jsoncanvas` bridge, the inline reference parser/renderer) stay in
@@ -16,6 +19,8 @@
 //! app keep one import path.
 
 pub mod event;
+pub mod render;
+pub mod resolve;
 pub mod store;
 pub mod wordid;
 /// Backstop for the tests' nostrdb-ingest waits (see

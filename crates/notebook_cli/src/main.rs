@@ -12,17 +12,14 @@
 
 use std::env;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use nostrdb::{Ndb, Transaction};
-use nostrdb_net::{NoteId, Pubkey};
+use nostrdb_net::Pubkey;
 
-use notebook::event::{
-    self, CanvasView, EdgeView, Geometry, NodeContent, NodeKind, NodeView, NotebookTarget,
-    VaultDoc, VaultDocKind,
-};
+use notebook::event::{self, CanvasView, Geometry, NodeContent, NodeKind, VaultDoc};
+use notebook::render;
+use notebook::resolve::{self, Shown};
 use notebook::store::{self, CanvasAction, Publisher};
-use notebook::wordid;
 
 use nostrdb_net::relay::sync::Result;
 
@@ -217,15 +214,15 @@ async fn run() -> Result<()> {
             if targets.is_empty() {
                 print_vault_docs(&event::list_vault(&ndb, &txn, &author), as_json);
             } else {
-                let canvases = fold_all_canvases(&ndb, &txn, &author);
+                let canvases = event::fold_canvases(&ndb, &txn, &author);
                 let notes = event::list_longform(&ndb, &txn, &author);
                 // Resolve every selector first so one bad ref fails the whole command
-                // rather than printing a partial result (as `print_nodes` did).
-                let resolved: Vec<NotebookTarget> = targets
+                // rather than printing a partial result.
+                let shown: Vec<Shown> = targets
                     .iter()
-                    .map(|sel| resolve_target(sel, &canvases, &notes))
-                    .collect::<Result<_>>()?;
-                show_targets(&resolved, &canvases, &notes, as_json)?;
+                    .map(|sel| resolve::show(sel, &canvases, &notes))
+                    .collect::<std::result::Result<_, _>>()?;
+                print_shown(&shown, as_json);
             }
         }
 
@@ -237,7 +234,7 @@ async fn run() -> Result<()> {
             let canvas_id = canvas.clone().unwrap_or_else(store::mint_d);
             {
                 let txn = open_txn(&ndb)?;
-                if fold_all_canvases(&ndb, &txn, &author)
+                if event::fold_canvases(&ndb, &txn, &author)
                     .iter()
                     .any(|c| c.id == canvas_id)
                 {
@@ -261,8 +258,8 @@ async fn run() -> Result<()> {
             // doesn't straddle the async publish below.
             let (canvas_id, view) = {
                 let txn = open_txn(&ndb)?;
-                let canvases = fold_all_canvases(&ndb, &txn, &author);
-                let canvas_id = resolve_canvas_id(canvas.as_deref(), &canvases)?;
+                let canvases = event::fold_canvases(&ndb, &txn, &author);
+                let canvas_id = resolve::resolve_canvas_id(canvas.as_deref(), &canvases)?;
                 let view = event::find_canvas(&canvases, &author, &canvas_id)
                     .cloned()
                     .ok_or_else(|| format!("no canvas '{canvas_id}' — run `notebook seed`"))?;
@@ -302,26 +299,26 @@ fn build_action(view: &CanvasView, command: Command) -> Result<CanvasAction> {
             content: text_content(text),
         },
         Command::Move { node, geo } => {
-            let node = find_node(view, &node)?;
+            let node = resolve::find_node(view, &node)?;
             CanvasAction::SetGeometry {
                 node: node.id,
                 geo: geo.resolve(node.geo),
             }
         }
         Command::Edit { node, text } => CanvasAction::EditContent {
-            node: resolve_node(view, &node)?,
+            node: resolve::resolve_node(view, &node)?,
             content: text_content(text),
         },
         Command::Color { node, color } => CanvasAction::Recolor {
-            node: resolve_node(view, &node)?,
+            node: resolve::resolve_node(view, &node)?,
             color,
         },
         Command::Restack { node, to_index } => CanvasAction::Restack {
-            node: resolve_node(view, &node)?,
+            node: resolve::resolve_node(view, &node)?,
             to_index,
         },
         Command::Delete { node } => CanvasAction::DeleteNode {
-            node: resolve_node(view, &node)?,
+            node: resolve::resolve_node(view, &node)?,
         },
         Command::Connect {
             from,
@@ -329,8 +326,8 @@ fn build_action(view: &CanvasView, command: Command) -> Result<CanvasAction> {
             from_side,
             to_side,
         } => {
-            let from = resolve_node(view, &from)?;
-            let to = resolve_node(view, &to)?;
+            let from = resolve::resolve_node(view, &from)?;
+            let to = resolve::resolve_node(view, &to)?;
             // Edge ids are stable per ordered pair, so re-drawing the same
             // connection updates that edge (latest-wins) rather than stacking
             // duplicates — matching the app's `intent_to_action`.
@@ -347,7 +344,7 @@ fn build_action(view: &CanvasView, command: Command) -> Result<CanvasAction> {
             }
         }
         Command::Disconnect { edge } => {
-            let e = resolve_edge(view, &edge)?;
+            let e = resolve::resolve_edge(view, &edge)?;
             CanvasAction::DeleteEdge {
                 edge_id: e.id.clone(),
                 from: e.from,
@@ -381,16 +378,6 @@ fn open_txn(ndb: &Ndb) -> Result<Transaction> {
     Transaction::new(ndb).map_err(|e| format!("opening a db transaction: {e}").into())
 }
 
-/// Fold *all* of `author`'s canvases into their finalized views — the input the
-/// unified resolver and the whole-vault `show` need. Unlike [`load_canvas`] (which
-/// picks one canvas by id), this surfaces the multi-canvas set: deleted canvases
-/// are already dropped by the reducer's `finalize`.
-fn fold_all_canvases(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<CanvasView> {
-    event::fold_canvas(ndb, txn, author)
-        .map(|reducer| reducer.finalize())
-        .unwrap_or_default()
-}
-
 /// Collects the `["EVENT", {...}]` frames an edit produces so they can be
 /// forwarded to the relay after `apply` returns.
 #[derive(Default)]
@@ -403,385 +390,45 @@ impl Publisher for Collect {
 }
 
 // ---------------------------------------------------------------------------
-// argument resolution
-// ---------------------------------------------------------------------------
-
-fn all_nodes(view: &CanvasView) -> impl Iterator<Item = &NodeView> {
-    view.nodes.iter().chain(view.pending.iter())
-}
-
-/// Resolve a node argument: a full 64-char hex id, a `notebook:<word-id>`
-/// reference, or a unique hex prefix matched against every node on the canvas
-/// (pending ones included).
-fn resolve_node(view: &CanvasView, sel: &str) -> Result<NoteId> {
-    find_node(view, sel).map(|n| n.id)
-}
-
-/// Resolve a node selector, accepting (in order): a full 64-char hex id; a
-/// `notebook:<word-id>` reference (the `notebook:` scheme is required — a bare
-/// word-id is not a reference); or a unique hex prefix.
-fn find_node<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a NodeView> {
-    if let Ok(id) = NoteId::from_hex(sel) {
-        return all_nodes(view)
-            .find(|n| n.id == id)
-            .ok_or_else(|| format!("no node matching '{sel}'").into());
-    }
-
-    // A `notebook:<word-id>` reference: match by re-encoding each node — exactly
-    // how a git short hash is resolved.
-    if let Some(words) = wordid::parse_ref(sel)
-        && let Some(n) = all_nodes(view).find(|n| wordid::encode(n.id.bytes()) == words)
-    {
-        return Ok(n);
-    }
-
-    let sel = sel.to_lowercase();
-    let mut hits = all_nodes(view).filter(|n| n.id.hex().starts_with(&sel));
-    match (hits.next(), hits.next()) {
-        (Some(n), None) => Ok(n),
-        (Some(_), Some(_)) => Err(format!("ambiguous node prefix '{sel}'").into()),
-        _ => Err(format!("no node matching '{sel}'").into()),
-    }
-}
-
-/// Resolve an edge argument by full id or unique id prefix.
-fn resolve_edge<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a EdgeView> {
-    if let Some(e) = view.edges.iter().find(|e| e.id == sel) {
-        return Ok(e);
-    }
-    let mut hits = view.edges.iter().filter(|e| e.id.starts_with(sel));
-    match (hits.next(), hits.next()) {
-        (Some(e), None) => Ok(e),
-        (Some(_), Some(_)) => Err(format!("ambiguous edge prefix '{sel}'").into()),
-        _ => Err(format!("no edge matching '{sel}'").into()),
-    }
-}
-
-/// Resolve a `show` selector to a [`NotebookTarget`] across the whole notebook,
-/// unifying the two context-specific matchers `show` used to layer by hand (node
-/// lookup vs. the `vault` command's note lookup).
-///
-/// The flat `notebook:<word-id>` namespace ([`event::resolve_ref`]) is layered
-/// *between* the explicit forms and the loose fallbacks — deliberately, so the
-/// namespace stays authoritative: an explicit `naddr`/coordinate wins first (it
-/// names one exact kind), a well-formed `notebook:` ref that resolves to nothing
-/// **fails here** rather than falling through to a prefix match (a mistyped word-id
-/// can't silently resolve to some other item — the care [`find_longform`] already
-/// took), and only a bare (scheme-less) selector reaches the raw-hex/`d`-prefix
-/// fallbacks.
-fn resolve_target(
-    sel: &str,
-    canvases: &[CanvasView],
-    notes: &[event::LongformNote],
-) -> Result<NotebookTarget> {
-    // 1. An explicit `nostr:naddr` / bare coordinate — each kind-discriminated, so
-    //    it names exactly one document type.
-    if let Some(event::NoteAddress { author, d }) = event::parse_canvas_naddr(sel) {
-        return canvases
-            .iter()
-            .find(|c| c.id == d && c.author == *author.bytes())
-            .map(|c| NotebookTarget::Canvas {
-                author,
-                d: c.id.clone(),
-            })
-            .ok_or_else(|| format!("no canvas matching '{sel}'").into());
-    }
-    if let Some(event::NoteAddress { author, d }) = event::parse_longform_naddr(sel) {
-        return notes
-            .iter()
-            .find(|n| n.d == d && n.author == *author.bytes())
-            .map(|n| NotebookTarget::Note {
-                author,
-                d: n.d.clone(),
-            })
-            .ok_or_else(|| format!("no vault note matching '{sel}'").into());
-    }
-
-    // 2. A `notebook:<word-id>` reference — resolved across the flat namespace
-    //    (documents first, then nodes). Ref-shaped-but-unmatched fails.
-    if let Some(word_id) = wordid::parse_ref(sel) {
-        return event::resolve_ref(word_id, canvases, notes)
-            .ok_or_else(|| format!("no notebook item matching '{sel}'").into());
-    }
-
-    // 3. A full 64-char hex node id.
-    if let Ok(id) = NoteId::from_hex(sel) {
-        return canvases
-            .iter()
-            .flat_map(all_nodes)
-            .find(|n| n.id == id)
-            .map(|n| NotebookTarget::Node { id: n.id })
-            .ok_or_else(|| format!("no node matching '{sel}'").into());
-    }
-
-    // 4. Fallback: a unique hex-prefix node id, or a unique `d` prefix across notes
-    //    and canvases — ambiguity across the union is rejected.
-    prefix_target(sel, canvases, notes)
-}
-
-/// The loose-prefix arm of [`resolve_target`]: match a bare (scheme-less) selector
-/// as a node id hex prefix or a note/canvas `d` prefix, requiring exactly one hit
-/// across the whole notebook so an ambiguous prefix fails rather than silently
-/// picking one.
-fn prefix_target(
-    sel: &str,
-    canvases: &[CanvasView],
-    notes: &[event::LongformNote],
-) -> Result<NotebookTarget> {
-    let hex = sel.to_lowercase();
-    let mut hits: Vec<NotebookTarget> = Vec::new();
-    for c in canvases {
-        for n in all_nodes(c) {
-            if n.id.hex().starts_with(&hex) {
-                hits.push(NotebookTarget::Node { id: n.id });
-            }
-        }
-        if c.id.starts_with(sel) {
-            hits.push(NotebookTarget::Canvas {
-                author: Pubkey::new(c.author),
-                d: c.id.clone(),
-            });
-        }
-    }
-    for n in notes {
-        if n.d.starts_with(sel) {
-            hits.push(NotebookTarget::Note {
-                author: Pubkey::new(n.author),
-                d: n.d.clone(),
-            });
-        }
-    }
-    match hits.len() {
-        1 => Ok(hits.pop().unwrap()),
-        0 => Err(format!("no notebook item matching '{sel}'").into()),
-        _ => Err(format!("ambiguous selector '{sel}'").into()),
-    }
-}
-
-/// Resolve `--canvas <ref|d>` to a concrete canvas id against `author`'s folded
-/// canvases: an explicit selector (a `nostr:naddr`/coordinate, a
-/// `notebook:<word-id>` ref, or a literal/unique-prefix `d`), or — when omitted —
-/// the sole canvas. There is no hard-coded default id (the retired
-/// `store::CANVAS_ID`): with several canvases and no selector the caller must say
-/// which; with none it must `seed` first. `canvases` is already scoped to one
-/// author (the reader's) by the fold, so a coordinate/ref for another author's
-/// canvas simply won't match.
-fn resolve_canvas_id(selector: Option<&str>, canvases: &[CanvasView]) -> Result<String> {
-    let Some(sel) = selector else {
-        return match canvases {
-            [only] => Ok(only.id.clone()),
-            [] => Err("no canvas yet — run `notebook seed` to create one".into()),
-            _ => Err(
-                "several canvases — pass --canvas <ref|d> to pick one (see `notebook show`)".into(),
-            ),
-        };
-    };
-
-    // A `nostr:naddr` / bare coordinate naming a canvas.
-    if let Some(event::NoteAddress { author: a, d }) = event::parse_canvas_naddr(sel) {
-        return canvases
-            .iter()
-            .find(|c| c.id == d && c.author == *a.bytes())
-            .map(|c| c.id.clone())
-            .ok_or_else(|| format!("no canvas matching '{sel}'").into());
-    }
-
-    // A `notebook:<word-id>` ref — must resolve to a *canvas* (a note/node ref given
-    // to `--canvas` fails rather than falling through to a `d` prefix).
-    if let Some(word_id) = wordid::parse_ref(sel) {
-        return match event::resolve_ref(word_id, canvases, &[]) {
-            Some(NotebookTarget::Canvas { d, .. }) => Ok(d),
-            _ => Err(format!("no canvas matching '{sel}'").into()),
-        };
-    }
-
-    // A literal or unique-prefix `d`.
-    let mut hits = canvases.iter().filter(|c| c.id.starts_with(sel));
-    match (hits.next(), hits.next()) {
-        (Some(c), None) => Ok(c.id.clone()),
-        (Some(_), Some(_)) => Err(format!("ambiguous canvas prefix '{sel}'").into()),
-        _ => Err(format!("no canvas matching '{sel}'").into()),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // output
 // ---------------------------------------------------------------------------
 
-/// A node's human-friendly reference for display/addressing: `notebook:<word-id>`,
-/// e.g. `notebook:maple-river-canyon`, muted. This is what a human quotes; it
-/// resolves back via [`find_node`].
-fn word_ref(id: &NoteId) -> String {
-    nostrdb_net::relay::sync::dim(&wordid::node_ref(id.bytes()))
+/// Whether the muted parts of the text (refs, ages, geometry) are colored:
+/// only when stdout is a terminal.
+fn color() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
 }
 
-/// The first line of a node's text, trimmed and truncated, for one-line listings.
-fn one_line(text: &str) -> String {
-    let line = text.lines().next().unwrap_or("").trim();
-    if line.chars().count() > 60 {
-        let cut: String = line.chars().take(57).collect();
-        format!("{cut}…")
-    } else if line.is_empty() {
-        "(empty)".to_string()
-    } else {
-        line.to_string()
-    }
-}
-
-fn print_canvas(view: &CanvasView, as_json: bool) {
-    if as_json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&event::canvas_json(view))
-                .unwrap_or_else(|_| "null".into())
-        );
-        return;
-    }
-
-    println!("{}{}", view.title, if view.open { "  [open]" } else { "" });
-
-    println!("\nNodes ({})", view.nodes.len());
-    for n in &view.nodes {
-        print_node_line(n);
-    }
-    if !view.edges.is_empty() {
-        println!("\nEdges ({})", view.edges.len());
-        for e in &view.edges {
-            println!(
-                "  {} → {}  {}",
-                word_ref(&e.from),
-                word_ref(&e.to),
-                nostrdb_net::relay::sync::dim(&e.id),
-            );
-        }
-    }
-    if !view.pending.is_empty() {
-        println!(
-            "\nPending ({}) — proposals on a closed canvas",
-            view.pending.len()
-        );
-        for n in &view.pending {
-            print_node_line(n);
-        }
-    }
-}
-
-fn print_node_line(n: &NodeView) {
-    let geo = nostrdb_net::relay::sync::dim(&format!(
-        "({},{} {}×{})",
-        n.geo.x, n.geo.y, n.geo.w, n.geo.h
-    ));
+/// Print `value` as pretty JSON.
+fn print_json(value: &serde_json::Value) {
     println!(
-        "  {}  {}  {}",
-        one_line(&n.content.text),
-        geo,
-        word_ref(&n.id),
+        "{}",
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into())
     );
 }
 
-/// Print a node's full text body when it's an explicit `show` target, headed by a
-/// dimmed ref + geometry line (mirrors how [`print_vault_bodies`] heads each note).
-/// A `show` on a single node wants the whole content, not the truncated one-line
-/// listing form [`print_node_line`] uses inside [`print_canvas`].
-fn print_node_body(n: &NodeView) {
-    let geo = nostrdb_net::relay::sync::dim(&format!(
-        "({},{} {}×{})",
-        n.geo.x, n.geo.y, n.geo.w, n.geo.h
-    ));
-    println!("{}  {}", word_ref(&n.id), geo);
-    print!("{}", n.content.text);
-    // Ensure a trailing newline so the shell prompt isn't glued to the body.
-    if !n.content.text.ends_with('\n') {
-        println!();
-    }
-}
-
-/// Render already-resolved `show` targets, dispatching each on its type. A single
-/// target prints in its natural shape — a whole canvas, a note's raw markdown body
-/// (so `notebook show <note> > note.md` round-trips), or a node line, the machine
-/// form being a lone object. Several targets print in sequence (JSON as one array),
-/// so a mixed selection stays one navigable document.
-fn show_targets(
-    targets: &[NotebookTarget],
-    canvases: &[CanvasView],
-    notes: &[event::LongformNote],
-    as_json: bool,
-) -> Result<()> {
+/// Print the whole vault: one typed row per document, newest-edited first, or
+/// the rows' JSON.
+fn print_vault_docs(docs: &[VaultDoc], as_json: bool) {
     if as_json {
-        let vals = targets
-            .iter()
-            .map(|t| target_json(t, canvases, notes))
-            .collect::<Result<Vec<_>>>()?;
-        let rendered = match vals.as_slice() {
-            [one] => serde_json::to_string_pretty(one),
-            _ => serde_json::to_string_pretty(&vals),
-        };
-        println!("{}", rendered.unwrap_or_else(|_| "null".into()));
-        return Ok(());
+        print_json(&docs.iter().map(event::vault_doc_json).collect());
+        return;
     }
+    print!("{}", render::vault_docs(docs, render::now_secs(), color()));
+}
 
-    for target in targets {
-        match target {
-            NotebookTarget::Canvas { author, d } => {
-                print_canvas(find_target_canvas(canvases, author, d)?, false);
-            }
-            NotebookTarget::Note { author, d } => {
-                print_vault_bodies(&[find_target_note(notes, author, d)?], false);
-            }
-            NotebookTarget::Node { id } => print_node_body(find_target_node(canvases, *id)?),
-        }
+/// Print already-looked-up `show` targets, each in its natural shape. A single
+/// target's JSON is a lone object; several are one array.
+fn print_shown(items: &[Shown], as_json: bool) {
+    if !as_json {
+        print!("{}", render::shown(items, color()));
+        return;
     }
-    Ok(())
-}
-
-/// The machine form of a resolved target: a canvas / note / node JSON object,
-/// dispatched on its type.
-fn target_json(
-    target: &NotebookTarget,
-    canvases: &[CanvasView],
-    notes: &[event::LongformNote],
-) -> Result<serde_json::Value> {
-    Ok(match target {
-        NotebookTarget::Canvas { author, d } => {
-            event::canvas_json(find_target_canvas(canvases, author, d)?)
-        }
-        NotebookTarget::Note { author, d } => {
-            event::longform_json(find_target_note(notes, author, d)?)
-        }
-        NotebookTarget::Node { id } => event::node_json(find_target_node(canvases, *id)?),
-    })
-}
-
-// The three lookups below re-find a resolved target's concrete view in the same
-// slices `resolve_target` matched it against, so they never realistically miss; the
-// graceful error is a belt-and-braces guard rather than a reachable path.
-
-fn find_target_canvas<'a>(
-    canvases: &'a [CanvasView],
-    author: &Pubkey,
-    d: &str,
-) -> Result<&'a CanvasView> {
-    event::find_canvas(canvases, author, d)
-        .ok_or_else(|| format!("canvas '{d}' went missing during render").into())
-}
-
-fn find_target_note<'a>(
-    notes: &'a [event::LongformNote],
-    author: &Pubkey,
-    d: &str,
-) -> Result<&'a event::LongformNote> {
-    notes
-        .iter()
-        .find(|n| n.d == d && n.author == *author.bytes())
-        .ok_or_else(|| format!("note '{d}' went missing during render").into())
-}
-
-fn find_target_node(canvases: &[CanvasView], id: NoteId) -> Result<&NodeView> {
-    canvases
-        .iter()
-        .flat_map(all_nodes)
-        .find(|n| n.id == id)
-        .ok_or_else(|| format!("node '{}' went missing during render", id.hex()).into())
+    match items {
+        [one] => print_json(&one.json()),
+        _ => print_json(&items.iter().map(Shown::json).collect()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -789,228 +436,33 @@ fn find_target_node(canvases: &[CanvasView], id: NoteId) -> Result<&NodeView> {
 // ---------------------------------------------------------------------------
 
 /// List `author`'s longform vault, or print the markdown bodies of the notes named
-/// by `sels`. A purely local read of the PNS-unwrapped longform store — see the
-/// short-circuit in [`run`] for why longform never syncs over the relay.
+/// by `sels`. A purely local read of the unwrapped longform store — see the
+/// short-circuit in [`run`] for why it skips the relay.
 fn run_vault(ndb: &Ndb, author: &Pubkey, sels: &[String], as_json: bool) -> Result<()> {
-    let txn = Transaction::new(ndb).map_err(|e| format!("opening a db transaction: {e}"))?;
+    let txn = open_txn(ndb)?;
     let notes = event::list_longform(ndb, &txn, author);
 
     if sels.is_empty() {
-        print_vault(&notes, as_json);
+        if as_json {
+            print_json(&notes.iter().map(event::longform_json).collect());
+        } else {
+            print!("{}", render::vault(&notes, render::now_secs(), color()));
+        }
         return Ok(());
     }
 
     // Resolve every selector first so one bad ref fails the whole command rather
-    // than printing a partial result (mirrors `print_nodes`).
+    // than printing a partial result.
     let picked: Vec<&event::LongformNote> = sels
         .iter()
-        .map(|sel| find_longform(&notes, sel))
-        .collect::<Result<_>>()?;
-    print_vault_bodies(&picked, as_json);
+        .map(|sel| resolve::find_longform(&notes, sel))
+        .collect::<std::result::Result<_, _>>()?;
+    if as_json {
+        print_json(&picked.iter().map(|n| event::longform_json(n)).collect());
+    } else {
+        print!("{}", render::vault_bodies(picked.into_iter(), color()));
+    }
     Ok(())
-}
-
-/// Resolve a vault-note selector against the current list, accepting (in order): a
-/// `nostr:naddr…`/coordinate reference; a `notebook:<word-id>` reference (matched
-/// against each note's canonical ref); or a full `d` or unique `d` prefix.
-fn find_longform<'a>(
-    notes: &'a [event::LongformNote],
-    sel: &str,
-) -> Result<&'a event::LongformNote> {
-    // A nostr:naddr / bare coordinate → match by (author, d).
-    if let Some(event::NoteAddress { author, d }) = event::parse_longform_naddr(sel) {
-        return notes
-            .iter()
-            .find(|n| n.author == *author.bytes() && n.d == d)
-            .ok_or_else(|| format!("no vault note matching '{sel}'").into());
-    }
-
-    // A `notebook:<word-id>` reference → the note whose canonical ref equals it.
-    // Ref-shaped but unmatched fails here rather than falling through to a `d`
-    // prefix, so a mistyped word-id can't silently resolve to some other note.
-    if wordid::parse_ref(sel).is_some() {
-        return notes
-            .iter()
-            .find(|n| event::longform_ref(&Pubkey::new(n.author), &n.d) == sel)
-            .ok_or_else(|| format!("no vault note matching '{sel}'").into());
-    }
-
-    // Otherwise a full `d` or a unique `d` prefix.
-    let mut hits = notes.iter().filter(|n| n.d.starts_with(sel));
-    match (hits.next(), hits.next()) {
-        (Some(n), None) => Ok(n),
-        (Some(_), Some(_)) => Err(format!("ambiguous vault selector '{sel}'").into()),
-        _ => Err(format!("no vault note matching '{sel}'").into()),
-    }
-}
-
-/// A vault note's one-line title for listings, falling back when the note has no
-/// title tag yet (a freshly-created draft).
-fn note_title(n: &event::LongformNote) -> &str {
-    let t = n.title.trim();
-    if t.is_empty() { "(untitled)" } else { t }
-}
-
-/// Print the vault list: one row per note (title, edited-age, ref), with the
-/// summary on a muted second line when present.
-fn print_vault(notes: &[event::LongformNote], as_json: bool) {
-    if as_json {
-        let out: Vec<_> = notes.iter().map(event::longform_json).collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
-        );
-        return;
-    }
-
-    let now = now_secs();
-    println!(
-        "Vault ({} note{})",
-        notes.len(),
-        if notes.len() == 1 { "" } else { "s" }
-    );
-    for n in notes {
-        let author = Pubkey::new(n.author);
-        let when = nostrdb_net::relay::sync::dim(&format!("edited {}", ago(n.created_at, now)));
-        let reference = nostrdb_net::relay::sync::dim(&event::longform_ref(&author, &n.d));
-        println!("  {}  {}  {}", note_title(n), when, reference);
-        if let Some(summary) = n
-            .summary
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            println!("    {}", nostrdb_net::relay::sync::dim(&one_line(summary)));
-        }
-    }
-}
-
-/// Print the markdown bodies of the resolved notes. A single note prints its raw
-/// body only, so `notebook vault <note> > note.md` round-trips; more than one is
-/// separated by a muted ref header so the concatenation stays navigable.
-fn print_vault_bodies(notes: &[&event::LongformNote], as_json: bool) {
-    if as_json {
-        let out: Vec<_> = notes.iter().map(|n| event::longform_json(n)).collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
-        );
-        return;
-    }
-
-    for (i, n) in notes.iter().enumerate() {
-        if notes.len() > 1 {
-            if i > 0 {
-                println!();
-            }
-            let reference = event::longform_ref(&Pubkey::new(n.author), &n.d);
-            println!("{}", nostrdb_net::relay::sync::dim(&reference));
-        }
-        print!("{}", n.content);
-        // Ensure a trailing newline so the shell prompt isn't glued to the body.
-        if !n.content.ends_with('\n') {
-            println!();
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// vault documents (unified note + canvas listing)
-// ---------------------------------------------------------------------------
-
-/// A vault document's kind as a short label for listings and `--json`.
-fn doc_kind_label(kind: VaultDocKind) -> &'static str {
-    match kind {
-        VaultDocKind::Note => "note",
-        VaultDocKind::Canvas => "canvas",
-    }
-}
-
-/// A vault document's one-line title for listings, with the "(untitled)" fallback
-/// the note listing already uses for a fresh draft.
-fn doc_title(title: &str) -> &str {
-    let t = title.trim();
-    if t.is_empty() { "(untitled)" } else { t }
-}
-
-/// A vault document's human `notebook:<word-id>` reference, dispatched on its kind:
-/// a note's coordinate ref ([`event::longform_ref`]) or a canvas's
-/// ([`event::canvas_ref`]).
-fn doc_ref(doc: &VaultDoc) -> String {
-    match doc.kind {
-        VaultDocKind::Note => event::longform_ref(&doc.author, &doc.d),
-        VaultDocKind::Canvas => event::canvas_ref(&doc.author, &doc.d),
-    }
-}
-
-/// Print the whole vault: one typed row per document (kind, title, edited-age, ref),
-/// newest-edited first. The mixed-document counterpart of [`print_vault`]; a canvas
-/// row has no summary subtitle (only notes carry one, and [`VaultDoc`] doesn't
-/// project it — a note's body/summary is reached by addressing it: `show <ref>`).
-fn print_vault_docs(docs: &[VaultDoc], as_json: bool) {
-    if as_json {
-        let out: Vec<_> = docs.iter().map(vault_doc_json).collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
-        );
-        return;
-    }
-
-    let now = now_secs();
-    println!(
-        "Vault ({} item{})",
-        docs.len(),
-        if docs.len() == 1 { "" } else { "s" }
-    );
-    for doc in docs {
-        let kind = nostrdb_net::relay::sync::dim(&format!("[{}]", doc_kind_label(doc.kind)));
-        let when = nostrdb_net::relay::sync::dim(&format!("edited {}", ago(doc.edited_at, now)));
-        let reference = nostrdb_net::relay::sync::dim(&doc_ref(doc));
-        println!(
-            "  {}  {}  {}  {}",
-            kind,
-            doc_title(&doc.title),
-            when,
-            reference
-        );
-    }
-}
-
-/// The machine form of a vault row: the typed projection plus its human `ref`, so a
-/// consumer can address the document without re-deriving it (mirrors
-/// [`event::longform_json`]).
-fn vault_doc_json(doc: &VaultDoc) -> serde_json::Value {
-    serde_json::json!({
-        "kind": doc_kind_label(doc.kind),
-        "author": doc.author.hex(),
-        "d": doc.d,
-        "title": doc.title,
-        "edited_at": doc.edited_at,
-        "ref": doc_ref(doc),
-    })
-}
-
-/// Wall-clock seconds since the Unix epoch (0 if the clock somehow predates it).
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// A compact relative age ("just now", "5m ago", "2h ago", "3d ago") for a note's
-/// last edit. Deliberately dependency-light: the CLI isn't a localized surface,
-/// unlike the in-app vault sidebar's `edited_subtitle`.
-fn ago(then: u64, now: u64) -> String {
-    let secs = now.saturating_sub(then);
-    match secs {
-        0..=1 => "just now".to_string(),
-        2..=59 => format!("{secs}s ago"),
-        60..=3599 => format!("{}m ago", secs / 60),
-        3600..=86_399 => format!("{}h ago", secs / 3600),
-        _ => format!("{}d ago", secs / 86_400),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,158 +713,4 @@ OPTIONS:
     -h, --help        Print this help",
         DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn note(author: [u8; 32], d: &str, title: &str) -> event::LongformNote {
-        event::LongformNote {
-            author,
-            d: d.to_string(),
-            title: title.to_string(),
-            summary: None,
-            content: String::new(),
-            published_at: None,
-            hashtags: Vec::new(),
-            created_at: 0,
-            deleted: false,
-        }
-    }
-
-    #[test]
-    fn ago_buckets_by_magnitude() {
-        assert_eq!(ago(100, 100), "just now");
-        assert_eq!(ago(100, 101), "just now");
-        assert_eq!(ago(0, 30), "30s ago");
-        assert_eq!(ago(0, 120), "2m ago");
-        assert_eq!(ago(0, 7200), "2h ago");
-        assert_eq!(ago(0, 3 * 86_400), "3d ago");
-        // A clock that ran backwards clamps to "just now" rather than underflowing.
-        assert_eq!(ago(500, 100), "just now");
-    }
-
-    #[test]
-    fn find_longform_by_prefix_ref_and_naddr() {
-        let a = [7u8; 32];
-        let notes = vec![note(a, "abcdef", "One"), note(a, "abff00", "Two")];
-
-        // A unique `d` prefix resolves; an ambiguous one is rejected.
-        assert_eq!(find_longform(&notes, "abcd").unwrap().d, "abcdef");
-        assert!(find_longform(&notes, "ab").is_err());
-        assert!(find_longform(&notes, "zz").is_err());
-
-        // The canonical `notebook:<word-id>` ref resolves to its own note.
-        let reference = event::longform_ref(&Pubkey::new(a), "abcdef");
-        assert_eq!(find_longform(&notes, &reference).unwrap().d, "abcdef");
-
-        // A nostr:naddr for the note resolves too.
-        let naddr = event::longform_naddr(&Pubkey::new(a), "abff00").unwrap();
-        assert_eq!(find_longform(&notes, &naddr).unwrap().d, "abff00");
-
-        // A well-formed ref that matches no note fails rather than falling through
-        // to a `d`-prefix match.
-        let missing = event::longform_ref(&Pubkey::new(a), "nope");
-        assert!(find_longform(&notes, &missing).is_err());
-    }
-
-    #[test]
-    fn note_title_falls_back_when_blank() {
-        assert_eq!(note_title(&note([0u8; 32], "d", "  Hi ")), "Hi");
-        assert_eq!(note_title(&note([0u8; 32], "d", "   ")), "(untitled)");
-    }
-
-    /// A minimal folded canvas (no nodes/edges) for the resolver tests.
-    fn canvas(author: [u8; 32], id: &str, title: &str) -> CanvasView {
-        CanvasView {
-            id: id.to_string(),
-            author,
-            title: title.to_string(),
-            members: Vec::new(),
-            open: false,
-            created_at: 0,
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            pending: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn resolve_target_dispatches_note_and_canvas() {
-        let a = [7u8; 32];
-        let pk = Pubkey::new(a);
-        let canvases = vec![canvas(a, "c0ffee", "A Canvas")];
-        let notes = vec![note(a, "abcdef", "An Article")];
-
-        // A note's naddr and its `notebook:` ref both resolve to the note.
-        let n_naddr = event::longform_naddr(&pk, "abcdef").unwrap();
-        assert_eq!(
-            resolve_target(&n_naddr, &canvases, &notes).unwrap(),
-            NotebookTarget::Note {
-                author: pk,
-                d: "abcdef".to_string()
-            }
-        );
-        let n_ref = event::longform_ref(&pk, "abcdef");
-        assert!(matches!(
-            resolve_target(&n_ref, &canvases, &notes).unwrap(),
-            NotebookTarget::Note { .. }
-        ));
-
-        // A canvas's naddr and its `notebook:` ref both resolve to the canvas.
-        let c_naddr = event::canvas_naddr(&pk, "c0ffee").unwrap();
-        assert_eq!(
-            resolve_target(&c_naddr, &canvases, &notes).unwrap(),
-            NotebookTarget::Canvas {
-                author: pk,
-                d: "c0ffee".to_string()
-            }
-        );
-        let c_ref = event::canvas_ref(&pk, "c0ffee");
-        assert!(matches!(
-            resolve_target(&c_ref, &canvases, &notes).unwrap(),
-            NotebookTarget::Canvas { .. }
-        ));
-
-        // A well-formed `notebook:` ref matching nothing fails rather than falling
-        // through to the loose prefix arm.
-        let missing = event::canvas_ref(&pk, "nope");
-        assert!(resolve_target(&missing, &canvases, &notes).is_err());
-
-        // A bare `d` prefix resolves through the fallback arm (note vs. canvas).
-        assert!(matches!(
-            resolve_target("abc", &canvases, &notes).unwrap(),
-            NotebookTarget::Note { .. }
-        ));
-        assert!(matches!(
-            resolve_target("c0f", &canvases, &notes).unwrap(),
-            NotebookTarget::Canvas { .. }
-        ));
-        assert!(resolve_target("zz", &canvases, &notes).is_err());
-    }
-
-    #[test]
-    fn resolve_canvas_id_infers_sole_and_requires_selection() {
-        let a = [7u8; 32];
-        let pk = Pubkey::new(a);
-
-        // No selector: infer the sole canvas, but require one when there are none or
-        // several (no hard-coded default id).
-        assert!(resolve_canvas_id(None, &[]).is_err());
-        let one = vec![canvas(a, "c0ffee", "One")];
-        assert_eq!(resolve_canvas_id(None, &one).unwrap(), "c0ffee");
-        let two = vec![canvas(a, "c0ffee", "One"), canvas(a, "d00d00", "Two")];
-        assert!(resolve_canvas_id(None, &two).is_err());
-
-        // A selector picks a specific canvas: a `notebook:` ref, a naddr, or a `d`
-        // prefix. A note ref (or an unmatched one) given to --canvas fails.
-        let c_ref = event::canvas_ref(&pk, "d00d00");
-        assert_eq!(resolve_canvas_id(Some(&c_ref), &two).unwrap(), "d00d00");
-        let c_naddr = event::canvas_naddr(&pk, "c0ffee").unwrap();
-        assert_eq!(resolve_canvas_id(Some(&c_naddr), &two).unwrap(), "c0ffee");
-        assert_eq!(resolve_canvas_id(Some("d00"), &two).unwrap(), "d00d00");
-        let note_ref = event::longform_ref(&pk, "c0ffee");
-        assert!(resolve_canvas_id(Some(&note_ref), &two).is_err());
-    }
 }

@@ -1382,6 +1382,16 @@ pub enum VaultDocKind {
     Canvas,
 }
 
+impl VaultDocKind {
+    /// Its short label in listings and `--json`: `note` or `canvas`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Canvas => "canvas",
+        }
+    }
+}
+
 /// A vault document: an openable, addressable top-level item — a longform note
 /// (kind 30023) or a canvas (kind 31606) — projected to the one shape a mixed
 /// list/open surface needs. Both are addressable with a `d`, a title tag, and a
@@ -1406,6 +1416,16 @@ pub struct VaultDoc {
     pub edited_at: u64,
 }
 
+/// Fold *all* of `author`'s canvases into their finalized views, deleted ones
+/// already dropped by [`CanvasReducer::finalize`]: the set the ref resolvers
+/// ([`crate::resolve`]) and a whole-vault `show` work over. Empty if the
+/// account has no canvas events yet.
+pub fn fold_canvases(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<CanvasView> {
+    fold_canvas(ndb, txn, author)
+        .map(|reducer| reducer.finalize())
+        .unwrap_or_default()
+}
+
 /// List all of `author`'s canvases as vault documents — the current (latest-wins)
 /// revision of each, with deleted canvases already dropped by
 /// [`CanvasReducer::finalize`]. The canvas half of [`list_vault`]; parallels
@@ -1413,9 +1433,7 @@ pub struct VaultDoc {
 /// surfaced [`CanvasView`] (title + `created_at`) to a [`VaultDoc`]. Empty if the
 /// account has no canvas events yet.
 pub fn list_canvases(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<VaultDoc> {
-    fold_canvas(ndb, txn, author)
-        .map(|reducer| reducer.finalize())
-        .unwrap_or_default()
+    fold_canvases(ndb, txn, author)
         .into_iter()
         .map(|c| VaultDoc {
             kind: VaultDocKind::Canvas,
@@ -1572,6 +1590,29 @@ pub fn longform_json(note: &LongformNote) -> serde_json::Value {
         "hashtags": note.hashtags,
         "created_at": note.created_at,
         "content": note.content,
+    })
+}
+
+/// A vault document's human `notebook:<word-id>` reference, by its kind: a
+/// note's coordinate ref ([`longform_ref`]) or a canvas's ([`canvas_ref`]).
+pub fn vault_doc_ref(doc: &VaultDoc) -> String {
+    match doc.kind {
+        VaultDocKind::Note => longform_ref(&doc.author, &doc.d),
+        VaultDocKind::Canvas => canvas_ref(&doc.author, &doc.d),
+    }
+}
+
+/// Render a vault row as JSON: the typed projection plus its human `ref`, so a
+/// consumer can address the document without re-deriving it. The machine form
+/// of the whole-vault `show`.
+pub fn vault_doc_json(doc: &VaultDoc) -> serde_json::Value {
+    serde_json::json!({
+        "kind": doc.kind.label(),
+        "author": doc.author.hex(),
+        "d": doc.d,
+        "title": doc.title,
+        "edited_at": doc.edited_at,
+        "ref": vault_doc_ref(doc),
     })
 }
 

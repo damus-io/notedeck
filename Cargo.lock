@@ -6421,8 +6421,10 @@ dependencies = [
  "notedeck_testing",
  "notedeck_ui",
  "profiling",
+ "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "url",
  "wordid",
 ]
