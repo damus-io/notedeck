@@ -8,7 +8,9 @@
 //! tool that hand-writes its schema reads the same. The `x-nd-` keys a tool
 //! with a command line adds (its argument order, and each argument's
 //! positional slot, short and long flag, and env fallback) are read when
-//! present and default to a plain `--<name>` flag when not.
+//! present and default to a plain `--<name>` flag when not. So are the keys
+//! for the arguments `nd <ns> <verb>` resolves on the caller's side (a
+//! path, a list, a file or stdin), which `commands` acts on.
 
 use serde_json::{Map, Number, Value};
 
@@ -30,6 +32,26 @@ pub struct Arg<'a> {
     pub long: Option<&'a str>,
     /// The environment variable a command line falls back to (`x-nd-env`).
     pub env: Option<&'a str>,
+    /// How a command line resolves its value before the call
+    /// (`x-nd-kind`), when it does.
+    pub client: Option<ClientKind>,
+    /// The flag that reads its text from a file, or stdin for `-`
+    /// (`x-nd-from-file`).
+    pub from_file: Option<&'a str>,
+    /// Whether a path left out is the caller's working directory
+    /// (`x-nd-default-cwd`).
+    pub default_cwd: bool,
+}
+
+/// An argument a command line resolves on the caller's side, because the
+/// tool can't see the caller's working directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    /// A path, made absolute against the caller's cwd and canonicalized.
+    Path,
+    /// A list of strings, from a repeated flag whose values may each be a
+    /// comma list.
+    List,
 }
 
 /// Where a positional argument sits on a command line.
@@ -88,6 +110,13 @@ pub fn args(schema: &Value) -> Vec<Arg<'_>> {
             short: prop["x-nd-short"].as_str().and_then(|s| s.chars().next()),
             long: prop["x-nd-long"].as_str(),
             env: prop["x-nd-env"].as_str(),
+            client: match prop["x-nd-kind"].as_str() {
+                Some("path") => Some(ClientKind::Path),
+                Some("list") => Some(ClientKind::List),
+                _ => None,
+            },
+            from_file: prop["x-nd-from-file"].as_str(),
+            default_cwd: prop["x-nd-default-cwd"].as_bool().unwrap_or(false),
         })
         .collect();
     // Stable, so names `x-nd-order` leaves out keep their map order after

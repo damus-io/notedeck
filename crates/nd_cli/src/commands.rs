@@ -15,6 +15,14 @@
 //!   `--` ends the flags.
 //! - **Env fallback**: an argument left out is read from its `x-nd-env`
 //!   variable when that is set and not empty.
+//! - **Caller-side kinds**, since the tool runs in notedeck and can't see
+//!   this shell: a `path` (`x-nd-kind`) is made absolute against nd's
+//!   working directory and canonicalized, so a missing one fails here, and
+//!   one marked `x-nd-default-cwd` is that directory when left out. A
+//!   `list` flag repeats and each value may be a comma list: `-l a -l b,c`
+//!   is `["a","b","c"]`. An argument with an `x-nd-from-file` flag also
+//!   takes `--<that flag> <path|->`, which sends the file's text, or
+//!   stdin's for `-`, trimmed at the end; giving both spellings fails.
 //! - **nd's own flags** go with every command and are read before the
 //!   tool's: `--json` prints the tool's value rather than the text it
 //!   rendered, `--pager`/`--no-pager` force paging the text either way, and
@@ -26,9 +34,10 @@
 //! `headway_show_board`, and `headway show <card>` is `headway_show_card`.
 //! Tools that tie keep the order notedeck listed them in.
 
+use crate::caller::Caller;
 use crate::help::CLI;
 use crate::output::Output;
-use crate::schema::{self, Arg, Slot};
+use crate::schema::{self, Arg, ClientKind, Slot};
 use cli_term::help::{CommandHelp, NAME_COL};
 use cli_term::{ColorWhen, PagerMode};
 use notedeck_ipc::ToolInfo;
@@ -78,12 +87,20 @@ impl Entry<'_> {
         slots.into_iter()
     }
 
-    /// The argument `--<flag>` (or `-<flag>` for one letter) names.
-    fn flag(&self, flag: &str) -> Option<&Arg<'_>> {
-        self.args.iter().find(|arg| {
+    /// The argument `--<flag>` (or `-<flag>` for one letter) names, and
+    /// whether it names it by its file form.
+    fn flag(&self, flag: &str) -> Option<FlagHit<'_, '_>> {
+        let by_value = self.args.iter().find(|arg| {
             let short = flag.chars().count() == 1 && arg.short == flag.chars().next();
             arg.positional.is_none() && (short || arg.flag() == flag)
-        })
+        });
+        if let Some(arg) = by_value {
+            return Some(FlagHit { arg, file: false });
+        }
+        // A positional can have a file form too: a comment body typed as
+        // bare words, or read with `--body-file`.
+        let arg = self.args.iter().find(|arg| arg.from_file == Some(flag))?;
+        Some(FlagHit { arg, file: true })
     }
 
     /// Its usage line: the path, its positionals, and `[OPTIONS]` when it
@@ -107,6 +124,22 @@ impl Entry<'_> {
     }
 }
 
+/// The argument a flag names.
+struct FlagHit<'e, 'a> {
+    arg: &'e Arg<'a>,
+    /// Whether the flag is the argument's file form (`x-nd-from-file`),
+    /// whose value is a path to read rather than the argument itself.
+    file: bool,
+}
+
+/// One value a command line gave an argument, before nd resolves it.
+struct Given<'a> {
+    name: &'a str,
+    value: String,
+    /// Whether it came through the argument's file form.
+    file: bool,
+}
+
 /// Every tool in `tools` that declares a command path.
 fn entries(tools: &[ToolInfo]) -> Vec<Entry<'_>> {
     tools
@@ -121,12 +154,14 @@ fn entries(tools: &[ToolInfo]) -> Vec<Entry<'_>> {
 
 /// Read `words` (the command line after `nd`) against `tools`. `help` is
 /// set when the line was spelled `nd help …`; a `-h`/`--help` among the
-/// words asks for the same page. `env` looks up an environment variable.
+/// words asks for the same page. `caller` is the shell nd runs in, whose
+/// environment, working directory and stdin fill the arguments that name
+/// them.
 pub fn resolve(
     tools: &[ToolInfo],
     words: &[String],
     help: bool,
-    env: &dyn Fn(&str) -> Option<String>,
+    caller: &dyn Caller,
 ) -> Result<Action, String> {
     let entries = entries(tools);
     let want_help = help || words.iter().any(|w| w == "-h" || w == "--help");
@@ -173,7 +208,7 @@ pub fn resolve(
             .map_or("an argument", |arg| arg.name);
         return Err(with_help(format!("missing <{missing}>"), path));
     };
-    let pairs = line.pairs(entry, env).map_err(|e| with_help(e, path))?;
+    let pairs = line.pairs(entry, caller).map_err(|e| with_help(e, path))?;
     let args = schema::assemble(&entry.tool.name, &entry.tool.input_schema, None, &pairs)
         .map_err(|e| with_help(e, path))?;
     Ok(Action::Call {
@@ -262,13 +297,15 @@ impl<'w> Line<'w> {
                 }
                 _ => {}
             }
-            let args: Vec<&Arg> = candidates.iter().filter_map(|e| e.flag(flag)).collect();
-            if args.is_empty() {
+            let hits: Vec<FlagHit> = candidates.iter().filter_map(|e| e.flag(flag)).collect();
+            if hits.is_empty() {
                 return Err(format!("unknown flag '{word}'"));
             }
             let value = match inline {
                 Some(value) => value.to_owned(),
-                None if args.iter().all(|arg| arg.is_switch()) => "true".to_owned(),
+                None if hits.iter().all(|hit| hit.arg.is_switch() && !hit.file) => {
+                    "true".to_owned()
+                }
                 None => words
                     .next()
                     .ok_or_else(|| format!("{word} needs a value"))?
@@ -280,25 +317,28 @@ impl<'w> Line<'w> {
     }
 
     /// The `key=value` pairs for calling `entry`: its positionals in slot
-    /// order, each flag under its argument's name, then the env fallback
-    /// for any argument still unset.
-    fn pairs(
-        &self,
-        entry: &Entry,
-        env: &dyn Fn(&str) -> Option<String>,
-    ) -> Result<Vec<String>, String> {
-        let mut pairs: Vec<(&str, String)> = Vec::new();
+    /// order, each flag under its argument's name, the env fallback for
+    /// any argument still unset, then the working directory for a path
+    /// that defaults to it. Each value is resolved by its argument's
+    /// [`ClientKind`] and file form on the way (see the module docs).
+    fn pairs(&self, entry: &Entry, caller: &dyn Caller) -> Result<Vec<String>, String> {
+        let mut given: Vec<Given> = Vec::new();
         let mut words = self.positionals.iter();
         for arg in entry.positionals() {
-            let value = match arg.positional {
-                Some(Slot::Rest) => {
+            let rest = arg.positional == Some(Slot::Rest);
+            if rest && arg.client == Some(ClientKind::List) {
+                given.extend(words.by_ref().map(|w| Given::typed(arg, w)));
+                continue;
+            }
+            let value = match rest {
+                true => {
                     let rest: Vec<&str> = words.by_ref().copied().collect();
                     (!rest.is_empty()).then(|| rest.join(" "))
                 }
-                _ => words.next().map(|w| (*w).to_owned()),
+                false => words.next().map(|w| (*w).to_owned()),
             };
             if let Some(value) = value {
-                pairs.push((arg.name, value));
+                given.push(Given::typed(arg, &value));
             }
         }
         if let Some(extra) = words.next() {
@@ -306,28 +346,147 @@ impl<'w> Line<'w> {
         }
 
         for (flag, value) in &self.flags {
-            let Some(arg) = entry.flag(flag) else {
+            let Some(hit) = entry.flag(flag) else {
                 return Err(format!(
                     "--{flag} doesn't go with {}",
                     entry.usage().trim_end_matches(" [OPTIONS]")
                 ));
             };
-            pairs.push((arg.name, value.clone()));
+            given.push(Given {
+                name: hit.arg.name,
+                value: value.clone(),
+                file: hit.file,
+            });
         }
 
+        let mut pairs = Vec::new();
+        let mut stdin_read = false;
         for arg in &entry.args {
-            if pairs.iter().any(|(name, _)| *name == arg.name) {
-                continue;
-            }
-            let Some(value) = arg.env.and_then(env).filter(|v| !v.is_empty()) else {
-                continue;
+            let mut values = given.iter().filter(|g| g.name == arg.name).peekable();
+            let value = match values.peek() {
+                Some(_) => given_value(arg, values, caller, &mut stdin_read)?,
+                None => fallback(arg, caller)?,
             };
-            pairs.push((arg.name, value));
+            if let Some(value) = value {
+                pairs.push(format!("{}={value}", arg.name));
+            }
         }
-        Ok(pairs
-            .into_iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect())
+        Ok(pairs)
+    }
+}
+
+impl<'a> Given<'a> {
+    /// A value typed for `arg`, not read from a file.
+    fn typed(arg: &Arg<'a>, value: &str) -> Self {
+        Given {
+            name: arg.name,
+            value: value.to_owned(),
+            file: false,
+        }
+    }
+}
+
+/// The value the command line gave `arg`, from its `given` words, as the
+/// text [`schema::assemble`] coerces: a list's values comma-split into a
+/// JSON array, a path resolved, a file form read, else the last one typed.
+/// `stdin_read` is set once a `-` has read stdin, so a second fails rather
+/// than reading nothing.
+fn given_value<'g, 'a: 'g>(
+    arg: &Arg,
+    given: impl Iterator<Item = &'g Given<'a>>,
+    caller: &dyn Caller,
+    stdin_read: &mut bool,
+) -> Result<Option<String>, String> {
+    let mut typed = Vec::new();
+    let mut file = None;
+    for g in given {
+        match g.file {
+            true => file = Some(g.value.as_str()),
+            false => typed.push(g.value.as_str()),
+        }
+    }
+    if let Some(path) = file {
+        if !typed.is_empty() {
+            let flag = arg.from_file.unwrap_or_default();
+            return Err(format!("give {} or --{flag}, not both", spelling(arg)));
+        }
+        let text = read_file(path, caller, stdin_read)
+            .map_err(|e| format!("--{}: {e}", arg.from_file.unwrap_or_default()))?;
+        return Ok(Some(text));
+    }
+    if arg.client == Some(ClientKind::List) {
+        return Ok(Some(list(&typed)));
+    }
+    let Some(last) = typed.last() else {
+        return Ok(None);
+    };
+    resolved(arg, last, caller).map(Some)
+}
+
+/// The value of `arg` when the command line leaves it out: its env
+/// variable when set and not empty, else the working directory for a path
+/// that defaults to it.
+fn fallback(arg: &Arg, caller: &dyn Caller) -> Result<Option<String>, String> {
+    let from_env = arg.env.and_then(|var| caller.env(var));
+    if let Some(value) = from_env.filter(|value| !value.is_empty()) {
+        return match arg.client {
+            Some(ClientKind::List) => Ok(Some(list(&[value.as_str()]))),
+            _ => resolved(arg, &value, caller).map(Some),
+        };
+    }
+    if arg.default_cwd && arg.client == Some(ClientKind::Path) {
+        return resolved(arg, ".", caller).map(Some);
+    }
+    Ok(None)
+}
+
+/// `raw` as `arg` sends it: a path made absolute and canonicalized, any
+/// other text as it is.
+fn resolved(arg: &Arg, raw: &str, caller: &dyn Caller) -> Result<String, String> {
+    if arg.client != Some(ClientKind::Path) {
+        return Ok(raw.to_owned());
+    }
+    let path = caller.cwd()?.join(raw);
+    let path = path
+        .canonicalize()
+        .map_err(|e| format!("{}: '{raw}': {e}", arg.name))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// `values` as a JSON array of strings, each split on commas, with blanks
+/// dropped: `["a", "b,c"]` is `["a","b","c"]`.
+fn list(values: &[&str]) -> String {
+    let items: Vec<&str> = values
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .collect();
+    serde_json::to_string(&items).expect("strings serialize")
+}
+
+/// The text a file form names: stdin for `-`, else the file at `path`
+/// against the caller's working directory, with trailing whitespace
+/// trimmed so a heredoc's closing newline doesn't ride along.
+fn read_file(path: &str, caller: &dyn Caller, stdin_read: &mut bool) -> Result<String, String> {
+    let text = if path == "-" {
+        if std::mem::replace(stdin_read, true) {
+            return Err("stdin is already read by another argument".to_owned());
+        }
+        caller.stdin()?
+    } else {
+        let full = caller.cwd()?.join(path);
+        std::fs::read_to_string(&full).map_err(|e| format!("can't read '{path}': {e}"))?
+    };
+    Ok(text.trim_end().to_owned())
+}
+
+/// How a command line spells `arg` when typed: `<title>` for a
+/// positional, else its `--flag`.
+fn spelling(arg: &Arg) -> String {
+    match arg.positional {
+        Some(_) => format!("<{}>", arg.name),
+        None => format!("--{}", arg.flag()),
     }
 }
 
@@ -457,10 +616,22 @@ fn command_page(path: &[&str], candidates: &[&Entry]) -> String {
             if arg.required && arg.positional.is_none() {
                 text.push_str(" Required.");
             }
+            if arg.client == Some(ClientKind::List) {
+                text.push_str(" Repeat it, or give a comma list.");
+            }
             if let Some(var) = arg.env {
                 text.push_str(&format!(" Falls back to ${var}."));
             }
+            if arg.default_cwd && arg.client == Some(ClientKind::Path) {
+                text.push_str(" Defaults to the current directory.");
+            }
             options.push((key, text));
+            if let Some(flag) = arg.from_file {
+                options.push((
+                    format!("--{flag} <path|->"),
+                    format!("Read {} from a file, or stdin for -.", spelling(arg)),
+                ));
+            }
         }
     }
     for (key, text) in ND_OPTIONS {
@@ -519,8 +690,10 @@ fn option_key(arg: &Arg) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::caller::Process;
     use notedeck_ipc::ToolKind;
     use serde_json::json;
+    use std::path::{Path, PathBuf};
 
     fn tool(name: &str, command: &[&str], schema: Value) -> ToolInfo {
         ToolInfo {
@@ -599,6 +772,24 @@ mod tests {
                 }),
             ),
             tool(
+                "headway_edit",
+                &["headway", "edit"],
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
+                        "body": {"type": "string", "description": "A comment.", "x-nd-positional": "rest", "x-nd-from-file": "body-file"},
+                        "labels": {"type": "array", "items": {"type": "string"}, "description": "Labels.", "x-nd-short": "l", "x-nd-kind": "list"},
+                        "desc": {"type": "string", "description": "The text.", "x-nd-from-file": "desc-file"},
+                        "repo_dir": {"type": "string", "description": "The checkout.", "x-nd-kind": "path", "x-nd-default-cwd": true},
+                        "file": {"type": "string", "description": "A file.", "x-nd-kind": "path"},
+                        "session": {"type": "string", "description": "Who.", "x-nd-env": "AGENTIUM_SESSION"},
+                    },
+                    "required": ["card"],
+                    "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "session"],
+                }),
+            ),
+            tool(
                 "headway_open_review_queue",
                 &[],
                 json!({"type": "object", "properties": {}}),
@@ -606,14 +797,56 @@ mod tests {
         ]
     }
 
-    fn run_env(line: &[&str], env: &[(&str, &str)]) -> Result<Action, String> {
-        let words: Vec<String> = line.iter().map(|w| (*w).to_owned()).collect();
-        let lookup = |var: &str| {
-            env.iter()
+    /// A shell for [`resolve`] to read: its variables, working directory
+    /// and stdin.
+    struct Fake<'f> {
+        env: &'f [(&'f str, &'f str)],
+        cwd: PathBuf,
+        stdin: &'f str,
+    }
+
+    impl Caller for Fake<'_> {
+        fn env(&self, var: &str) -> Option<String> {
+            self.env
+                .iter()
                 .find(|(k, _)| *k == var)
                 .map(|(_, v)| (*v).to_owned())
+        }
+
+        fn cwd(&self) -> Result<PathBuf, String> {
+            Ok(self.cwd.clone())
+        }
+
+        fn stdin(&self) -> Result<String, String> {
+            Ok(self.stdin.to_owned())
+        }
+    }
+
+    fn resolve_in(line: &[&str], caller: &Fake) -> Result<Action, String> {
+        let words: Vec<String> = line.iter().map(|w| (*w).to_owned()).collect();
+        resolve(&fixture(), &words, false, caller)
+    }
+
+    fn run_env(line: &[&str], env: &[(&str, &str)]) -> Result<Action, String> {
+        let caller = Fake {
+            env,
+            cwd: PathBuf::from("/"),
+            stdin: "",
         };
-        resolve(&fixture(), &words, false, &lookup)
+        resolve_in(line, &caller)
+    }
+
+    /// The args `line` calls its tool with, run in `dir` with `stdin`.
+    fn args_in(line: &[&str], dir: &Path, stdin: &str) -> Result<Value, String> {
+        let caller = Fake {
+            env: &[],
+            cwd: dir.to_owned(),
+            stdin,
+        };
+        match resolve_in(line, &caller)? {
+            Action::Call { args, .. } => Ok(args),
+            other => panic!("{line:?}: {other:?}"),
+        }
     }
 
     fn run(line: &[&str]) -> Result<Action, String> {
@@ -838,7 +1071,7 @@ mod tests {
     fn help_pages_come_from_the_specs() {
         let words = |line: &[&str]| line.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
         let page =
-            |line: &[&str], help: bool| match resolve(&fixture(), &words(line), help, &|_| None) {
+            |line: &[&str], help: bool| match resolve(&fixture(), &words(line), help, &Process) {
                 Ok(Action::Help(page)) => page,
                 other => panic!("{line:?}: {other:?}"),
             };
@@ -864,6 +1097,183 @@ mod tests {
             next.contains("Runs the tool headway_ready_items."),
             "{next}"
         );
+    }
+
+    /// A relative path is made absolute against the caller's cwd and
+    /// canonicalized; a default-cwd path left out is that cwd; a path that
+    /// isn't there fails here, before the call.
+    #[test]
+    fn a_path_is_resolved_in_the_callers_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/notes.md"), "x").unwrap();
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+
+        let args = args_in(
+            &[
+                "headway",
+                "edit",
+                "c",
+                "--repo-dir",
+                "sub/../sub",
+                "--file",
+                "sub/notes.md",
+            ],
+            &root,
+            "",
+        )
+        .unwrap();
+        assert_eq!(args["repo_dir"], json!(path(&root.join("sub"))));
+        assert_eq!(args["file"], json!(path(&root.join("sub/notes.md"))));
+
+        let args = args_in(&["headway", "edit", "c"], &root.join("sub"), "").unwrap();
+        assert_eq!(args["repo_dir"], json!(path(&root.join("sub"))));
+        assert!(args.get("file").is_none(), "{args}");
+
+        let err = args_in(&["headway", "edit", "c", "--file", "gone.md"], &root, "").unwrap_err();
+        assert!(err.starts_with("file: 'gone.md': "), "{err}");
+        assert!(err.ends_with("(see `nd headway edit --help`)"), "{err}");
+    }
+
+    /// A list flag repeats, each value may be a comma list, and blanks
+    /// drop out.
+    #[test]
+    fn a_list_flag_repeats_and_splits_on_commas() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = args_in(
+            &[
+                "headway", "edit", "c", "-l", "a", "--labels", "b, c,", "-l=d",
+            ],
+            dir.path(),
+            "",
+        )
+        .unwrap();
+        assert_eq!(args["labels"], json!(["a", "b", "c", "d"]));
+    }
+
+    /// A file form reads its file against the caller's cwd, or stdin for
+    /// `-`, trimmed at the end; it fills a positional too, and stdin is
+    /// read only once.
+    #[test]
+    fn a_file_form_reads_the_file_or_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("desc.md"), "## Why\n\nbody\n\n").unwrap();
+
+        let args = args_in(
+            &["headway", "edit", "c", "--desc-file", "desc.md"],
+            dir.path(),
+            "",
+        )
+        .unwrap();
+        assert_eq!(args["desc"], json!("## Why\n\nbody"));
+
+        let args = args_in(
+            &["headway", "edit", "c", "--body-file", "-"],
+            dir.path(),
+            "from stdin\n",
+        )
+        .unwrap();
+        assert_eq!(args["body"], json!("from stdin"));
+
+        let err = args_in(
+            &[
+                "headway",
+                "edit",
+                "c",
+                "--desc-file",
+                "-",
+                "--body-file",
+                "-",
+            ],
+            dir.path(),
+            "x",
+        )
+        .unwrap_err();
+        assert!(err.contains("stdin is already read"), "{err}");
+
+        let err = args_in(
+            &["headway", "edit", "c", "--desc-file", "nope.md"],
+            dir.path(),
+            "",
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("--desc-file: can't read 'nope.md'"),
+            "{err}"
+        );
+    }
+
+    /// An argument and its file form are one value, so giving both fails
+    /// rather than letting one win.
+    #[test]
+    fn an_arg_and_its_file_form_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("d.md"), "file").unwrap();
+        let err = args_in(
+            &[
+                "headway",
+                "edit",
+                "c",
+                "--desc",
+                "inline",
+                "--desc-file",
+                "d.md",
+            ],
+            dir.path(),
+            "",
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("give --desc or --desc-file, not both"),
+            "{err}"
+        );
+
+        let err = args_in(
+            &["headway", "edit", "c", "typed", "body", "--body-file", "-"],
+            dir.path(),
+            "piped",
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("give <body> or --body-file, not both"),
+            "{err}"
+        );
+    }
+
+    /// The caller's session fills a tool's `x-nd-env` argument the way
+    /// `$HEADWAY_BOARD` does, and a typed value beats it.
+    #[test]
+    fn agentium_session_falls_back_from_env() {
+        let env = [("AGENTIUM_SESSION", "agentium:gaze-cross-blossom")];
+        let Ok(Action::Call { args, .. }) = run_env(&["headway", "edit", "c"], &env) else {
+            panic!("no call");
+        };
+        assert_eq!(args["session"], json!("agentium:gaze-cross-blossom"));
+        let Ok(Action::Call { args, .. }) =
+            run_env(&["headway", "edit", "c", "--session", "agentium:x"], &env)
+        else {
+            panic!("no call");
+        };
+        assert_eq!(args["session"], json!("agentium:x"));
+    }
+
+    /// The page says how each caller-side kind reads.
+    #[test]
+    fn the_page_explains_the_caller_side_kinds() {
+        let Ok(Action::Help(page)) = run(&["headway", "edit", "--help"]) else {
+            panic!("no page");
+        };
+        let flat = page.split_whitespace().collect::<Vec<_>>().join(" ");
+        for want in [
+            "-l, --labels <labels> Labels. Repeat it, or give a comma list.",
+            "--desc-file <path|-> Read --desc from a file, or stdin for -.",
+            "--body-file <path|-> Read <body> from a file, or stdin for -.",
+            "The checkout. Defaults to the current directory.",
+            "Who. Falls back to $AGENTIUM_SESSION.",
+        ] {
+            assert!(flat.contains(want), "{want}\n{page}");
+        }
     }
 
     #[test]

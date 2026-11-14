@@ -193,8 +193,19 @@ pub(super) struct TextArg {
     pub invocation: ToolInvocation,
     /// The argument the query fills.
     pub arg: &'static str,
-    /// Whether the text must be a number, and goes in as one.
-    pub number: bool,
+    /// What the text goes in as.
+    pub kind: TextKind,
+}
+
+/// What a [`TextArg`]'s typed text goes in as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TextKind {
+    /// The string as typed.
+    Text,
+    /// A number; text that isn't one is no value.
+    Number,
+    /// A list of strings, typed as a comma list: `a, b` is `["a", "b"]`.
+    List,
 }
 
 impl TextArg {
@@ -205,14 +216,21 @@ impl TextArg {
         if text.is_empty() {
             return None;
         }
-        let value = if self.number {
-            let n: f64 = text.parse().ok()?;
-            match n.fract() == 0.0 && n.abs() < i64::MAX as f64 {
-                true => serde_json::Value::from(n as i64),
-                false => serde_json::Value::from(n),
+        let value = match self.kind {
+            TextKind::Text => serde_json::Value::from(text),
+            TextKind::Number => {
+                let n: f64 = text.parse().ok()?;
+                match n.fract() == 0.0 && n.abs() < i64::MAX as f64 {
+                    true => serde_json::Value::from(n as i64),
+                    false => serde_json::Value::from(n),
+                }
             }
-        } else {
-            serde_json::Value::from(text)
+            TextKind::List => text
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(serde_json::Value::from)
+                .collect(),
         };
         Some(with_arg(&self.invocation, self.arg, value))
     }
@@ -1241,4 +1259,39 @@ pub(super) fn consume_exact(input: &mut egui::InputState, modifiers: Modifiers, 
         )
     });
     input.events.len() != before
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn text_arg(kind: TextKind) -> TextArg {
+        TextArg {
+            invocation: ToolInvocation::new("demo", json!({"card": "x"})),
+            arg: "value",
+            kind,
+        }
+    }
+
+    /// Typed text goes in as its kind: a string, a number, or a comma list
+    /// with blanks dropped; text that is no value fills nothing.
+    #[test]
+    fn typed_text_fills_by_kind() {
+        let args = |kind, text| text_arg(kind).filled(text).map(|call| call.args);
+        assert_eq!(
+            args(TextKind::Text, " a b "),
+            Some(json!({"card": "x", "value": "a b"}))
+        );
+        assert_eq!(
+            args(TextKind::Number, "3"),
+            Some(json!({"card": "x", "value": 3}))
+        );
+        assert_eq!(args(TextKind::Number, "three"), None);
+        assert_eq!(
+            args(TextKind::List, "a, b,,c "),
+            Some(json!({"card": "x", "value": ["a", "b", "c"]}))
+        );
+        assert_eq!(args(TextKind::List, "  "), None);
+    }
 }

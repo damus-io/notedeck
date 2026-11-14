@@ -12,6 +12,7 @@
 //! 2 when no notedeck is listening, so a script can tell "not running" apart
 //! from "the tool said no".
 
+mod caller;
 mod commands;
 mod help;
 mod listing;
@@ -276,8 +277,7 @@ fn run(command: Command) -> Result<(), Failure> {
 /// tools, then call the one it names, or print the page it asks for.
 fn app(words: &[String], help: bool) -> Result<(), Failure> {
     let tools = list_tools()?;
-    let env = |var: &str| std::env::var(var).ok();
-    match commands::resolve(&tools, words, help, &env)? {
+    match commands::resolve(&tools, words, help, &caller::Process)? {
         commands::Action::Help(page) => {
             eprint!("{page}");
             Ok(())

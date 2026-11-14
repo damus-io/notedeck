@@ -23,6 +23,15 @@ pub enum ToolArgType {
     Boolean,
     /// A string constrained to a fixed set of values (rendered as JSON `enum`).
     Enum(Vec<&'static str>),
+    /// A filesystem path, as a string. A command-line client resolves it
+    /// against its own working directory and canonicalizes it before the
+    /// call, since the tool runs in a process that can't see the caller's
+    /// cwd (`x-nd-kind: "path"`).
+    Path,
+    /// A list of strings (JSON `array` of `string`). On a command line its
+    /// flag repeats and each value may be a comma list: `-l a -l b,c` is
+    /// `["a", "b", "c"]` (`x-nd-kind: "list"`).
+    List,
 }
 
 impl ToolArgType {
@@ -34,6 +43,18 @@ impl ToolArgType {
             Self::Integer => "integer",
             Self::Boolean => "boolean",
             Self::Enum(_) => "string",
+            Self::Path => "string",
+            Self::List => "array",
+        }
+    }
+
+    /// The `x-nd-kind` a command-line client reads to resolve the value on
+    /// its own side before the call, for the kinds that need it.
+    fn cli_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::Path => Some("path"),
+            Self::List => Some("list"),
+            _ => None,
         }
     }
 }
@@ -52,8 +73,10 @@ pub enum Positional {
 /// How an argument reads on a command line (`nd <ns> <verb>`), set with the
 /// [`ToolArg`] builders [`positional`](ToolArg::positional),
 /// [`rest`](ToolArg::rest), [`short`](ToolArg::short),
-/// [`long`](ToolArg::long) and [`env`](ToolArg::env). The default is a
-/// `--<name>` flag with no short form and no env fallback.
+/// [`long`](ToolArg::long), [`env`](ToolArg::env),
+/// [`from_file`](ToolArg::from_file) and
+/// [`default_cwd`](ToolArg::default_cwd). The default is a `--<name>` flag
+/// with no short form, no env fallback and no file form.
 #[derive(Debug, Clone, Default)]
 pub struct ArgCli {
     /// A bare word rather than a flag, when set.
@@ -65,6 +88,13 @@ pub struct ArgCli {
     pub long: Option<&'static str>,
     /// The environment variable read when the argument isn't given.
     pub env: Option<&'static str>,
+    /// A second flag, `--<from_file> <path|->`, that reads the argument's
+    /// text from a file, or stdin for `-` (see
+    /// [`from_file`](ToolArg::from_file)).
+    pub from_file: Option<&'static str>,
+    /// Whether a [`Path`](ToolArgType::Path) argument left out is the
+    /// caller's working directory (see [`default_cwd`](ToolArg::default_cwd)).
+    pub default_cwd: bool,
 }
 
 /// One argument in a [`ToolSpec`]: its name, JSON type, docs, and whether it is
@@ -154,6 +184,24 @@ impl ToolArg {
     /// it; the tool never does.
     pub fn env(mut self, var: &'static str) -> Self {
         self.cli.env = Some(var);
+        self
+    }
+
+    /// Let a command line give this string argument's text as a file:
+    /// `--<flag> <path>` reads the file, and `--<flag> -` reads stdin. The
+    /// client reads it and sends the contents as the argument, so a long
+    /// description or comment body never has to be quoted onto the line.
+    /// Giving both the argument and its file form is an error.
+    pub fn from_file(mut self, flag: &'static str) -> Self {
+        self.cli.from_file = Some(flag);
+        self
+    }
+
+    /// Fill a [`Path`](ToolArgType::Path) argument with the caller's working
+    /// directory when a command line leaves it out, after any
+    /// [`env`](Self::env) fallback.
+    pub fn default_cwd(mut self) -> Self {
+        self.cli.default_cwd = true;
         self
     }
 
@@ -364,8 +412,11 @@ impl ToolSpec {
     ///   `preserve_order`, as `nd` builds) would otherwise read positionals
     ///   alphabetically.
     /// - On a property: `x-nd-positional` (its slot index, or `"rest"`),
-    ///   `x-nd-short` (one letter), `x-nd-long` (the flag's name) and
-    ///   `x-nd-env` (the variable to fall back to).
+    ///   `x-nd-short` (one letter), `x-nd-long` (the flag's name),
+    ///   `x-nd-env` (the variable to fall back to), `x-nd-kind` (`"path"`
+    ///   or `"list"`, resolved by the client), `x-nd-from-file` (the flag
+    ///   that reads the value from a file or stdin) and `x-nd-default-cwd`
+    ///   (a path left out is the caller's cwd).
     pub fn json_schema(&self) -> Value {
         let required_args: Vec<Value> = self
             .arguments
@@ -394,6 +445,10 @@ impl ToolSpec {
                 props.insert("default".to_string(), default.clone());
             }
 
+            if let ToolArgType::List = &arg.typ {
+                props.insert("items".to_string(), serde_json::json!({"type": "string"}));
+            }
+
             if let ToolArgType::Enum(variants) = &arg.typ {
                 props.insert(
                     "enum".to_string(),
@@ -407,7 +462,7 @@ impl ToolSpec {
             }
 
             if !self.command.is_empty() {
-                insert_cli_keys(&mut props, &arg.cli, &mut slots);
+                insert_cli_keys(&mut props, arg, &mut slots);
             }
 
             properties.insert(arg.name.to_owned(), Value::Object(props));
@@ -431,10 +486,11 @@ impl ToolSpec {
     }
 }
 
-/// Write `cli`'s `x-nd-` keys onto one property of
+/// Write `arg`'s `x-nd-` keys onto its property of
 /// [`ToolSpec::json_schema`]. `slots` counts the positional slots handed out
 /// so far, so each gets the next index.
-fn insert_cli_keys(props: &mut serde_json::Map<String, Value>, cli: &ArgCli, slots: &mut u64) {
+fn insert_cli_keys(props: &mut serde_json::Map<String, Value>, arg: &ToolArg, slots: &mut u64) {
+    let cli = &arg.cli;
     match cli.positional {
         Some(Positional::Slot) => {
             props.insert("x-nd-positional".to_string(), Value::from(*slots));
@@ -453,6 +509,15 @@ fn insert_cli_keys(props: &mut serde_json::Map<String, Value>, cli: &ArgCli, slo
     }
     if let Some(env) = cli.env {
         props.insert("x-nd-env".to_string(), Value::from(env));
+    }
+    if let Some(kind) = arg.typ.cli_kind() {
+        props.insert("x-nd-kind".to_string(), Value::from(kind));
+    }
+    if let Some(flag) = cli.from_file {
+        props.insert("x-nd-from-file".to_string(), Value::from(flag));
+    }
+    if cli.default_cwd {
+        props.insert("x-nd-default-cwd".to_string(), Value::Bool(true));
     }
 }
 
@@ -502,6 +567,44 @@ mod tests {
         assert_eq!(props["board"]["x-nd-env"], json!("DEMO_BOARD"));
         assert!(props["board"].get("x-nd-positional").is_none());
         assert_eq!(spec.command_path(), ["demo", "add"]);
+    }
+
+    /// The client-side kinds go over as their wire types, a path as a
+    /// string and a list as an array of strings, each marked with the
+    /// `x-nd-` keys that tell a command line to resolve it.
+    #[test]
+    fn client_side_kinds_write_their_wire_type_and_keys() {
+        let spec = ToolSpec::new(
+            "demo_review",
+            "Review a thing.",
+            vec![
+                ToolArg::new("repo_dir", ToolArgType::Path, "The checkout.").default_cwd(),
+                ToolArg::new("labels", ToolArgType::List, "Labels.").short('l'),
+                ToolArg::new("desc", ToolArgType::String, "The text.").from_file("desc-file"),
+            ],
+        )
+        .command(&["demo", "review"]);
+        let props = &spec.json_schema()["properties"];
+
+        assert_eq!(props["repo_dir"]["type"], json!("string"));
+        assert_eq!(props["repo_dir"]["x-nd-kind"], json!("path"));
+        assert_eq!(props["repo_dir"]["x-nd-default-cwd"], json!(true));
+        assert_eq!(props["labels"]["type"], json!("array"));
+        assert_eq!(props["labels"]["items"], json!({"type": "string"}));
+        assert_eq!(props["labels"]["x-nd-kind"], json!("list"));
+        assert_eq!(props["desc"]["type"], json!("string"));
+        assert_eq!(props["desc"]["x-nd-from-file"], json!("desc-file"));
+        assert!(props["desc"].get("x-nd-kind").is_none());
+
+        // Without a command line a model still gets a valid array schema.
+        let bare = ToolSpec::new(
+            "demo_label",
+            "Label a thing.",
+            vec![ToolArg::new("labels", ToolArgType::List, "Labels.")],
+        );
+        let props = &bare.json_schema()["properties"];
+        assert_eq!(props["labels"]["items"], json!({"type": "string"}));
+        assert!(props["labels"].get("x-nd-kind").is_none());
     }
 
     /// A tool with no command line keeps a model's schema free of `x-nd-`

@@ -24,7 +24,7 @@ use notedeck::{
 };
 use serde_json::Value;
 
-use super::command_bar::{with_arg, TextArg};
+use super::command_bar::{with_arg, TextArg, TextKind};
 use super::runnable::RunnableTool;
 use super::Chrome;
 use crate::keymap::{Scopes, CURRENT};
@@ -100,12 +100,22 @@ impl Chrome {
         let values = match arg.typ() {
             ToolArgType::Enum(values) => values.iter().map(|&v| Value::from(v)).collect(),
             ToolArgType::Boolean => vec![Value::from(true), Value::from(false)],
-            ToolArgType::String | ToolArgType::Number | ToolArgType::Integer => {
-                let number = matches!(arg.typ(), ToolArgType::Number | ToolArgType::Integer);
+            ToolArgType::String
+            | ToolArgType::Path
+            | ToolArgType::List
+            | ToolArgType::Number
+            | ToolArgType::Integer => {
+                // A path is typed whole: the bar runs in the app, whose
+                // working directory is no caller's to resolve against.
+                let kind = match arg.typ() {
+                    ToolArgType::Number | ToolArgType::Integer => TextKind::Number,
+                    ToolArgType::List => TextKind::List,
+                    _ => TextKind::Text,
+                };
                 let arg = TextArg {
                     invocation: invocation.clone(),
                     arg: arg.name(),
-                    number,
+                    kind,
                 };
                 self.command_bar.ask_text(prompt, hint, arg);
                 return true;
@@ -241,9 +251,12 @@ fn asks_for(arg: &ToolArg, args: &Value) -> bool {
     }
     match arg.typ() {
         ToolArgType::Enum(_) => true,
-        ToolArgType::Boolean | ToolArgType::String | ToolArgType::Number | ToolArgType::Integer => {
-            arg.is_required()
-        }
+        ToolArgType::Boolean
+        | ToolArgType::String
+        | ToolArgType::Path
+        | ToolArgType::List
+        | ToolArgType::Number
+        | ToolArgType::Integer => arg.is_required(),
     }
 }
 

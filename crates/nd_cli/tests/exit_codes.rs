@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::thread;
 use tempfile::TempDir;
 
@@ -107,6 +107,23 @@ fn app_tools() -> Vec<ToolInfo> {
                 },
                 "required": [],
                 "x-nd-order": ["container", "limit", "board"],
+            }),
+        ),
+        tool(
+            "headway_edit",
+            "Edit card",
+            "edit",
+            json!({
+                "type": "object",
+                "properties": {
+                    "card": {"type": "string", "description": "The card.", "x-nd-positional": 0},
+                    "labels": {"type": "array", "items": {"type": "string"}, "description": "Labels.", "x-nd-short": "l", "x-nd-kind": "list"},
+                    "desc": {"type": "string", "description": "The text.", "x-nd-from-file": "desc-file"},
+                    "repo_dir": {"type": "string", "description": "The checkout.", "x-nd-kind": "path", "x-nd-default-cwd": true},
+                    "session": {"type": "string", "description": "Who.", "x-nd-env": "AGENTIUM_SESSION"},
+                },
+                "required": ["card"],
+                "x-nd-order": ["card", "labels", "desc", "repo_dir", "session"],
             }),
         ),
     ]
@@ -552,6 +569,63 @@ fn an_app_command_reads_flags_and_the_callers_env() {
                 "container": "headway:notedeck/keen-ranch-hotel",
                 "limit": 1,
                 "board": "notedeck",
+            }),
+        }
+    );
+}
+
+/// The caller-side kinds resolve in nd's own process: the path is nd's
+/// cwd, the list flag is split, stdin is read for `--desc-file -`, and the
+/// session comes from the caller's env, all before the call is sent.
+#[test]
+fn an_app_command_resolves_the_callers_side() {
+    let dir = socket_dir();
+    let cwd = tempfile::tempdir().expect("a cwd");
+    let result = Response::ok(Reply::Result {
+        result: json!({}),
+        text: None,
+    });
+    let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
+    let mut child = Command::new(nd_bin())
+        .args([
+            "headway",
+            "edit",
+            "c",
+            "-l",
+            "a",
+            "-l",
+            "b,c",
+            "--desc-file",
+            "-",
+        ])
+        .current_dir(cwd.path())
+        .env("NOTEDECK_SOCKET", &socket)
+        .env("AGENTIUM_SESSION", "agentium:gaze-cross-blossom")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run nd");
+    child
+        .stdin
+        .take()
+        .expect("nd's stdin")
+        .write_all(b"## Why\n\npiped in\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("nd exits");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let seen = server.join().unwrap();
+    let repo_dir = cwd.path().canonicalize().unwrap();
+    assert_eq!(
+        seen[1],
+        Request::CallTool {
+            name: "headway_edit".to_owned(),
+            args: json!({
+                "card": "c",
+                "labels": ["a", "b", "c"],
+                "desc": "## Why\n\npiped in",
+                "repo_dir": repo_dir.to_string_lossy(),
+                "session": "agentium:gaze-cross-blossom",
             }),
         }
     );
