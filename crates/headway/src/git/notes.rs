@@ -303,7 +303,7 @@ mod tests {
         notes: CommitNotes,
     }
 
-    /// Resolve `rec` and read its notes the way `headway diff --note` does.
+    /// Resolve `rec` and read its notes the way `nd headway diff --note` does.
     fn resolve_notes(rec: &ReviewFields, ctx: &ResolveCtx) -> Lookup {
         let resolved = resolve(rec, "headway:b/a-b-c", ctx).unwrap();
         let src = crate::git::fetch_source(rec, &resolved.repo_dir, ctx);

@@ -273,7 +273,7 @@ impl AppTool for SendMessage {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_send",
-            "Send a `user` message to a live agentium session, as `agentium send` does: its running agent, on this machine or another, reads it as its next message. Answers `{session, event_id}`. `immediate` also interrupts a running turn so the agent reads the message now (`interrupted` says whether it did). A deleted session is refused: resume it first.",
+            "Send a `user` message to a live agentium session, as `nd agentium send` does: its running agent, on this machine or another, reads it as its next message. Answers `{session, event_id}`. `immediate` also interrupts a running turn so the agent reads the message now (`interrupted` says whether it did). A deleted session is refused: resume it first.",
             vec![
                 session_arg(),
                 ToolArg::new("text", ToolArgType::String, "The message.")
@@ -449,7 +449,7 @@ impl SlowTool for Spawn {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_spawn",
-            "Spawn a new agentium session on a Dave host — this machine's or another's — as `agentium spawn` does. Answers `{spawn_id, host, session}`; `session` is the new session's `agentium:` ref once the host answers, which `wait` (implied by `prompt` and `print_ref`) waits for, else null. `host`, `cwd` and `backend` default to the session the caller runs inside (`from_session`), so a bare spawn starts a sibling in the same worktree. A titled spawn matching a session started on the same host and cwd in the last ten minutes is refused unless `allow_duplicate`.",
+            "Spawn a new agentium session on a Dave host — this machine's or another's — as `nd agentium spawn` does. Answers `{spawn_id, host, session}`; `session` is the new session's `agentium:` ref once the host answers, which `wait` (implied by `prompt` and `print_ref`) waits for, else null. `host`, `cwd` and `backend` default to the session the caller runs inside (`from_session`), so a bare spawn starts a sibling in the same worktree. A titled spawn matching a session started on the same host and cwd in the last ten minutes is refused unless `allow_duplicate`.",
             vec![
                 ToolArg::new("host", ToolArgType::String, "The host to run it on. Defaults to the current session's."),
                 ToolArg::new(
@@ -665,7 +665,7 @@ impl AppTool for Resume {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_resume",
-            "Reopen a closed agentium session, deleted ones included, on the host it ran on, as `agentium resume` does: the host revives its ref, rehydrates its history and resumes its backend. Answers `{session, host}`.",
+            "Reopen a closed agentium session, deleted ones included, on the host it ran on, as `nd agentium resume` does: the host revives its ref, rehydrates its history and resumes its backend. Answers `{session, host}`.",
             vec![session_arg()],
         )
         .titled("Resume agent session")
@@ -746,7 +746,7 @@ impl AppTool for Interrupt {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_interrupt",
-            "Interrupt a live agentium session's running turn on its host, as `agentium interrupt` does — the Esc of Dave. Answers `{session}`. A no-op on a session with no turn running; a deleted one is refused.",
+            "Interrupt a live agentium session's running turn on its host, as `nd agentium interrupt` does — the Esc of Dave. Answers `{session}`. A no-op on a session with no turn running; a deleted one is refused.",
             vec![session_arg()],
         )
         .titled("Interrupt agent session")
@@ -824,7 +824,7 @@ impl AppTool for Respond {
         let spec = match self.0 {
             Decision::Approve => ToolSpec::new(
                 "agentium_approve",
-                "Approve a live agentium session's pending permission request, as `agentium approve` does: the newest, or the one `request` names. Answers `{session, event_id, perm_id, tool_name, decision, interrupt}`. An AskUserQuestion request is refused: it needs answers, which an approve can't send.",
+                "Approve a live agentium session's pending permission request, as `nd agentium approve` does: the newest, or the one `request` names. Answers `{session, event_id, perm_id, tool_name, decision, interrupt}`. An AskUserQuestion request is refused: it needs answers, which an approve can't send.",
                 arguments,
             )
             .titled("Approve agent permission")
@@ -837,7 +837,7 @@ impl AppTool for Respond {
                 ));
                 ToolSpec::new(
                     "agentium_deny",
-                    "Deny a live agentium session's pending permission request, as `agentium deny` does: the newest, or the one `request` names. Answers `{session, event_id, perm_id, tool_name, decision, interrupt}`.",
+                    "Deny a live agentium session's pending permission request, as `nd agentium deny` does: the newest, or the one `request` names. Answers `{session, event_id, perm_id, tool_name, decision, interrupt}`.",
                     arguments,
                 )
                 .titled("Deny agent permission")
@@ -936,7 +936,7 @@ impl AppTool for Mode {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_set_mode",
-            "Change a live agentium session's permission mode on its host, as `agentium mode` does — the Ctrl+M of Dave. Answers `{session, event_id, mode}` with the mode's canonical spelling.",
+            "Change a live agentium session's permission mode on its host, as `nd agentium mode` does — the Ctrl+M of Dave. Answers `{session, event_id, mode}` with the mode's canonical spelling.",
             vec![
                 session_arg(),
                 ToolArg::new(
@@ -1017,7 +1017,7 @@ impl SlowTool for Link {
         if self.unlink {
             return ToolSpec::new(
                 "agentium_unlink",
-                "Clear the issue a live agentium session is linked to, as `agentium unlink` does, then wait for its host to republish the session without it. Answers `{session, issue_url, event_id, unchanged}`.",
+                "Clear the issue a live agentium session is linked to, as `nd agentium unlink` does, then wait for its host to republish the session without it. Answers `{session, issue_url, event_id, unchanged}`.",
                 vec![session_arg()],
             )
             .titled("Unlink agent session")
@@ -1026,7 +1026,7 @@ impl SlowTool for Link {
         }
         ToolSpec::new(
             "agentium_link",
-            "Link a live agentium session to the issue it works, as `agentium link` does — `spawn`'s `issue_url` for a session spawned without one — then wait for its host to republish the session with it. Answers `{session, issue_url, event_id, unchanged}`.",
+            "Link a live agentium session to the issue it works, as `nd agentium link` does — `spawn`'s `issue_url` for a session spawned without one — then wait for its host to republish the session with it. Answers `{session, issue_url, event_id, unchanged}`.",
             vec![
                 session_arg(),
                 ToolArg::new(
@@ -1088,7 +1088,7 @@ impl SlowTool for Link {
                 return Err(format!(
                     "sent the command to {} (event {}…), but its host hasn't republished the \
                      session within {}s. An offline host applies it when it next syncs; a host \
-                     running a Dave build from before `agentium link` ignores it and needs \
+                     running a Dave build from before `nd agentium link` ignores it and needs \
                      rebuilding.",
                     target.uri,
                     short_event(&event_id),
@@ -1193,7 +1193,7 @@ impl AppTool for ConfigList {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_config_list",
-            "List the run configs Dave's run bar launches — named shell commands, each registered for one host and directory — on every host, as `agentium config list` does: `[{id, name, command, host, cwd, updated_at}]` in host, cwd, name order.",
+            "List the run configs Dave's run bar launches — named shell commands, each registered for one host and directory — on every host, as `nd agentium config list` does: `[{id, name, command, host, cwd, updated_at}]` in host, cwd, name order.",
             filter_args().into(),
         )
         .titled("List run configs")
@@ -1240,7 +1240,7 @@ impl AppTool for ConfigShow {
         arguments.extend(filter_args());
         ToolSpec::new(
             "agentium_config_show",
-            "Show one run config, as `agentium config show` does: `{id, name, command, host, cwd, updated_at}`.",
+            "Show one run config, as `nd agentium config show` does: `{id, name, command, host, cwd, updated_at}`.",
             arguments,
         )
         .titled("Show run config")
@@ -1323,7 +1323,7 @@ impl AppTool for ConfigAdd {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_config_add",
-            "Register a run config — a named shell command Dave's run bar launches — on a host and directory, as `agentium config add` does. `host` and `cwd` default to the session the caller runs inside. Answers `{action, event_id, config}`.",
+            "Register a run config — a named shell command Dave's run bar launches — on a host and directory, as `nd agentium config add` does. `host` and `cwd` default to the session the caller runs inside. Answers `{action, event_id, config}`.",
             vec![
                 ToolArg::new("name", ToolArgType::String, "What the run bar calls it.")
                     .required(true),
@@ -1393,7 +1393,7 @@ impl AppTool for ConfigEdit {
         arguments.extend(filter_args());
         ToolSpec::new(
             "agentium_config_edit",
-            "Rename a run config or change its command, keeping its id, as `agentium config edit` does. Answers `{action, event_id, config}`.",
+            "Rename a run config or change its command, keeping its id, as `nd agentium config edit` does. Answers `{action, event_id, config}`.",
             arguments,
         )
         .titled("Edit run config")
@@ -1452,7 +1452,7 @@ impl AppTool for ConfigRm {
         arguments.extend(filter_args());
         ToolSpec::new(
             "agentium_config_rm",
-            "Delete a run config, as `agentium config rm` does. Answers `{action, event_id, config}`.",
+            "Delete a run config, as `nd agentium config rm` does. Answers `{action, event_id, config}`.",
             arguments,
         )
         .titled("Remove run config")

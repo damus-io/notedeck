@@ -853,7 +853,7 @@ fn snapshot_headway_graph() {
 }
 
 /// The same epic's graph switched to **Work order** in the top bar: its direct
-/// sub-issues joined in the order `headway next` walks them, one per rank, top
+/// sub-issues joined in the order `nd headway next` walks them, one per rank, top
 /// to bottom, with no ghosts and no blocking arrows. Pins the switch's selected
 /// chip, the "· work order" breadcrumb, and the chain layout beside
 /// [`snapshot_headway_graph`]'s blocking view of the same cards.
@@ -2292,7 +2292,7 @@ fn snapshot_headway_list_grouped() {
 }
 
 /// The issue list in work order (headway:headway/battle-stock-expire),
-/// caught mid-drag: the cards `headway next --ready` would hand out wear the
+/// caught mid-drag: the cards `nd headway next --ready` would hand out wear the
 /// accent bar, and the row being dragged up shows the insertion line on the
 /// row it would land above.
 #[test]
@@ -4938,7 +4938,7 @@ fn review_comments_draft_then_send_to_the_session() {
     assert!(msg.starts_with("Review comments on commit "), "{msg}");
     assert!(msg.contains("src/keys.rs:1-16\n```diff\n+/// What a key does in the review queue."));
     assert!(
-        msg.contains("```\nkeys want a test\n\nReply with `headway comment "),
+        msg.contains("```\nkeys want a test\n\nReply with `nd headway comment "),
         "{msg}"
     );
 
@@ -4989,7 +4989,7 @@ fn review_comment_on_the_whole_commit() {
     let msg = opens[0].msg.as_deref().expect("a message");
     assert!(msg.starts_with("Review comments on commit "), "{msg}");
     assert!(
-        msg.contains(&format!("):\n\n{BODY}\n\nReply with `headway comment ")),
+        msg.contains(&format!("):\n\n{BODY}\n\nReply with `nd headway comment ")),
         "{msg}"
     );
 
@@ -9371,7 +9371,7 @@ fn unfolded_shared_board_keeps_the_switcher_reachable() {
 /// Deleting a board through the switcher: "Delete board…" asks for confirmation
 /// by name, the confirmed delete lands on another board, and the deleted one
 /// leaves the switcher while its definition folds as a tombstone (so
-/// `headway restore-board` can bring it back).
+/// `nd headway restore-board` can bring it back).
 #[test]
 fn switcher_deletes_the_active_board_and_lands_on_another() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));

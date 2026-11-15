@@ -2,7 +2,7 @@
 //! or many.
 //!
 //! One parser and one predicate shared by every front end — the GUI board
-//! filter, the GUI list surface and `headway list` — so a query typed into any
+//! filter, the GUI list surface and `nd headway list` — so a query typed into any
 //! of them means the same thing. Pure: it reads folded [`BoardView`]s and
 //! allocates nothing it doesn't hand back.
 //!
@@ -14,7 +14,7 @@
 //!   [`list_positions`] is the same walk as indices ([`RowPos`]).
 //! - [`Grouping`] + [`group`] — gather rows under headers.
 //! - [`Sorting`] + [`sort_order`] — order rows, by work order among others,
-//!   with [`ready_set`] marking what `headway next --ready` hands out.
+//!   with [`ready_set`] marking what `nd headway next --ready` hands out.
 
 use std::collections::{HashMap, HashSet};
 
@@ -59,7 +59,7 @@ impl<'a> ListRow<'a> {
     }
 
     /// The name of where the card sits: its column's, or `archived`. What
-    /// `headway list` prints in brackets, the way `grep` does.
+    /// `nd headway list` prints in brackets, the way `grep` does.
     pub fn place_name(&self) -> &'a str {
         self.column().map_or("archived", |c| c.name.as_str())
     }
@@ -348,7 +348,7 @@ fn ref_matches(r: &RefTerm, row: &ListRow) -> bool {
 
 /// One property a list row can show beside its title — Linear's "display
 /// properties". Which are on is a [`DisplayProps`] set. Written by its
-/// [`name`](Self::name) in `headway list --show`/`--hide` and in a saved view.
+/// [`name`](Self::name) in `nd headway list --show`/`--hide` and in a saved view.
 ///
 /// Assignee, project and cycle join when cards carry those fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -557,7 +557,7 @@ impl DisplayProps {
         Ok(set)
     }
 
-    /// The set `headway list --show`/`--hide` ask for: `show` when given,
+    /// The set `nd headway list --show`/`--hide` ask for: `show` when given,
     /// else the [default](Self::default), less anything in `hide`.
     pub fn shown_hidden(show: Option<DisplayProps>, hide: DisplayProps) -> DisplayProps {
         DisplayProps(show.unwrap_or_default().0 & !hide.0)
@@ -577,7 +577,7 @@ impl From<Vec<DisplayProp>> for DisplayProps {
 }
 
 /// What a list's rows are gathered under — Linear's "Grouping" and
-/// "Sub-grouping". Written by its [`name`](Self::name) in `headway list
+/// "Sub-grouping". Written by its [`name`](Self::name) in `nd headway list
 /// --group` and in a saved view.
 ///
 /// Assignee, project and cycle join when cards carry those fields.
@@ -1048,7 +1048,7 @@ fn row_groups(row: &ListRow, by: GroupBy) -> Vec<ListGroup> {
 }
 
 /// What a list's rows are ordered by — Linear's "Ordering". Written by its
-/// [`name`](Self::name) in `headway list --sort` and in a saved view.
+/// [`name`](Self::name) in `nd headway list --sort` and in a saved view.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -1068,7 +1068,7 @@ pub enum SortBy {
     /// By due date, undated cards last whichever way it runs.
     Due,
     /// Each board's work-order ([`crate::traversal::work_order`] over its
-    /// root): what `headway next` walks, sequenced cards first, each followed
+    /// root): what `nd headway next` walks, sequenced cards first, each followed
     /// by its subissues. Cards outside it (archived) go last.
     WorkOrder,
 }
@@ -1323,7 +1323,7 @@ impl<'a> WorkPositions<'a> {
 }
 
 /// The cards among `rows` that are in their board's ready frontier
-/// ([`crate::traversal::ready`] over its root): what `headway next --ready`
+/// ([`crate::traversal::ready`] over its root): what `nd headway next --ready`
 /// hands out. A list in [`SortBy::WorkOrder`] marks them.
 pub fn ready_set(rows: &[ListRow]) -> HashSet<[u8; 32]> {
     let mut seen: Vec<&BoardView> = Vec::new();
@@ -1356,7 +1356,7 @@ pub struct ViewSpec {
     /// The view's name, as its tab shows it.
     pub name: String,
     /// The filter's query text (`p:high label:ui`). Without an `is:` term the
-    /// view keeps open cards, as `headway list` does.
+    /// view keeps open cards, as `nd headway list` does.
     pub query: String,
     /// How the rows are gathered under headers.
     pub grouping: Grouping,

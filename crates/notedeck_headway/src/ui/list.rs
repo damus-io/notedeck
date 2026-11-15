@@ -5,7 +5,7 @@
 //! team view is, and the header's chip widens it to every board
 //! ([`ListScope`], headway:headway/arm-monster-liquid).
 //!
-//! It reads the same query language as the grid's filter and `headway list`
+//! It reads the same query language as the grid's filter and `nd headway list`
 //! ([`headway::query::IssueFilter`], unscoped, so a pasted ref names exactly
 //! one card), with an Active/All toggle standing in for `is:open`. The rows
 //! are recomputed only when a board re-folds or the query changes
@@ -20,13 +20,13 @@
 //! The rows can be gathered under group headers (headway:headway/office-flower-churn)
 //! when the Display menu picks a grouping (the list starts ungrouped), each
 //! split again by a sub-grouping if one is set: [`headway::query::group`], the same grouping
-//! `headway list --group` prints. A header folds its rows away, and its `+`
+//! `nd headway list --group` prints. A header folds its rows away, and its `+`
 //! adds a card already in that group (see [`group_add`]).
 //!
 //! The rows are ordered before they're grouped
 //! (headway:headway/battle-stock-expire), most recently updated first unless
-//! the Display menu says otherwise (headway:headway/join-drum-margin): [`headway::query::sort_order`], what `headway list --sort`
-//! prints. Ordered by work order, the rows `headway next --ready` would hand
+//! the Display menu says otherwise (headway:headway/join-drum-margin): [`headway::query::sort_order`], what `nd headway list --sort`
+//! prints. Ordered by work order, the rows `nd headway next --ready` would hand
 //! out wear an accent bar, and a row on the board showing drags into a new
 //! place in that order (see [`work_order_drop`]).
 //!
@@ -725,7 +725,7 @@ impl ListState {
             .iter()
             .map(|pos| pos.row(&sources[pos.board]))
             .collect();
-        // Work order marks what `headway next --ready` would hand out.
+        // Work order marks what `nd headway next --ready` would hand out.
         let ready = if self.sorting.by == SortBy::WorkOrder {
             headway::query::ready_set(&kept)
         } else {
@@ -827,7 +827,7 @@ impl ListState {
     /// What the list shows, as a view: the tab's name, its query narrowed
     /// by the field's, and the layout the Display menu holds. Its
     /// [`filter`](ViewSpec::filter) keeps open cards when neither query
-    /// names a state, the default `headway list` takes.
+    /// names a state, the default `nd headway list` takes.
     fn spec(&self) -> ViewSpec {
         let query = match (self.base.trim(), self.query.trim()) {
             (base, "") => base.to_string(),

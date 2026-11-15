@@ -786,7 +786,7 @@ impl HeadwayToolName {
                     names_arg(
                         "prop",
                         DisplayProp::ALL.iter().map(|p| p.name()).collect(),
-                        "The property, by the name `headway list --show` reads.",
+                        "The property, by the name `nd headway list --show` reads.",
                     )
                     .required(true),
                     enum_arg(
@@ -1331,7 +1331,7 @@ mod tests {
     }
 
     /// The Display menu's tools advertise every grouping, ordering and row
-    /// property `headway list` knows, by the names it reads, so the action
+    /// property `nd headway list` knows, by the names it reads, so the action
     /// bar's picker offers each.
     #[test]
     fn list_layout_tools_advertise_every_choice() {

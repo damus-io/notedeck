@@ -40,10 +40,10 @@ use crate::review_images::{self, FetchedImages};
 use crate::review_models::{self, FetchedModels, ReviewModels};
 use crate::review_walk::{self, CodeWalk, ReviewNotes, SourceKey};
 
-/// The patch size the pane loads before cutting it off (as `headway diff`).
+/// The patch size the pane loads before cutting it off (as `nd headway diff`).
 const MAX_PATCH_BYTES: usize = 4 << 20;
 
-/// How long one `git fetch` from another host may take (as `headway diff`).
+/// How long one `git fetch` from another host may take (as `nd headway diff`).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long reading the commit's explain notes from another host may take.

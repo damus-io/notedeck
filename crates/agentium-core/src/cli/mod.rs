@@ -27,7 +27,7 @@ use crate::session_loader::{
 /// What a session selector that is missing says: name one, or set the
 /// variable an agent's own session is in.
 pub const NO_SESSION: &str =
-    "no session — pass a selector (see `agentium list`) or set $AGENTIUM_SESSION";
+    "no session — pass a selector (see `nd agentium list`) or set $AGENTIUM_SESSION";
 
 /// The session `selector` names — an `agentium:<word-id>` ref, a word-id, a
 /// session id or a unique prefix — across the live *and* tombstoned sets, so

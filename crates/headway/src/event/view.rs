@@ -345,7 +345,7 @@ pub struct BoardView {
     /// Whether the board's winning definition is a deletion tombstone (see
     /// [`build_board_def`](super::build_board_def)). A deleted board still folds —
     /// its cards stay reachable by ref and a restore can find it — so every
-    /// surface that *lists* boards (the switcher, `headway board`, the agent
+    /// surface that *lists* boards (the switcher, `nd headway board`, the agent
     /// tools) skips it rather than the fold dropping it.
     pub deleted: bool,
 }

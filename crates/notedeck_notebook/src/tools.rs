@@ -139,7 +139,7 @@ enum Shows {
 
 impl Serialize for Shows {
     /// The vault as an array of rows ([`event::vault_doc_json`]); one item as
-    /// its lone object, several as an array, as `notebook show --json` prints.
+    /// its lone object, several as an array, as `nd notebook show --json` prints.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Vault(docs) => serializer.collect_seq(docs.iter().map(event::vault_doc_json)),
@@ -210,7 +210,7 @@ struct VaultArgs {
     notes: Vec<String>,
 }
 
-/// [`Vault`]'s answer: always an array of notes, as `notebook vault --json`
+/// [`Vault`]'s answer: always an array of notes, as `nd notebook vault --json`
 /// prints them.
 #[derive(Debug)]
 enum Notes {
@@ -338,7 +338,7 @@ fn edit(
     let canvases = event::fold_canvases(cx.ndb, &open_txn(cx)?, &author);
     let canvas_id = resolve::resolve_canvas_id(canvas, &canvases)?;
     let view = event::find_canvas(&canvases, &author, &canvas_id)
-        .ok_or_else(|| format!("no canvas '{canvas_id}' — run `notebook seed`"))?;
+        .ok_or_else(|| format!("no canvas '{canvas_id}' — run `nd notebook seed`"))?;
     let action = build(view)?;
 
     let mut count = Count::default();

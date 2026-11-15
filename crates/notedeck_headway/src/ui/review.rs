@@ -542,7 +542,7 @@ pub(crate) fn send_back_open(
 /// ```
 /// the comment
 ///
-/// Reply with `headway comment headway:<board>/<word-id> --reply-to …`
+/// Reply with `nd headway comment headway:<board>/<word-id> --reply-to …`
 /// ````
 ///
 /// The last paragraph is [`reply_hint`]. The lines are quoted though the events only name them, since the session
@@ -590,11 +590,11 @@ pub(crate) fn review_comments_open(
 /// record under the same lines, and a reply to a card comment (the send-back's
 /// `review:` one) in the card's thread; `--reply-to` takes either. The
 /// comments' word-ids don't exist yet when the message is built (they're
-/// signed when the action applies), so it points at `headway show` for them.
+/// signed when the action applies), so it points at `nd headway show` for them.
 fn reply_hint(card_ref: &str) -> String {
     format!(
-        "Reply with `headway comment {card_ref} --reply-to <word-id> <text>`; \
-         `headway show {card_ref}` lists each comment's word-id."
+        "Reply with `nd headway comment {card_ref} --reply-to <word-id> <text>`; \
+         `nd headway show {card_ref}` lists each comment's word-id."
     )
 }
 

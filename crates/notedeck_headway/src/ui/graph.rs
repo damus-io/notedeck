@@ -1,7 +1,7 @@
 //! The epic dependency-graph view: a pannable/zoomable scene of the epic's
 //! cards as [`graph_node_ui`] nodes joined by blocking edges, with drag-to-connect
 //! and hover-to-delete edge editing — or, in [`GraphMode::WorkOrder`], joined in
-//! the order `headway next` walks them, read-only.
+//! the order `nd headway next` walks them, read-only.
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
@@ -23,7 +23,7 @@ pub(super) enum GraphMode {
     /// the edges can be drawn and removed.
     #[default]
     Blocking,
-    /// The epic's direct subissues in the order `headway next` walks them
+    /// The epic's direct subissues in the order `nd headway next` walks them
     /// ([`headway::graph::work_order_graph`]). Read-only: a drag here would
     /// mean "reorder", not "block", so no edge editing is offered.
     WorkOrder,
@@ -59,7 +59,7 @@ impl GraphMode {
 ///
 /// The model ([`headway::graph::dependency_graph`]) and layout are rebuilt each
 /// frame off the freshly folded `view` — an epic's graph is small, and rebuilding
-/// keeps the drawing in lockstep with live board edits (a `headway move`, a new
+/// keeps the drawing in lockstep with live board edits (a `nd headway move`, a new
 /// blocker) exactly like the detail sheet's per-frame fold. Node ids are node
 /// indices, so a layout [`Rect`] and its [`GraphNode`] share the loop index.
 ///

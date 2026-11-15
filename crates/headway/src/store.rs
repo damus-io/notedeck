@@ -286,7 +286,7 @@ pub fn signing_key<'a>(
         return Err(format!(
             "'{board}' is a plaintext board, which shows only its owner's own events, so a \
              comment signed with --comment-nsec / $HEADWAY_COMMENT_NSEC(_FILE) would never appear. \
-             Unset it to comment as yourself, or seal the board first (`headway migrate`)"
+             Unset it to comment as yourself, or seal the board first (`nd headway migrate`)"
         ));
     }
     Ok(comment_secret)
@@ -765,7 +765,7 @@ struct BoardNote {
 }
 
 /// What a [`migrate_board_to_sns`] run would change, without changing anything —
-/// the dry run behind `headway migrate --dry-run`.
+/// the dry run behind `nd headway migrate --dry-run`.
 ///
 /// Worth having because the operation is irreversible in the way that matters:
 /// the sealed envelopes it publishes can't be unpublished. Seeing "19 of 441

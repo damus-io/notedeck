@@ -1,50 +1,48 @@
 ---
 name: agentium
-description: Query and control Dave agentic sessions from the command line via the `agentium` CLI (crates/agentium_cli), and find your OWN session's agentium: reference. Use when an agent running inside a Dave session needs its own ref (e.g. for a headway done-comment), to list sibling sessions, or to pull another session's detail or full conversation transcript — e.g. "what's my agentium ref", "list the running agent sessions", "show sessions in this cwd", "read session X's transcript".
+description: Query and control Dave agentic sessions from the command line via `nd agentium` (the agentium tools of the running notedeck, crates/notedeck_dave/src/data_tools), and find your OWN session's agentium: reference. Use when an agent running inside a Dave session needs its own ref (e.g. for a headway done-comment), to list sibling sessions, spawn or steer one, or to pull another session's detail or full conversation transcript — e.g. "what's my agentium ref", "list the running agent sessions", "show sessions in this cwd", "read session X's transcript".
 ---
 
-# Agentium session CLI
+# Agentium sessions from the command line: `nd agentium`
 
-`agentium` is a CLI over a running notedeck's embedded relay. It reads (and, in
-time, controls) **Dave agentic sessions** — the Claude/Codex sessions Dave
-spawns — by folding their kind-31988 session-state events. Like the `headway`
-and `notebook` CLIs it keeps its own nostrdb cache, reconciles with the relay
-each run (NIP-77 negentropy, falling back to NIP-01, or fully offline against
-the cache), and reads your own sessions once you're logged in. Source:
-`crates/agentium_cli`; session model in `crates/agentium-core`.
+`nd agentium <command>` runs one of the running notedeck's agentium tools over
+its local socket (see the `nd` skill). They read and control **Dave agentic
+sessions** — the Claude/Codex sessions Dave spawns — by folding their
+kind-31988 session-state events out of the notedeck's own nostrdb, and they
+publish control commands (spawn, send, interrupt, …) as that notedeck's
+account. The tools live in `crates/notedeck_dave/src/data_tools/` (reads in
+`mod.rs`, control in `control.rs`, streams in `stream.rs`, profiles in
+`profile.rs`); the session model is in `crates/agentium-core`.
 
-Sessions are **PNS-encrypted to their owner**, so `agentium` only ever lists
-sessions decryptable by the signing key (an `--author` other than yours lists
-nothing).
+Sessions are **PNS-encrypted to their owner**, so the tools only ever see the
+sessions of the notedeck's own account.
 
 ## Running it
 
-Prefer a built binary; fall back to cargo:
-
 ```bash
-# build once, then call the binary directly (fast, no rebuild per command)
-cargo build -p agentium_cli           # produces target/debug/agentium
-target/debug/agentium <command>
-
-# or, one-off:
-cargo run -q -p agentium_cli -- <command>
+nd agentium list                         # nd on PATH (scripts/install-clis)
+cargo run -q -p nd_cli -- agentium list  # or from a checkout
 ```
 
-In examples below, `agentium` means whichever form you're using.
+With no notedeck running, nd starts a data-only headless one itself. That one
+is **never a Dave host**: it reads and publishes, but a spawn it sends is run
+by whichever Dave host the target names, not by it.
 
-`agentium --help` lists the commands; `agentium <command> --help` (or
-`agentium help <command>`) prints that command's own flags and examples, and
-`agentium help options` the every-run flags in full — including that `--relay`
-and `--db` are remembered for later runs.
+`nd agentium --help` lists the commands; `nd agentium <command> --help` prints
+that command's own arguments and the tool it runs, and `nd help options` the
+options every run takes and the exit codes. Every command takes `--json`,
+`--pager`/`--no-pager` and `--color <auto|always|never>`.
 
-## Logging in
+`agentium <command>` still works through a shim (`scripts/shims/nd-shim`) that
+runs `nd agentium <command>`, but type `nd agentium` in anything new.
 
-Everything operates on your own sessions once you're logged in. Relay defaults
-to `ws://127.0.0.1:6677` (notedeck's embedded relay); override with
-`--relay <url>` or `$AGENTIUM_RELAY`. A per-run key can be passed with `--nsec`
-or `$AGENTIUM_NSEC`, but normally you run `agentium login <nsec>` once and it's
-reused. If a command fails because you're not logged in, ask the user to run
-`agentium login`. Don't handle the key yourself.
+## Identity, and there is no sync step
+
+There is no login and no `--relay`/`--db`/`--nsec`: the notedeck answering the
+socket is the identity, and its nostrdb is the store, kept current by its own
+relay sync. A read answers from what that notedeck already has, so there is no
+`--no-sync` (the shim drops it) and no per-call reconcile to wait for. To work
+against a private notedeck, point `NOTEDECK_SOCKET` at its socket.
 
 ## The `agentium:` reference
 
@@ -57,8 +55,8 @@ one-way hash of the session's stable id (its kind-31988 `d`-tag, the field
 the id back from the words. Quote the `agentium:` URI when referring a human to a
 session; keep the raw id when you need to match a session programmatically.
 
-To derive it yourself, `agentium id <d-tag…>` prints each d-tag's
-`agentium:` ref. It is offline (no key, cache or relay), so it also works on a
+To derive it yourself, `nd agentium id <d-tag…>` prints each d-tag's
+`agentium:` ref. It computes the hash and reads nothing, so it also works on a
 d-tag read out of some other store, e.g.
 `ndb -d <datapath>/db query --kind 31988`.
 
@@ -85,16 +83,16 @@ export), fall back to matching your raw id in the machine-readable listing:
 
 ```bash
 # deterministic: match on the raw id
-agentium list --json | jq -r \
+nd agentium list --json | jq -r \
   --arg id "$AGENTIUM_SESSION_ID" \
   '.[] | select(.claude_session_id == $id) | .agentium_uri'
 
 # last resort with neither var set — filter by cwd/host and eyeball the row
 # (ambiguous when several sessions share a cwd, so prefer the env vars):
-agentium list --json --cwd "$PWD" --host "$(hostname)"
+nd agentium list --json --cwd "$PWD" --host "$(hostname)"
 
-# or derive it straight from the raw id, with no sync at all
-agentium id "$AGENTIUM_SESSION_ID"
+# or derive it straight from the raw id
+nd agentium id "$AGENTIUM_SESSION_ID"
 ```
 
 ## `list` — read sessions
@@ -103,11 +101,11 @@ agentium id "$AGENTIUM_SESSION_ID"
 are case-insensitive substring matches (except `--status`, which is exact):
 
 ```bash
-agentium list                          # human-readable, grouped by host
-agentium list --status working         # idle|working|needs_input|error|done|pending
-agentium list --cwd notedeck           # sessions whose working dir contains "notedeck"
-agentium list --host mbp --backend claude
-agentium list --json                   # machine-readable; the raw session set
+nd agentium list                          # human-readable, grouped by host
+nd agentium list --status working         # idle|working|needs_input|error|done|pending
+nd agentium list --cwd notedeck           # sessions whose working dir contains "notedeck"
+nd agentium list --host mbp --backend claude
+nd agentium list --json                   # machine-readable; the raw session set
 ```
 
 `--json` emits an array of objects, each the folded `SessionState` plus an added
@@ -137,14 +135,17 @@ active), under a count per status. Last activity counts streamed messages, not
 only status changes. It takes the `list` filters and `--deleted`/`--all`.
 
 ```bash
-agentium watch                         # redraws in place on a terminal until Ctrl-C
-agentium watch --once                  # one frame, then exit — use this from an agent
-agentium watch --status needs_input    # only the sessions waiting on someone
-agentium watch --once --no-sync        # one frame from the cache, no relay round-trip
+nd agentium watch                         # redraws in place on a terminal until Ctrl-C
+nd agentium watch --once                  # one frame, then exit — use this from an agent
+nd agentium watch --status needs_input    # only the sessions waiting on someone
+nd agentium watch --jsonl                 # one JSON line per status change, for a script
 ```
 
 On a terminal it takes over the screen; into a pipe it prints each changed
-frame in full, separated by a blank line. Lines clip to `$COLUMNS` (else the
+frame in full, separated by a blank line. `--jsonl` instead streams one
+`{from, to, last_activity, session}` line per status change (the statuses when
+it starts are the baseline and print nothing), which is what a script that
+waits for a session to finish wants. Lines clip to `$COLUMNS` (else the
 terminal width); piped frames aren't clipped. **An agent should use `--once`**
 (or `list --json` for machine-readable output) — a bare `watch` never exits.
 
@@ -160,29 +161,13 @@ session can address itself (the commands that act on a session always require
 an explicit selector):
 
 ```bash
-agentium show                    # this session (via $AGENTIUM_SESSION)
-agentium log agentium:maple-river-canyon
-agentium show "Fix relay reconnect"   # unique title substring
+nd agentium show                    # this session (via $AGENTIUM_SESSION)
+nd agentium log agentium:maple-river-canyon
+nd agentium show "Fix relay reconnect"   # unique title substring
 ```
 
 Selectors resolve across live **and** soft-deleted sessions, so a durable
 `agentium:` ref still reads after its session was closed.
-
-## Reading without a relay round-trip
-
-`--no-sync` skips the relay reconcile and reads the local cache as it stands.
-The reconcile is what a read actually spends its time on, so this is the fast
-path when you're querying a corpus that hasn't moved — e.g. several `grep`s in a
-row, or a `log` you already synced a moment ago:
-
-```bash
-agentium grep -i wgpu --no-sync        # no relay round-trip at all
-```
-
-It applies to the read commands (`list`, `show`, `log`, `grep`, `watch --once`,
-`config list`/`show`) and is refused for anything that publishes or streams
-(`send`, `spawn`, `resume`, `interrupt`, `approve`/`deny`, `mode`,
-`link`/`unlink`, `config add`/`edit`/`rm`, `log --follow`, `watch`), which can't work offline.
 
 ## `show` — session detail
 
@@ -193,8 +178,8 @@ every pending permission request, each with the 8-digit id `approve`/`deny
 requests under `conversation.pending_permissions`.
 
 ```bash
-agentium show                          # detail for the current session
-agentium show maple-river-canyon --json
+nd agentium show                          # detail for the current session
+nd agentium show maple-river-canyon --json
 ```
 
 ## `log` — conversation transcript
@@ -205,15 +190,15 @@ the command for pulling context out of another session. Named after `git log`,
 and like it, long output is paged.
 
 ```bash
-agentium log                           # this session's transcript
-agentium log maple-river-canyon        # another session's transcript
-agentium log X --role user,assistant   # only the human turns + Dave's replies
-agentium log X -n 20                    # just the last 20 messages
-agentium log X --tools                 # include tool_call/tool_result (folded by default)
-agentium log X --json                  # structured, role-tagged message objects
-agentium log X --jsonl                 # raw reconstructed claude-code JSONL
-agentium log X --follow                # print the tail, then stream new messages
-agentium log X -n 20 -f                # last 20, then follow (like `tail -n 20 -f`)
+nd agentium log                           # this session's transcript
+nd agentium log maple-river-canyon        # another session's transcript
+nd agentium log X --role user,assistant   # only the human turns + Dave's replies
+nd agentium log X -n 20                    # just the last 20 messages
+nd agentium log X --tools                 # include tool_call/tool_result (folded by default)
+nd agentium log X --json                  # structured, role-tagged message objects
+nd agentium log X --jsonl                 # raw reconstructed claude-code JSONL
+nd agentium log X --follow                # print the tail, then stream new messages
+nd agentium log X -n 20 -f                # last 20, then follow (like `tail -n 20 -f`)
 ```
 
 Flags:
@@ -244,15 +229,15 @@ ref, status (`● Working`, `○ Idle`, `⊘ Deleted`, … — the same glyphs a
 instead of one transcript.
 
 ```bash
-agentium grep "resize hook"                       # every session, live or deleted
-agentium grep -i terminal --cwd Shipwright        # case-insensitive, one tree
-agentium grep '\bTODO\b' --role assistant         # a regex, over Dave's replies only
-agentium grep -i panic --tools                    # search tool call/result text too
-agentium grep -i wgpu --json                      # matches grouped under each session
+nd agentium grep "resize hook"                       # every session, live or deleted
+nd agentium grep -i terminal --cwd Shipwright        # case-insensitive, one tree
+nd agentium grep '\bTODO\b' --role assistant         # a regex, over Dave's replies only
+nd agentium grep -i panic --tools                    # search tool call/result text too
+nd agentium grep -i wgpu --json                      # matches grouped under each session
 ```
 
 The pattern is a **regex** (Rust `regex` syntax); `-i`/`--ignore-case` folds case.
-An unparseable pattern fails immediately, before any relay work.
+An unparseable pattern fails immediately, before anything is searched.
 
 Which sessions are searched: the same filters `list` takes — `--cwd`, `--host`,
 `--status`, `--backend` — except that, unlike `list`, deleted sessions are
@@ -274,15 +259,14 @@ array of `{role, text}`.
 **Prefer this over a shell loop.** The obvious hand-rolled equivalent —
 
 ```bash
-for s in $(agentium list --json | jq -r '.[].agentium_uri'); do agentium log "$s" | grep -i term; done
+for s in $(nd agentium list --json | jq -r '.[].agentium_uri'); do nd agentium log "$s" | grep -i term; done
 ```
 
-— re-opens the cache and re-reconciles the relay once per session, so it costs
-seconds *per session*. `grep` syncs once and reads every session from one
-transaction. Measured on an 879-session corpus: 3m40s for the loop. On a
-1832-session cache (35 live), `agentium --no-sync grep` takes ~2.4s warm over
-every session; `--status <s>` (e.g. `--status working`) keeps the search to
-live sessions and comes back in a fraction of a second.
+— makes one call per session, and each `log` renders a whole transcript just
+to throw most of it away. `grep` reads every session from one transaction in
+the notedeck and sends back only the matching lines. `--status <s>` (e.g.
+`--status working`) keeps the search to live sessions, which is far faster on
+a corpus of thousands of closed ones.
 
 ## `resume` — reopen a closed session
 
@@ -291,7 +275,7 @@ new message drives its backend again, reviving its `agentium:` ref in place. It
 needs a session whose backend actually started (a non-empty `cli_session_id`).
 
 ```bash
-agentium resume maple-river-canyon
+nd agentium resume maple-river-canyon
 ```
 
 ## `send` — send a message to a session
@@ -302,16 +286,16 @@ sync, then reports the resulting event id. This is the first write command — t
 way to steer another session from the shell.
 
 ```bash
-agentium send maple-river-canyon run the tests and fix any failures
-agentium send maple-river-canyon "keep the exact  spacing"   # quote to preserve it
-agentium send maple-river-canyon hi --json                   # {"session","event_id"}
-agentium send --immediate maple-river-canyon stop, read this  # send, then interrupt its turn
+nd agentium send maple-river-canyon run the tests and fix any failures
+nd agentium send maple-river-canyon "keep the exact  spacing"   # quote to preserve it
+nd agentium send maple-river-canyon hi --json                   # {"session","event_id"}
+nd agentium send --immediate maple-river-canyon stop, read this  # send, then interrupt its turn
 ```
 
 `--immediate` redirects a running agent: it sends the message, then interrupts
 the session's in-flight turn, so the agent stops and reads the message now
-instead of when the turn ends. That replaces `agentium send <s> "…" &&
-agentium interrupt <s>`. Only a session whose status is `working` or
+instead of when the turn ends. That replaces `nd agentium send <s> "…" &&
+nd agentium interrupt <s>`. Only a session whose status is `working` or
 `needs_input` is interrupted; an idle one isn't, since the message alone starts
 its turn and an interrupt would abort it. `--json` adds `"interrupted": true|false`.
 
@@ -344,17 +328,17 @@ but note the command is published *before* the wait, so a timeout is not proof
 nothing was created (see **Retrying a spawn is safe** below).
 
 ```bash
-agentium spawn                                   # sibling in this session's own host+cwd
-agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium: ref
-agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
-agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
-agentium spawn --permission-mode plan --prompt "design the migration" --wait  # plan first
-agentium spawn --title headway:dave/<word-id> --issue-url headway:dave/<word-id> --wait  # a card's session
-agentium spawn --successor --prompt-file <scratchpad>/task.md --ref   # hand your work on; prints just the ref
-agentium spawn --child --prompt "check the build on mbp" --wait   # a helper that reports back to you
-agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session}
-agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
-ref=$(agentium spawn --title "Fix the parser" --prompt-file <scratchpad>/task.md --ref)   # capture the ref
+nd agentium spawn                                   # sibling in this session's own host+cwd
+nd agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium: ref
+nd agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
+nd agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
+nd agentium spawn --permission-mode plan --prompt "design the migration" --wait  # plan first
+nd agentium spawn --title headway:dave/<word-id> --issue-url headway:dave/<word-id> --wait  # a card's session
+nd agentium spawn --successor --prompt-file <scratchpad>/task.md --ref   # hand your work on; prints just the ref
+nd agentium spawn --child --prompt "check the build on mbp" --wait   # a helper that reports back to you
+nd agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session}
+nd agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
+ref=$(nd agentium spawn --title "Fix the parser" --prompt-file <scratchpad>/task.md --ref)   # capture the ref
 ```
 
 **Anything longer than a short one-liner goes in a file.** Write the prompt with
@@ -365,22 +349,27 @@ macOS's `/bin/bash` is 3.2, which finds the end of a `$(...)` by matching parens
 and doesn't skip heredoc bodies, quoted delimiter or not. The first stray `)` in
 the prompt (a `1)` list item) or apostrophe ends the substitution, the session
 gets the prompt cut there, and the rest of the prompt runs as shell, backticked
-commands included. A file that `agentium` reads is never parsed by the shell, and
+commands included. A file that nd reads is never parsed by the shell, and
 it stays behind as a record of what the session was told. To capture the ref,
 use `--ref`, so the `$(...)` holds nothing but the one command.
 
 After a spawn with a prompt, check the stderr receipt (`prompt: <n> bytes, <m>
 lines, last line: "…"`) names your file's last line, and that
-`agentium log "$ref" --role user -n 1 --no-pager` shows the message ending with
+`nd agentium log "$ref" --role user -n 1 --no-pager` shows the message ending with
 it. The `handoff` skill has the recovery for a cut prompt.
 
 Flags:
 
 - `--host <name>` / `--cwd <path>` / `--backend claude|codex` — the spawn target.
   **Omitted, they default to the current session's own state**
-  (`$AGENTIUM_SESSION`), so a bare `agentium spawn` starts a sibling in the same
-  worktree on the same host. `--backend` falls back to `claude`. If you're not
-  inside a session, `--host`/`--cwd` are required.
+  (`$AGENTIUM_SESSION`), so a bare `nd agentium spawn` starts a sibling in the same
+  worktree on the same host. `--backend` falls back to `claude`. Outside a
+  session they default to this machine and the current directory (a relative
+  `--cwd` is taken from the current directory too).
+- `--model <id>` / `--profile <slug>` — the model the new session starts on, as
+  the backend names it (`opus`, a full id), and the backend profile it runs
+  under (see `profile` below). The profile defaults to the current session's
+  unless `--backend` is given.
 - `--title <text>` — an explicit, **sticky** session title. Without it the title
   derives from (and churns with) the first message; `--title` lands in the
   session's `custom_title` so it shows immediately and survives later messages.
@@ -399,7 +388,7 @@ Flags:
   `$AGENTIUM_SPAWN_WAIT` beats the 30s default). Handy when a host is known slow
   (bump it) or you want a snappier failure against a host you expect to be up.
 - `--ref` — print only the new session's `agentium:` ref on stdout, so
-  `ref=$(agentium spawn … --ref)` captures it with no `jq`. **Implies `--wait`**.
+  `ref=$(nd agentium spawn … --ref)` captures it with no `jq`. **Implies `--wait`**.
   When the host doesn't answer in time it prints nothing on stdout and exits
   non-zero, naming the `spawn_id`; the command (and any prompt) was still
   published, so check `list` before spawning again. Exclusive with `--json`.
@@ -417,8 +406,8 @@ Flags:
   so this flag is the only way to choose the starting mode. (`bypass` does no
   safety checking at all; it exists here because a spawn is the one moment a
   backend's mode is chosen, but reach for it deliberately.) To change the mode of
-  an *already running* session, use dave's Ctrl+M / mode badge — there is no CLI
-  verb for that yet.
+  an *already running* session, use `nd agentium mode` (below) or Dave's
+  Ctrl+M.
 - `--issue-url <uri>` — the issue the new session **works**, as a URI —
   `headway:<board>/<word-id>` for a headway card. It rides the spawn command and
   the host records it verbatim on the session's kind-31988 state (tag
@@ -472,7 +461,7 @@ worktree.
 So on a timeout, look before you leap:
 
 ```bash
-agentium list --cwd /path/to/worktree      # did the session actually appear?
+nd agentium list --cwd /path/to/worktree      # did the session actually appear?
 ```
 
 Two defences also stand behind you:
@@ -490,7 +479,7 @@ Two defences also stand behind you:
 
 `--allow-duplicate` opts out of both — use it when you really do want a second
 session in the same worktree. Neither defence helps against an old `agentium`
-binary or an old Dave host, so checking `list` stays the habit.
+client or an old Dave host, so checking `list` stays the habit.
 
 **Don't add `tail -1`/`head -1`/`read -r` to a `--json` pipeline.** `spawn --json`
 and `send --json` each emit one record on one line, so `| jq -r .session` is all
@@ -506,7 +495,7 @@ kind-1988 interrupt command the host applies to its backend (the same
 `client.interrupt()` mechanism as the local Esc), then returns.
 
 ```bash
-agentium interrupt maple-river-canyon
+nd agentium interrupt maple-river-canyon
 ```
 
 Notes:
@@ -527,10 +516,10 @@ default they answer the **newest** pending request; `show` lists every pending
 one with an 8-digit id, and `--request <id-prefix>` picks another.
 
 ```bash
-agentium show maple-river-canyon            # "pending permissions" lists ids
-agentium approve maple-river-canyon
-agentium deny maple-river-canyon --request 3f2a9c1e --message "use rg instead"
-agentium deny maple-river-canyon --interrupt   # deny AND stop the turn
+nd agentium show maple-river-canyon            # "pending permissions" lists ids
+nd agentium approve maple-river-canyon
+nd agentium deny maple-river-canyon --request 3f2a9c1e --message "use rg instead"
+nd agentium deny maple-river-canyon --interrupt   # deny AND stop the turn
 ```
 
 Notes:
@@ -556,7 +545,7 @@ normalized before publishing, and an unknown mode is refused (the host would
 otherwise quietly fall back to `default`).
 
 ```bash
-agentium mode maple-river-canyon plan
+nd agentium mode maple-river-canyon plan
 ```
 
 ## `link` / `unlink` — set a session's card after the fact
@@ -567,8 +556,8 @@ agentium mode maple-river-canyon plan
 `s` follow the new value.
 
 ```bash
-agentium link agentium:maple-river-canyon headway:dave/<word-id>
-agentium unlink agentium:maple-river-canyon
+nd agentium link agentium:maple-river-canyon headway:dave/<word-id>
+nd agentium unlink agentium:maple-river-canyon
 ```
 
 - Only the session's **host** writes its state, so this publishes a kind-1988
@@ -589,13 +578,13 @@ A run config is what Dave's per-session run bar launches: a named shell command
 `sh -c`. It is **not** a session template — `spawn` doesn't take one.
 
 ```bash
-agentium config                      # = config list: every host, grouped host → cwd
-agentium config list --host macbook  # --host/--cwd narrow (substring)
-agentium config show 1a2b3c4d        # by id prefix (the 8-char id list prints) or exact name
-agentium config add --name build --command "cargo build"   # on this session's host+cwd
-agentium config add --name serve --command "npm start" --host macbook --cwd /home/u/app
-agentium config edit build --command "cargo build --release"   # same id, new revision
-agentium config rm build
+nd agentium config                      # = config list: every host, grouped host → cwd
+nd agentium config list --host macbook  # --host/--cwd narrow (substring)
+nd agentium config show 1a2b3c4d        # by id prefix (the 8-char id list prints) or exact name
+nd agentium config add --name build --command "cargo build"   # on this session's host+cwd
+nd agentium config add --name serve --command "npm start" --host macbook --cwd /home/u/app
+nd agentium config edit build --command "cargo build --release"   # same id, new revision
+nd agentium config rm build
 ```
 
 - `add` places the config on `--host`/`--cwd` (exact values here, not
@@ -610,8 +599,32 @@ agentium config rm build
   updated_at}`, `show` one such object; `add`/`edit`/`rm` print one line
   `{action, event_id, config}`.
 
+## `profile` — backend profiles
+
+A backend profile is a named env overlay on the Claude backend (its own
+`CLAUDE_CONFIG_DIR`, models, env vars, secrets), one account-wide kind-31992
+event per profile; `spawn --profile <slug>` picks one.
+
+```bash
+nd agentium profile list
+nd agentium profile show work
+nd agentium profile set work --label Work --model opus --default-model opus --env FOO=bar
+nd agentium profile set work --unset FOO
+nd agentium profile secret set work ANTHROPIC_AUTH_TOKEN --value-file - < token
+nd agentium profile secret rm work ANTHROPIC_AUTH_TOKEN
+nd agentium profile rm work
+```
+
+Nothing they print carries a secret's value. Give a secret with `--value-file
+-` and pipe it in, so it never lands on a command line or in shell history; at
+a terminal there is no hidden prompt, so the value would echo.
+
 ## Command surface
 
 `list`, `watch`, `show`, `log` (incl. `log --follow`), `grep`, `spawn`, `send`,
 `resume`, `interrupt`, `approve`/`deny`, `mode`, `link`/`unlink`, `config`,
-`id`, `login`/`logout`. `agentium <command> --help` is the reference for each.
+`profile`, `id`. `nd agentium <command> --help` is the reference for each.
+
+`nd spawn [<dir>]` (no `agentium`) is a different command: it opens a Dave
+session in the running notedeck's own window, with no prompt or title. Use
+`nd agentium spawn` to start a session on any host, with a prompt.

@@ -1,4 +1,4 @@
-//! The agentium reads that keep going: `agentium log --follow` and `agentium
+//! The agentium reads that keep going: `nd agentium log --follow` and `nd agentium
 //! watch`, as [`StreamTool`]s a caller subscribes to over the socket, so
 //! `nd agentium log <session> -f` and `nd agentium watch` are those commands.
 //! `watch --once` answers one frame and is a plain read.
@@ -63,7 +63,7 @@ fn txn(ndb: &Ndb) -> Result<Transaction, String> {
 }
 
 /// A switch that only picks its tool on a command line shared with another:
-/// `--follow` on `agentium log`, `--once` and `--jsonl` on `agentium watch`.
+/// `--follow` on `nd agentium log`, `--once` and `--jsonl` on `nd agentium watch`.
 fn picking_switch(name: &'static str, description: &'static str) -> ToolArg {
     ToolArg::new(name, ToolArgType::Boolean, description).required(true)
 }
@@ -101,7 +101,7 @@ impl StreamTool for FollowLog {
         );
         ToolSpec::new(
             "agentium_follow_log",
-            "Follow one agentium session's conversation as it streams, as `agentium log --follow` does: the tail first, then each new message as it lands. Each event is one message's role-tagged object (`{role, text, …}`), or `{event: \"status\", status}` when the session's status changes. `last` bounds the opening tail; `role` and `tools` filter all of it.",
+            "Follow one agentium session's conversation as it streams, as `nd agentium log --follow` does: the tail first, then each new message as it lands. Each event is one message's role-tagged object (`{role, text, …}`), or `{event: \"status\", status}` when the session's status changes. `last` bounds the opening tail; `role` and `tools` filter all of it.",
             arguments,
         )
         .titled("Follow agent session log")
@@ -399,7 +399,7 @@ impl StreamTool for Watch {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_watch",
-            "A live dashboard of this account's agentium sessions, as `agentium watch` draws it: one row per session, the ones waiting on the user first, redrawn whenever a session changes and every 30s so ages keep moving. Each event is the whole frame: `{sessions: [{…session, agentium_uri, last_activity}]}`. Takes `list`'s filters.",
+            "A live dashboard of this account's agentium sessions, as `nd agentium watch` draws it: one row per session, the ones waiting on the user first, redrawn whenever a session changes and every 30s so ages keep moving. Each event is the whole frame: `{sessions: [{…session, agentium_uri, last_activity}]}`. Takes `list`'s filters.",
             watch_args(None),
         )
         .titled("Watch agent sessions")
@@ -490,7 +490,7 @@ impl StreamTool for WatchTransitions {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_watch_transitions",
-            "Stream each status change of this account's agentium sessions, as `agentium watch --jsonl` does, for a script to act on (notify when one is done): `{from, to, last_activity, session}`, `from` null for a session first seen mid-stream. The statuses when it starts are the baseline and print nothing. Takes `list`'s filters.",
+            "Stream each status change of this account's agentium sessions, as `nd agentium watch --jsonl` does, for a script to act on (notify when one is done): `{from, to, last_activity, session}`, `from` null for a session first seen mid-stream. The statuses when it starts are the baseline and print nothing. Takes `list`'s filters.",
             watch_args(Some(picking_switch(
                 "jsonl",
                 "Stream one JSON line per session status change instead of the dashboard.",
@@ -610,7 +610,7 @@ impl AppTool for WatchOnce {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_watch_once",
-            "One frame of the agentium session dashboard, as `agentium watch --once` prints it: `{sessions: [{…session, agentium_uri, last_activity}]}`, the ones waiting on the user first. Takes `list`'s filters.",
+            "One frame of the agentium session dashboard, as `nd agentium watch --once` prints it: `{sessions: [{…session, agentium_uri, last_activity}]}`, the ones waiting on the user first. Takes `list`'s filters.",
             watch_args(Some(picking_switch(
                 "once",
                 "Print one frame and exit, rather than following.",

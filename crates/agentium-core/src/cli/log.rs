@@ -1,4 +1,4 @@
-//! `agentium log` — one session's conversation, filtered, or the claude-code
+//! `nd agentium log` — one session's conversation, filtered, or the claude-code
 //! JSONL reconstructed from its archive.
 
 use nostrdb::{Ndb, Transaction};
@@ -9,7 +9,7 @@ use crate::messages::Message;
 use crate::session_loader::load_session_messages_for_author;
 use crate::session_reconstructor::reconstruct_jsonl_lines;
 
-/// What `agentium log` read for one session.
+/// What `nd agentium log` read for one session.
 pub enum Transcript {
     /// The kind-1988 conversation, in [`EventOrder`], narrowed by a
     /// [`MessageFilter`].

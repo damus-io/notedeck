@@ -174,9 +174,10 @@ pub fn resolve_canvas_id(
     let Some(sel) = selector else {
         return match canvases {
             [only] => Ok(only.id.clone()),
-            [] => Err("no canvas yet — run `notebook seed` to create one".into()),
+            [] => Err("no canvas yet — run `nd notebook seed` to create one".into()),
             _ => Err(
-                "several canvases — pass --canvas <ref|d> to pick one (see `notebook show`)".into(),
+                "several canvases — pass --canvas <ref|d> to pick one (see `nd notebook show`)"
+                    .into(),
             ),
         };
     };

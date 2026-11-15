@@ -142,7 +142,7 @@ mod tests {
         }
     }
 
-    /// The spec survives serde — what `headway list --views --json` prints —
+    /// The spec survives serde — what `nd headway list --views --json` prints —
     /// its layout spelled by name, and a spec missing fields reads with their
     /// defaults. The note stores tags instead (see `event::parse`'s tests).
     #[test]

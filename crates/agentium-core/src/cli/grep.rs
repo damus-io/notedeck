@@ -1,6 +1,6 @@
-//! `agentium grep` — search message text across every selected session. The
+//! `nd agentium grep` — search message text across every selected session. The
 //! smart-case pattern compilation and match highlighting behind it live in
-//! [`cli_term`], shared with `headway grep`.
+//! [`cli_term`], shared with `nd headway grep`.
 
 use cli_term::highlight;
 use nostrdb::{Ndb, Transaction};
@@ -20,11 +20,11 @@ pub struct SessionMatches {
     matches: Vec<GrepMatch>,
 }
 
-/// `agentium grep <pattern>` — search message text across every session the
+/// `nd agentium grep <pattern>` — search message text across every session the
 /// `list` filters select: the sessions with a match, in `list`'s order.
 ///
 /// This exists for the single read. The shell equivalent — loop over
-/// `list --json`, run `agentium log <session> | grep` per row — re-opens the
+/// `list --json`, run `nd agentium log <session> | grep` per row — re-opens the
 /// cache once per session. Here every session is read from the same
 /// transaction.
 ///

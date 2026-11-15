@@ -227,7 +227,7 @@ impl Live {
             .unwrap_or_else(|err| panic!("{name} {args}: {err}"))
     }
 
-    /// `agentium grep`'s text for `args`.
+    /// `nd agentium grep`'s text for `args`.
     fn grep(&mut self, args: Value) -> String {
         self.call("agentium_grep_sessions", args).text
     }

@@ -1,6 +1,6 @@
 //! The board-level tools: listing the boards an account can see, and the
 //! commands that create, seal, share, delete or restore one, or move a card
-//! between two — `headway board`, `seed`, `migrate`, `share`,
+//! between two — `nd headway board`, `seed`, `migrate`, `share`,
 //! `delete-board`, `restore-board`, `link` and `move-board`.
 //!
 //! Every board here is the selected account's own unless the roster says
@@ -23,7 +23,7 @@ use super::{
 /// A NIP-59 gift-wrap: what a key-share travels as.
 const KIND_GIFT_WRAP: u32 = 1059;
 
-/// What a board command answers: `{ok, events, board}` as `headway
+/// What a board command answers: `{ok, events, board}` as `nd headway
 /// delete-board --json` prints it, or `noop` when the board was already as
 /// asked, plus the line the CLI prints for it.
 #[derive(Serialize, Debug)]
@@ -91,7 +91,7 @@ pub(super) struct ListBoards;
 /// Arguments for [`ListBoards`].
 #[derive(Deserialize)]
 pub(super) struct ListBoardsArgs {
-    /// `headway board <id>` switched a persisted current board, which is
+    /// `nd headway board <id>` switched a persisted current board, which is
     /// retired; given, it is refused with what to use instead.
     #[serde(default)]
     id: Option<String>,
@@ -215,7 +215,7 @@ impl AppTool for ListBoards {
     }
 }
 
-/// `headway_seed_board`: create a board, born sealed — `headway seed`.
+/// `headway_seed_board`: create a board, born sealed — `nd headway seed`.
 pub(super) struct SeedBoard;
 
 /// Arguments for [`SeedBoard`].
@@ -267,7 +267,7 @@ impl AppTool for SeedBoard {
         match boards::load_board(cx.ndb, &roster, &board) {
             Some(view) if view.deleted => {
                 return Err(format!(
-                    "board '{board}' was deleted — bring it back with `headway restore-board {board}`"
+                    "board '{board}' was deleted — bring it back with `nd headway restore-board {board}`"
                 ));
             }
             Some(_) => return Err(format!("board '{board}' already exists")),
@@ -298,7 +298,7 @@ impl AppTool for SeedBoard {
 }
 
 /// `headway_delete_board` and `headway_restore_board`: tombstone an own
-/// board, or lift the tombstone — `headway delete-board` / `restore-board`.
+/// board, or lift the tombstone — `nd headway delete-board` / `restore-board`.
 pub(super) enum Tombstone {
     Delete,
     Restore,
@@ -387,7 +387,7 @@ impl AppTool for TombstoneTool {
         let cards = render::card_count(&view);
         let line = if delete {
             format!(
-                "deleted board '{board}' ({cards} cards kept) — undo with `headway restore-board {board}`"
+                "deleted board '{board}' ({cards} cards kept) — undo with `nd headway restore-board {board}`"
             )
         } else {
             format!("restored board '{board}' ({cards} cards)")
@@ -401,7 +401,7 @@ impl AppTool for TombstoneTool {
 }
 
 /// `headway_link_card` and `headway_move_card_to_board`: put a card on a
-/// second board, keeping it on the first or taking it off — `headway link` /
+/// second board, keeping it on the first or taking it off — `nd headway link` /
 /// `move-board`.
 pub(super) enum CrossBoard {
     Link,
@@ -522,7 +522,7 @@ fn cross_board_error(err: store::CrossBoardError) -> String {
 }
 
 /// `headway_migrate_board`: seal a plaintext board into a channel —
-/// `headway migrate`.
+/// `nd headway migrate`.
 pub(super) struct MigrateBoard;
 
 /// Arguments for [`MigrateBoard`].
@@ -602,7 +602,7 @@ impl AppTool for MigrateBoard {
                 return Err(format!(
                     "board '{board}' has no channel here, so migrate would create one. If it \
                      is already shared, that would split it in two — let notedeck sync and \
-                     re-check `headway board`. If it really is a plaintext board, pass \
+                     re-check `nd headway board`. If it really is a plaintext board, pass \
                      --new-channel to seal it into a new channel."
                 ));
             }
@@ -654,7 +654,7 @@ impl AppTool for MigrateBoard {
 }
 
 /// `headway_share_board`: make someone a member of a sealed board —
-/// `headway share`.
+/// `nd headway share`.
 pub(super) struct ShareBoard;
 
 /// Arguments for [`ShareBoard`].
@@ -665,7 +665,7 @@ pub(super) struct ShareBoardArgs {
     board: String,
 }
 
-/// What [`ShareBoard`] answers, as `headway share --json` prints it.
+/// What [`ShareBoard`] answers, as `nd headway share --json` prints it.
 #[derive(Serialize, Debug)]
 pub(super) struct Shared {
     ok: bool,
@@ -781,7 +781,7 @@ pub(super) fn share_key(
     // slug: a migrated board's channel isn't the derived one, and a member
     // handed that would join a channel nobody writes to.
     let root = roster.team_root(board).ok_or_else(|| {
-        format!("'{board}' is not sealed — `headway migrate --board {board}` it first")
+        format!("'{board}' is not sealed — `nd headway migrate --board {board}` it first")
     })?;
     let team_pubkey = nostrdb_net::sns::derive_sns_keys(&root)
         .map(|keys| keys.team_keypair.pubkey.hex())

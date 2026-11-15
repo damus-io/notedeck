@@ -1,4 +1,4 @@
-//! `agentium watch`'s dashboard, shared by the CLI and notedeck's
+//! `nd agentium watch`'s dashboard, shared by the CLI and notedeck's
 //! `agentium_watch` tools: which of the folded sessions a frame shows and in
 //! what order, the frame's text, and the status transitions `watch --jsonl`
 //! streams. Everything here is pure over a [`SessionReducer`]'s views, so a

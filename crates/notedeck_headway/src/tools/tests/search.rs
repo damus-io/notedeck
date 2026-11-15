@@ -83,7 +83,7 @@ fn strip(text: &str) -> String {
 
 /// The search runs over every board unless `board` or `container` narrows
 /// it, archived cards included, smart-case, grouped per card; the text is
-/// `headway grep`'s, and the hindsights skill's two patterns work.
+/// `nd headway grep`'s, and the hindsights skill's two patterns work.
 #[tokio::test]
 async fn grep_searches_card_text_across_boards() {
     let mut live = bare();
@@ -205,7 +205,7 @@ async fn grep_searches_card_text_across_boards() {
 
     // The text: each card headed by its full ref, title and column, its
     // matching lines beneath, the match highlighted. nd strips the color
-    // into a pipe, leaving `headway grep`'s plain bytes.
+    // into a pipe, leaving `nd headway grep`'s plain bytes.
     let text = live
         .edit("headway_grep", json!({ "pattern": "fine now" }))
         .text;
@@ -230,7 +230,7 @@ async fn grep_searches_card_text_across_boards() {
 
 /// `list` filters every board's open cards by the query, narrows with
 /// `board`/`container`, groups, sorts and marks the ready frontier, and
-/// saves, lists, applies and deletes views; the text is `headway list`'s.
+/// saves, lists, applies and deletes views; the text is `nd headway list`'s.
 #[tokio::test]
 async fn list_filters_cards_across_boards() {
     let mut live = bare();

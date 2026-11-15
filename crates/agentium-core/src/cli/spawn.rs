@@ -1,4 +1,4 @@
-//! What `agentium spawn` and `nd agentium spawn` share: where a spawn goes
+//! What `nd agentium spawn` and `nd agentium spawn` share: where a spawn goes
 //! when its flags leave the target out, the duplicate guard that runs before
 //! anything is published, and how the result is reported.
 
@@ -312,7 +312,7 @@ impl Spawned {
         self.session.as_deref().ok_or_else(|| {
             format!(
                 "no host answered on {} in time, so there is no ref to print (spawn {}…). \
-                 The command was published and any prompt rides it, so check `agentium list` \
+                 The command was published and any prompt rides it, so check `nd agentium list` \
                  before spawning again",
                 self.host,
                 short_id(&self.spawn_id),
@@ -326,7 +326,7 @@ impl Spawned {
     pub fn unanswered(&self, waited: Duration) -> String {
         format!(
             "no host answered on {} within {}s (spawn {}…) — the command was \
-             published, so `agentium list` will find the session if the host was just slow \
+             published, so `nd agentium list` will find the session if the host was just slow \
              (raise the bound with --wait-timeout <secs> or ${SPAWN_WAIT_ENV})",
             self.host,
             waited.as_secs(),

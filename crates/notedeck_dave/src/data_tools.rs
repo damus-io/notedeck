@@ -162,7 +162,7 @@ impl AppTool for ListSessions {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_list_sessions",
-            "List this account's agentium (Dave) sessions, newest first, as `agentium list` does. Each is its kind-31988 state — `claude_session_id`, `title`, `status`, `hostname`, `cwd`, `backend`, `cli_session_id`, `issue_url`, … — plus `agentium_uri`, its sayable `agentium:<word-id>` ref. Deleted sessions are left out unless `deleted` or `all` is set.",
+            "List this account's agentium (Dave) sessions, newest first, as `nd agentium list` does. Each is its kind-31988 state — `claude_session_id`, `title`, `status`, `hostname`, `cwd`, `backend`, `cli_session_id`, `issue_url`, … — plus `agentium_uri`, its sayable `agentium:<word-id>` ref. Deleted sessions are left out unless `deleted` or `all` is set.",
             filter_args("Live and deleted sessions together.").into(),
         )
         .titled("List agent sessions")
@@ -220,7 +220,7 @@ impl AppTool for ShowSession {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_show_session",
-            "Show one agentium session in detail, as `agentium show` does: `{session, run_configs, usage, conversation, subagents}`. `session` is the state `agentium_list_sessions` lists (with `cli_session_id`, the backend's own session id, and `agentium_uri`); `conversation` counts the messages and lists pending permission requests; `subagents` rolls up the subagents it spawned.",
+            "Show one agentium session in detail, as `nd agentium show` does: `{session, run_configs, usage, conversation, subagents}`. `session` is the state `agentium_list_sessions` lists (with `cli_session_id`, the backend's own session id, and `agentium_uri`); `conversation` counts the messages and lists pending permission requests; `subagents` rolls up the subagents it spawned.",
             vec![session_arg()],
         )
         .titled("Show agent session")
@@ -339,7 +339,7 @@ impl AppTool for SessionLog {
         ));
         ToolSpec::new(
             "agentium_session_log",
-            "Read one agentium session's conversation, in order, as `agentium log` does: one role-tagged object per message (`{role, text, …}`). Tool calls and results are folded away unless `tools` is set; `role` and `last` narrow it further. `jsonl` answers the reconstructed claude-code JSONL entries instead.",
+            "Read one agentium session's conversation, in order, as `nd agentium log` does: one role-tagged object per message (`{role, text, …}`). Tool calls and results are folded away unless `tools` is set; `role` and `last` narrow it further. `jsonl` answers the reconstructed claude-code JSONL entries instead.",
             arguments,
         )
         .titled("Read agent session log")
@@ -429,7 +429,7 @@ impl AppTool for GrepSessions {
         ));
         ToolSpec::new(
             "agentium_grep_sessions",
-            "Search the transcripts of this account's agentium sessions, as `agentium grep` does: every session `agentium_list_sessions` would list (deleted ones included) whose messages match `pattern` per line, each as its session state plus `matches: [{role, text}]`. Tool calls and results are folded away and not searched unless `tools` is set.",
+            "Search the transcripts of this account's agentium sessions, as `nd agentium grep` does: every session `agentium_list_sessions` would list (deleted ones included) whose messages match `pattern` per line, each as its session state plus `matches: [{role, text}]`. Tool calls and results are folded away and not searched unless `tools` is set.",
             arguments,
         )
         .titled("Search agent sessions")
@@ -494,7 +494,7 @@ impl AppTool for SessionRef {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "agentium_session_ref",
-            "The sayable `agentium:<word-id>` ref of each session id (a kind-31988 `d` tag, the `claude_session_id` field), as `agentium id` prints it. A pure computation: the sessions need not exist.",
+            "The sayable `agentium:<word-id>` ref of each session id (a kind-31988 `d` tag, the `claude_session_id` field), as `nd agentium id` prints it. A pure computation: the sessions need not exist.",
             vec![ToolArg::new(
                 "d_tags",
                 ToolArgType::List,

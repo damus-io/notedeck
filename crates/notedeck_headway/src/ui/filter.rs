@@ -10,7 +10,7 @@ use headway::query::{IssueFilter, ListRow, Placement};
 
 /// The complete "what shows on the board grid" predicate: the board's parsed
 /// header query — a [`headway::query::IssueFilter`], the same parser and
-/// predicate the list view and `headway list` use, with the board's view
+/// predicate the list view and `nd headway list` use, with the board's view
 /// options ([`hide_subissues`](BoardUiState::hide_subissues)) folded in — and
 /// the board it reads, which column-aware terms (`is:done`, `col:todo`) need.
 /// Bundling them means every visibility call site — the column drop zone, the

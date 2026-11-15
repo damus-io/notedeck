@@ -22,7 +22,7 @@ use crate::store::{BoardAction, NewCard};
 const COLUMN_WIDTH: f32 = 280.0;
 
 /// How long a card takes to slide from its old slot to its new one when it
-/// jumps columns (e.g. a `headway move` landing from the CLI).
+/// jumps columns (e.g. a `nd headway move` landing from the CLI).
 const MOVE_ANIM_SECS: f32 = 0.28;
 
 /// Drag-and-drop payload: the id of the card being dragged.
@@ -37,7 +37,7 @@ fn move_progress_id(card: &NoteId) -> egui::Id {
 /// Begin (and retire) card slide animations for this frame.
 ///
 /// A slide starts when a card lands in a different column than it occupied last
-/// frame — a drag release, a detail-sheet move, or a `headway move` arriving
+/// frame — a drag release, a detail-sheet move, or a `nd headway move` arriving
 /// over the relay all look the same here: the folded view simply reports the
 /// card in a new column. We remember the screen rect it left from; the 0→1
 /// clock lives in egui's animation manager (seeded to 0 so its first read

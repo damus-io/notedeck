@@ -1,4 +1,4 @@
-//! What `agentium config` and `nd agentium config …` share: which run config
+//! What `nd agentium config` and `nd agentium config …` share: which run config
 //! a selector means, and the text each subcommand prints.
 //!
 //! A run config is what Dave's per-session run bar launches: a named shell
@@ -95,7 +95,7 @@ pub fn resolve_config<'c>(
     }
     if first.is_none() {
         return Err(format!(
-            "no run config matches '{selector}' (by id prefix or exact name) — see `agentium config list`"
+            "no run config matches '{selector}' (by id prefix or exact name) — see `nd agentium config list`"
         ));
     }
     let candidates = configs

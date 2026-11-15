@@ -55,7 +55,7 @@
 //!
 //! ## Work order
 //! [`work_order_graph`] is the third builder, and the one exception to "blocking
-//! only": the collapsed graph's nodes joined in the order `headway next` walks
+//! only": the collapsed graph's nodes joined in the order `nd headway next` walks
 //! them, one edge per consecutive pair. The view shows it or the collapsed graph,
 //! never both, since the two edge kinds together make a busy epic unreadable.
 //!
@@ -288,13 +288,13 @@ pub fn collapsed_dependency_graph(view: &BoardView, epic_id: &[u8; 32]) -> Depen
 }
 
 /// Build the *work-order* graph of `epic_id`: the same nodes as
-/// [`collapsed_dependency_graph`], joined in the order `headway next` walks them
+/// [`collapsed_dependency_graph`], joined in the order `nd headway next` walks them
 /// rather than by what blocks what. The graph view's "Work order" mode.
 ///
 /// ## Nodes
 /// One per **direct** live subissue, in [`CardView::subissues`] order — which the
 /// reducer already sorts into work-order (sequenced by rank, then unsequenced by
-/// creation), the same order [`work_order`] walks. So a `headway seq` move
+/// creation), the same order [`work_order`] walks. So a `nd headway seq` move
 /// reorders the nodes, and the edges with them. Each node carries its subtree
 /// progress exactly as in the collapsed graph, so a sub-epic still drills in.
 /// No ghosts: the order is internal to the epic.
@@ -930,7 +930,7 @@ mod tests {
         };
         assert_eq!(order(&events), [kids[0], kids[1], kids[2]]);
 
-        // `headway seq Three --first`: a newer rank ahead of One's.
+        // `nd headway seq Three --first`: a newer rank ahead of One's.
         events.push(
             parse(&sign(
                 build_sequence(&container, &kids[2], "a").created_at(3_000),

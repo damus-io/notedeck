@@ -13,11 +13,11 @@
 //! - [`edit`] — reading an edit's arguments against a board: columns, review
 //!   records, due dates, estimates and what a comment answers, for the CLI and
 //!   the app's tools alike.
-//! - [`grep`] and [`list`] — `headway grep`'s search and `headway list`'s
+//! - [`grep`] and [`list`] — `nd headway grep`'s search and `nd headway list`'s
 //!   listing and saved views, each as JSON or text, shared by the CLI and
 //!   the app's tools.
 //! - [`query`] — the issue-list query model: the shared filter parser and
-//!   predicate behind the board filter, the list view and `headway list`.
+//!   predicate behind the board filter, the list view and `nd headway list`.
 //! - [`render`] — the human text view of a board, a card, the `next`
 //!   frontier and the board list, shared by the CLI and the app's tools.
 //! - [`store`] — sign + ingest into a local nostrdb, board seeding, and
@@ -31,7 +31,7 @@
 //! - [`title`] — splits a card title into `CODE: headline — detail` for
 //!   surfaces that show it in little room.
 //! - [`views`] — saved list views: an account's [`query::ViewSpec`]s, kept
-//!   PNS-wrapped in nostrdb, behind the list's tabs and `headway list --view`.
+//!   PNS-wrapped in nostrdb, behind the list's tabs and `nd headway list --view`.
 //! - [`teams`] — the joined-shared-board roster: which SNS channels this account
 //!   holds keys for, so both front ends fold and seal the same shared boards.
 //! - [`boards`] — the [`boards::Roster`] built from [`teams`], and loading one

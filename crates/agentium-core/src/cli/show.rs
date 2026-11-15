@@ -1,4 +1,4 @@
-//! `agentium show` — git-show-style detail for one resolved session.
+//! `nd agentium show` — git-show-style detail for one resolved session.
 
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
@@ -16,7 +16,7 @@ use crate::session_loader::{
 };
 use crate::session_reconstructor::latest_session_usage;
 
-/// Everything `agentium show` says about one session, read in one
+/// Everything `nd agentium show` says about one session, read in one
 /// transaction and owned, so it renders ([`render`](Self::render)) and
 /// serializes ([`json`](Self::json)) after the transaction is gone.
 ///
@@ -337,7 +337,7 @@ fn field(label: &str, value: &str) -> String {
     format!("  {label:<DETAIL_LABEL_W$}  {value}\n")
 }
 
-/// Render the full `agentium show` detail block for a session as plain text.
+/// Render the full `nd agentium show` detail block for a session as plain text.
 ///
 /// A header line (`agentium:` URI + colored status) and the display title, then
 /// the kind-31988 state fields, the host+cwd run-configs, the usage snapshot

@@ -1,44 +1,40 @@
 ---
 name: notebook
-description: Read and edit a notebook canvas from the command line via the `notebook` CLI (crates/notebook_cli). Use when the user wants to view the canvas, add/move/edit/recolor/delete nodes, connect or disconnect edges, restack, seed, or rename the canvas — e.g. "show the notebook", "add a node", "move that node", "connect these two nodes".
+description: Read and edit a notebook canvas from the command line via `nd notebook` (the notebook tools of the running notedeck, crates/notedeck_notebook). Use when the user wants to view the vault or a canvas, add/move/edit/recolor/delete nodes, connect or disconnect edges, restack, seed, or rename a canvas — e.g. "show the notebook", "add a node", "move that node", "connect these two nodes".
 ---
 
-# Notebook canvas CLI
+# Notebook canvases from the command line: `nd notebook`
 
-`notebook` is a CLI over a running notedeck's embedded relay. It keeps its
-**own** nostrdb cache, reconciles with the relay each run (NIP-77 negentropy,
-falling back to NIP-01, or fully offline against the cache), folds the canvas
-locally with the same reducer the egui app uses, and forwards edits back so the
-running app sees them. Source: `crates/notebook_cli`; the cache/sync/relay/key
-plumbing is shared with `headway` via `crates/relay_sync`.
+`nd notebook <command>` runs one of the running notedeck's notebook tools over
+its local socket (see the `nd` skill). The notedeck folds the vault — its
+canvases and longform notes — from its own nostrdb with the same reducer the
+egui app uses, and signs edits as its selected account, so the app and every
+`nd` call see the same canvas with nothing to sync.
 
 ## Running it
 
-Prefer a built binary; fall back to cargo:
-
 ```bash
-# build once, then call the binary directly (fast, no rebuild per command)
-cargo build -p notebook_cli           # produces target/debug/notebook
-target/debug/notebook <command>
-
-# or, one-off:
-cargo run -q -p notebook_cli -- <command>
+nd notebook show                          # nd on PATH (scripts/install-clis)
+cargo run -q -p nd_cli -- notebook show   # or from a checkout
 ```
 
-In examples below, `notebook` means whichever form you're using.
+`nd notebook --help` lists the commands; `nd notebook <command> --help` prints
+that command's arguments and the tool it runs. Every command takes `--json`,
+`--pager`/`--no-pager` and `--color <auto|always|never>`.
 
-## Logging in
+There is no login and no `--author`/`--relay`/`--db`/`--nsec`: the notedeck
+answering the socket is the identity. `notebook <command>` still works through
+a shim (`scripts/shims/nd-shim`) that runs `nd notebook <command>`, but type
+`nd notebook` in anything new.
 
-The CLI reads and writes **your own** canvas once you're logged in. The author
-whose canvas is loaded comes from `--author <pk>`, else the signing key's own
-pubkey — so to read or edit without `--author` you need a key configured. Relay
-defaults to `ws://127.0.0.1:6677` (notedeck's embedded relay); override with
-`--relay <url>` or `$NOTEBOOK_RELAY`. If no relay answers, the CLI works offline
-against its cache and edits reach the app on the next connected run.
+## Which canvas
 
-If a command fails because no key is configured (`need --nsec to sign, or
---author to read a canvas`), ask the user to run `notebook login`. Don't handle
-the key yourself.
+A notebook holds many canvases. `nd notebook show` with no argument lists the
+**vault**: every canvas and longform note, newest-edited first, each with its
+`notebook:<word-id>` ref. Edits take `--canvas <canvas>` — a
+`notebook:<word-id>` ref, a `nostr:naddr`, or its `d` (a unique prefix will
+do) — and infer it only when there is a single canvas, so name it whenever
+there are several.
 
 ## The golden rule: `show` before you edit
 
@@ -47,114 +43,88 @@ words encoding the leading bits of its event id, e.g.
 `notebook:maple-river-canyon`. It's a sayable rendering of the node's real
 identity (its 64-char nostr event id), the notebook sibling of headway's
 `headway:<board>/…` cards — single-segment (no canvas), because a node's identity
-is its event id, not the canvas it happens to sit on. `show` prints it muted at
-the end of each node line; quote it in chat or commits, and pass it back to any
-command that takes a `<node>`.
+is its event id, not the canvas it happens to sit on. A canvas and a longform
+note have refs of the same form. Quote them in chat or commits, and pass them
+back to any command that takes a `<node>` or `--canvas`.
 
-A `<node>` argument resolves, in order, as:
-
-- the full 64-char **hex id**, or any unique **hex prefix** — canonical, best for
-  scripted edits where you've pulled the id from `show --json`
-- a **`notebook:<word-id>` reference**, e.g. `notebook:maple-river-canyon`. The
-  `notebook:` scheme is required — a bare `maple-river-canyon` is not a reference
-  and won't resolve.
-
-Edges are addressed by their **edge id** (`<from-hex>-<to-hex>`, shown muted by
-`show`) or a unique prefix. Always run `show` first to read the current ids, then
-act on what you actually see — never assume an id or that a node is where you
-expect.
+A `<node>` argument resolves as the full 64-char **hex id**, any unique **hex
+prefix**, or a **`notebook:<word-id>` reference**. Edges are addressed by their
+**edge id** as `show` lists it, or a unique prefix. Always run `show` first to
+read the current ids, then act on what you actually see — never assume an id or
+that a node is where you expect.
 
 ```bash
-notebook show              # human-readable: title, nodes, edges, pending
-notebook show --json       # machine-readable, for parsing (each node has `id` + `ref`)
-notebook show <node>...    # print only the given nodes (hex id, notebook:<word-id>, or prefix)
-notebook show <node> --json
+nd notebook show                           # the vault: canvases and notes, with refs
+nd notebook show notebook:gloom-shove-melody   # one canvas: title, nodes, edges, pending
+nd notebook show <ref>... --json           # canvas {id, title, nodes, edges, pending, …},
+                                           # note {d, ref, title, content, …} or node {id, ref, x, y, w, h, text, …}
+nd notebook vault [<note>...]              # the longform notes, with their markdown content
 ```
 
-`show` prints the canvas title (with `[open]` if open), then each node as
-`<first line of text>  (x,y w×h)  notebook:<word-id>` with the geometry and
-reference muted, then edges as `<from-ref> → <to-ref>  <edge-id>`, then any
-**pending** nodes (proposals on a closed canvas). If there's no canvas yet it
-tells you to run `notebook seed`; with `--json` it prints `null`.
+A canvas prints its title, then each node as `<first line of text>  (x,y w×h)
+notebook:<word-id>`, then its edges and any **pending** nodes (proposals on a
+closed canvas). One ref answers its object; several answer an array.
 
-If a selector doesn't resolve, errors are explicit: an ambiguous prefix says
-`ambiguous node prefix` / `ambiguous edge prefix`, an unknown one `no node
-matching` / `no edge matching` — re-read `show` and retry with a longer prefix,
-the `notebook:<word-id>` reference, or the full id.
-
-**Which form to use:** refer to a node by its **`notebook:<word-id>` reference**
-when talking to a human (it's sayable, they'll recognise it, and it renders as a
-live inline chip in notes/chat). When *you* script an edit, the hex id from `show
---json` is canonical and can never be ambiguous; the reference resolves too and is
-fine for one-offs.
+**Which form to use:** refer to a node or canvas by its **`notebook:<word-id>`
+reference** when talking to a human (it's sayable and renders as a live inline
+chip in notes and chat). When *you* script an edit, the hex id from `show
+--json` can never be ambiguous; the reference resolves too and is fine for
+one-offs.
 
 ## Commands
 
+Every command below is `nd notebook <command>`; the edits also take `--canvas`.
+
 | Command | What it does |
 | --- | --- |
-| `show [nodes...] [--json]` | Print the canvas, or only the given nodes |
-| `seed [title...]` | Create the canvas if none exists (default title `Notebook`) |
-| `add <text...> [-x -y -w --height]` | Add a text node, optionally placed/sized |
+| `show [refs...] [--json]` | List the vault, or show the given canvases, notes or nodes |
+| `vault [notes...]` | List the longform notes, or answer the given ones with their content |
+| `seed [title...] [--canvas <d>]` | Create a new, empty canvas (default title `Notebook`); `--json` answers its `canvas` d and `ref` |
+| `add <text...> [-x -y -w --height]` | Add a text node, optionally placed/sized; `--json` answers its `ref` |
 | `move <node> [-x -y -w --height]` | Move/resize a node (unset fields keep current geometry) |
 | `edit <node> <text...>` | Replace a node's text |
-| `color <node> [color]` | Recolor a node (`none`/`-`/empty clears; `--color` also works) |
+| `color <node> [color]` | Recolor a node: a preset `1`–`6` or `#rrggbb` (`none`/`-`/omitted clears) |
 | `restack <node> <index>` | Restack a node to a display index (`0` = bottom) |
 | `delete <node>` | Remove a node (reversible tombstone) |
 | `connect <from> <to> [--from-side <s>] [--to-side <s>]` | Draw an edge between two nodes |
 | `disconnect <edge>` | Remove an edge (id from `show`) |
 | `rename <title...>` | Rename the canvas |
-| `login <nsec>` | Store a signing key so later runs just work |
-| `logout` | Forget the stored signing key |
 
-`show`, `seed`, `login`, and `logout` aside, every command edits the canvas and
-needs a signing key. Re-drawing the same `connect <from> <to>` updates that edge
-rather than stacking a duplicate (edge ids are stable per ordered pair,
-latest-wins).
+Re-drawing the same `connect <from> <to>` updates that edge rather than
+stacking a duplicate (edge ids are stable per ordered pair, latest-wins).
 
 ### Geometry flags
 
 `add` and `move` take geometry in canvas pixels: `-x`/`--x`, `-y`/`--y` for
 position and `-w`/`--w`, `--height` for size (height has no `-h` short — that's
-`--help`). `add` fills any unset field
-from defaults (a new text node is `250×120` at the origin); `move` fills unset
-fields from the node's current geometry, so `move <node> -x 400` slides it
-horizontally without touching its size or `y`.
+`--help`). `add` fills any unset field from defaults (a new text node is
+`250×120` at the origin); `move` fills unset fields from the node's current
+geometry, so `move <node> -x 400` slides it horizontally without touching its
+size or `y`.
 
 ```bash
-notebook add "ship the thing" -x 100 -y 200    # new node at (100,200)
-notebook move 1a2b3c4d -x 400 -y 50            # reposition, keep size
+nd notebook add "ship the thing" -x 100 -y 200 --canvas notebook:gloom-shove-melody
+nd notebook move 1a2b3c4d -x 400 -y 50 --canvas notebook:gloom-shove-melody
 ```
-
-Other flags: `--author <pk>` (read someone else's canvas), `--canvas <id>`
-(non-default canvas, default `notebook`), `--db <path>` (cache dir), `--nsec
-<nsec>` (key for this run; `$NOTEBOOK_NSEC` takes precedence over the stored
-key), `-h`/`--help`.
 
 ## Typical workflow
 
 Add a node, then connect it to an existing one:
 
 ```bash
-notebook show                                          # read the canvas + word-ids
-notebook add "new idea" -x 300 -y 100                  # create the node
-notebook show                                          # read back both word-ids
-notebook connect maple-river-canyon glide-amber-mesa   # draw an edge between them
-notebook show                                          # verify the edge landed
+c=notebook:gloom-shove-melody
+nd notebook show $c                                    # read the canvas + word-ids
+nd notebook add "new idea" -x 300 -y 100 --canvas $c   # create the node
+nd notebook show $c                                    # read back both word-ids
+nd notebook connect notebook:maple-river-canyon notebook:glide-amber-mesa --canvas $c
+nd notebook show $c                                    # verify the edge landed
 ```
-
-For scripted edits where ambiguity must be impossible, pull the hex `id` from
-`notebook show --json` and pass that instead of the word-id.
 
 ## Notes
 
-- Edits print `ok (N events)`; offline edits append `— offline, not forwarded to
-  the app`, meaning they're cached but haven't reached the running notedeck yet.
-  `seed` prints `seeded canvas '<id>' (N events)`.
-- `seed` errors if a canvas already exists; that's expected — just `show`
-  instead. An edit that resolves to no change prints `action produced no events
-  (unknown node or edge?)`.
-- The cache lives at `<data-dir>/notebook-cli` unless `--db` overrides it. The
-  CLI and the running app converge through the relay, so either side's edits show
-  up on the other after a reconcile.
-</content>
-</invoke>
+- Edits print `ok (N events)`.
+- If a selector doesn't resolve, the error says so (ambiguous or unknown) —
+  re-read `show` and retry with a longer prefix, the `notebook:<word-id>`
+  reference, or the full id.
+- A tool error goes to stderr with exit 1; no notedeck reachable is exit 2 (see
+  the `nd` skill).

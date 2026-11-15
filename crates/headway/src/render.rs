@@ -107,7 +107,7 @@ pub fn boards(own: &[BoardView], shared: &[BoardView], current: &str, color: boo
     let mut t = Text::new(color);
     if own.is_empty() && shared.is_empty() {
         t.line(format!(
-            "no boards yet — current selection is '{current}'. Run `headway seed` to create it."
+            "no boards yet — current selection is '{current}'. Run `nd headway seed` to create it."
         ));
         return t.out;
     }
@@ -128,7 +128,7 @@ pub fn boards(own: &[BoardView], shared: &[BoardView], current: &str, color: boo
     let shared_current = !own_current && shared_matches == 1;
     let unresolved = !own_current && shared_matches == 0;
     if unresolved {
-        let hint = t.dim("(not created yet — run `headway seed`)");
+        let hint = t.dim("(not created yet — run `nd headway seed`)");
         t.line(format!("* {current}  {hint}"));
     }
     if shared.is_empty() {
@@ -156,14 +156,14 @@ pub fn boards(own: &[BoardView], shared: &[BoardView], current: &str, color: boo
     t.out
 }
 
-/// The tail of `headway board`: the deleted boards, by slug, so a restore can
+/// The tail of `nd headway board`: the deleted boards, by slug, so a restore can
 /// name them. Empty when there are none.
 pub fn deleted_boards(deleted: &[BoardView], color: bool) -> String {
     let mut t = Text::new(color);
     if deleted.is_empty() {
         return t.out;
     }
-    let hint = t.dim("(`headway restore-board <board>` brings one back)");
+    let hint = t.dim("(`nd headway restore-board <board>` brings one back)");
     t.line(format!("\ndeleted {hint}"));
     for view in deleted {
         let detail = t.dim(&format!("{} · {} cards", view.title, card_count(view)));
@@ -174,7 +174,7 @@ pub fn deleted_boards(deleted: &[BoardView], color: bool) -> String {
 
 /// Why an edit to a deleted board is refused, and how to undo the delete.
 pub fn deleted_board_error(board: &str) -> String {
-    format!("board '{board}' is deleted — restore it with `headway restore-board {board}` first")
+    format!("board '{board}' is deleted — restore it with `nd headway restore-board {board}` first")
 }
 
 /// A board owner as a short npub (`npub1pjn83hs2…`), enough to tell owners
@@ -185,7 +185,7 @@ fn short_owner(owner: &[u8; 32]) -> String {
     format!("{}…", &full[..full.len().min(14)])
 }
 
-/// A board as `headway show` prints it: its title, description, then each
+/// A board as `nd headway show` prints it: its title, description, then each
 /// column with its cards, one line a card. Archived cards are counted, and
 /// listed when `show_archived`.
 pub fn board(view: &BoardView, show_archived: bool, color: bool) -> String {
@@ -193,7 +193,7 @@ pub fn board(view: &BoardView, show_archived: bool, color: bool) -> String {
     t.line(&view.title);
     if view.deleted {
         let hint = t.dim(&format!(
-            "(deleted — `headway restore-board {}` brings it back)",
+            "(deleted — `nd headway restore-board {}` brings it back)",
             view.id
         ));
         t.line(hint);
@@ -239,7 +239,7 @@ pub fn board(view: &BoardView, show_archived: bool, color: bool) -> String {
 pub fn all_boards(boards: &[BoardView], me: &[u8; 32], show_archived: bool, color: bool) -> String {
     let mut t = Text::new(color);
     if boards.is_empty() {
-        t.line("no boards yet — run `headway seed` to create one");
+        t.line("no boards yet — run `nd headway seed` to create one");
         return t.out;
     }
     for (i, view) in boards.iter().enumerate() {
@@ -927,7 +927,7 @@ mod tests {
         wordid::card_ref("b", &[n; 32])
     }
 
-    /// `headway show`: the title, each column with its count, one line a
+    /// `nd headway show`: the title, each column with its count, one line a
     /// card carrying its blocked/priority markers, rollup, labels and ref,
     /// and the archived count with the hint to list them.
     #[test]
@@ -985,7 +985,7 @@ mod tests {
         assert!(text.starts_with("The board\n"), "{text:?}");
     }
 
-    /// `headway show <card>`: the header block, the indented title and
+    /// `nd headway show <card>`: the header block, the indented title and
     /// description, then subissues, edges, review records and comments.
     #[test]
     fn card_detail_reads_like_git_show() {
@@ -1058,7 +1058,7 @@ mod tests {
         assert_eq!(text, expected);
     }
 
-    /// `headway next`: one plain ref and its title a line.
+    /// `nd headway next`: one plain ref and its title a line.
     #[test]
     fn ready_line_keeps_the_ref_plain() {
         assert_eq!(ready_line(&r(1), "One", false), format!("{}  One\n", r(1)));
@@ -1068,7 +1068,7 @@ mod tests {
         );
     }
 
-    /// `headway board`: own boards with the current one starred, shared ones
+    /// `nd headway board`: own boards with the current one starred, shared ones
     /// under their heading with an owner, and the deleted tail.
     #[test]
     fn boards_marks_current_and_heads_shared() {
@@ -1093,7 +1093,7 @@ mod tests {
 
         let unresolved = boards(std::slice::from_ref(&own), &[], "nope", false);
         assert!(
-            unresolved.ends_with("* nope  (not created yet — run `headway seed`)\n"),
+            unresolved.ends_with("* nope  (not created yet — run `nd headway seed`)\n"),
             "{unresolved}"
         );
         assert!(boards(&[], &[], "x", false).starts_with("no boards yet"));
@@ -1102,7 +1102,7 @@ mod tests {
         gone.deleted = true;
         assert_eq!(
             deleted_boards(std::slice::from_ref(&gone), false),
-            "\ndeleted (`headway restore-board <board>` brings one back)\n  b  The board · 1 cards\n"
+            "\ndeleted (`nd headway restore-board <board>` brings one back)\n  b  The board · 1 cards\n"
         );
         assert_eq!(deleted_boards(&[], false), "");
     }

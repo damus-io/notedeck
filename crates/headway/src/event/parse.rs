@@ -1329,7 +1329,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// A review record carrying every field, as `headway review` would write it.
+    /// A review record carrying every field, as `nd headway review` would write it.
     fn full_review() -> ReviewFields {
         ReviewFields {
             commit: Some("5ec55a6aaf57d4b9c1e0f7a2b3c4d5e6f7a8b9c0".into()),

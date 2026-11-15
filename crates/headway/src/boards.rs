@@ -200,7 +200,7 @@ fn load_board_in(
 }
 
 /// The roster owner's live boards in the cache — [`list_all_boards`] without the
-/// deleted ones, which only `headway board` lists (apart, so they can be restored).
+/// deleted ones, which only `nd headway board` lists (apart, so they can be restored).
 pub fn list_boards(ndb: &Ndb, roster: &Roster) -> Vec<BoardView> {
     let mut boards = list_all_boards(ndb, roster);
     boards.retain(|v| !v.deleted);

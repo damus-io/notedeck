@@ -1,4 +1,4 @@
-//! `agentium list` — session selection, the `list` filters and scope, and the
+//! `nd agentium list` — session selection, the `list` filters and scope, and the
 //! per-host row rendering (plus the `--json` session shape other commands reuse).
 
 use nostrdb::{Ndb, Transaction};
@@ -103,7 +103,7 @@ pub fn load_sessions(
     sessions
 }
 
-/// `agentium list`'s text: this identity's sessions, grouped by host.
+/// `nd agentium list`'s text: this identity's sessions, grouped by host.
 ///
 /// `sessions` arrive in [`session_order`](crate::session_loader::session_order)
 /// — most recently updated first, ties broken by session id — as
@@ -382,7 +382,7 @@ pub(crate) mod tests {
     /// `group_by_host` stable-sorts on whole-second `created_at`, so equal-aged
     /// rows keep their input order. Before `session_order` existed that input was
     /// `query_replaceable_filtered`'s `HashMap` drain — randomized per run, which
-    /// is what made `agentium list` reorder itself over a frozen db. The existing
+    /// is what made `nd agentium list` reorder itself over a frozen db. The existing
     /// recency test uses distinct timestamps and so cannot see the tie.
     #[test]
     fn group_by_host_ties_break_by_session_id() {

@@ -1014,7 +1014,7 @@ impl BoardUiState {
 
 /// A card's on-screen placement last frame: its screen rect and which column it
 /// sat in. Used to detect cross-column jumps (drags, detail-sheet moves, or a
-/// `headway move` arriving over the relay) and seed the slide animation.
+/// `nd headway move` arriving over the relay) and seed the slide animation.
 ///
 /// The column is identified by a hash of its stable id, not its index: indices
 /// shift when columns are reordered or removed, which would otherwise read as

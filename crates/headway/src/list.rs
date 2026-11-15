@@ -1,10 +1,10 @@
-//! Listing cards: `headway list` and the app's `headway_list` tool.
+//! Listing cards: `nd headway list` and the app's `headway_list` tool.
 //!
 //! The query is [`crate::query`]'s, the same one the GUI board filter reads,
 //! so `p:high label:ui is:done` means one thing everywhere. [`Listing::new`]
 //! runs it once; [`Listing::json`] and [`Listing::text`] are the two ways to
 //! print it, and [`views_text`] / [`views_json`] print the views, shared by
-//! the CLI and the tool so `nd headway list` prints what `headway list`
+//! the CLI and the tool so `nd headway list` prints what `nd headway list`
 //! prints.
 
 use std::collections::HashSet;
@@ -63,7 +63,7 @@ pub struct Listing<'b> {
     rows: Vec<ListRow<'b>>,
     /// The rows' groups, when the query groups them.
     groups: Option<Vec<ListGroup>>,
-    /// The cards `headway next --ready` would hand out, when sorted by work
+    /// The cards `nd headway next --ready` would hand out, when sorted by work
     /// order.
     ready: Option<HashSet<[u8; 32]>>,
     display: DisplayProps,
@@ -73,7 +73,7 @@ impl<'b> Listing<'b> {
     /// Every live card on `boards` that `query` keeps, one row per card, in
     /// `query.sorting`'s order: board order (board, then column, then rank)
     /// unless the query sorts otherwise. `limit` (`-n`) keeps the first rows
-    /// of that order. Sorted by work order, the rows `headway next --ready`
+    /// of that order. Sorted by work order, the rows `nd headway next --ready`
     /// would hand out are marked.
     ///
     /// `query` carries the run's view: its filter ([`ViewSpec::filter`], see
@@ -159,7 +159,9 @@ pub fn compose_view(
             let base = match find_view(saved, name) {
                 Some(view) => view.spec.clone(),
                 None => BuiltinView::named(name)
-                    .ok_or_else(|| format!("no view named '{name}' (see `headway list --views`)"))?
+                    .ok_or_else(|| {
+                        format!("no view named '{name}' (see `nd headway list --views`)")
+                    })?
                     .spec(&run),
             };
             let given = views.given;
@@ -393,7 +395,7 @@ fn row_json(row: &ListRow, marks: RowMarks) -> serde_json::Value {
 /// frontier, when sorted by work order.
 #[derive(Clone, Copy, Debug, Default)]
 struct RowMarks<'a> {
-    /// The cards `headway next --ready` would hand out, by id; `None` when
+    /// The cards `nd headway next --ready` would hand out, by id; `None` when
     /// the listing doesn't mark them.
     ready: Option<&'a HashSet<[u8; 32]>>,
 }
@@ -537,7 +539,7 @@ fn list_line(row: &ListRow, widths: RowWidths, marks: RowMarks, color: bool) -> 
 const MARKER_GAP: &str = "  ";
 
 /// The marker on a row in the ready frontier, in a list sorted by work order:
-/// what `headway next --ready` would hand out.
+/// what `nd headway next --ready` would hand out.
 const READY_GLYPH: &str = "▶ ";
 
 #[cfg(test)]

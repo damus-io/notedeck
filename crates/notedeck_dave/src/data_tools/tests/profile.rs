@@ -1,4 +1,4 @@
-//! The `agentium profile` CLI's cases (`profile_lands.rs` and the unit
+//! The `nd agentium profile` CLI's cases (`profile_lands.rs` and the unit
 //! tests beside `profile_cmd.rs`), ported to the tools that replace it: set,
 //! store a secret, show and list it masked, then remove it, each write read
 //! back from nostrdb the way Dave loads profiles.

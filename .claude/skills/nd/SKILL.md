@@ -1,6 +1,6 @@
 ---
 name: nd
-description: Drive the running notedeck from the command line via the `nd` CLI (crates/nd_cli) — list its tools and call any of them over its local socket, or spawn a Dave session, e.g. open a headway card or agentium session in the window, open the review queue, or read board data. Use when the user wants to open something in notedeck from a shell, script the app, or see which tools the running notedeck offers — e.g. "open this card in notedeck", "what tools does notedeck have", "call open".
+description: Drive the running notedeck from the command line via the `nd` CLI (crates/nd_cli) — notedeck's one CLI. `nd headway …`, `nd agentium …` and `nd notebook …` are its app commands (see those skills); `nd tools`/`nd call` list and call any tool over the local socket, e.g. open a headway card or agentium session in the window, open the review queue, or read board data. Use when the user wants to open something in notedeck from a shell, script the app, or see which tools the running notedeck offers — e.g. "open this card in notedeck", "what tools does notedeck have", "call open".
 ---
 
 # nd: notedeck's tools from a shell
@@ -9,6 +9,13 @@ description: Drive the running notedeck from the command line via the `nd` CLI (
 (`notedeck_ipc::socket_path()`, overridden by `$NOTEDECK_SOCKET`). Every run
 fetches the tool list from the app, so it always matches what's running and
 there's nothing to keep in sync. Source: `crates/nd_cli`.
+
+It is notedeck's only CLI. Every tool that declares a command path is a real
+subcommand, built at run time from the tool's spec (`ToolSpec`/`ToolArg` in
+`crates/agentium-core/src/tool.rs`): `nd headway show`, `nd agentium list`,
+`nd notebook add`. Nothing in nd names a tool, so a new tool with a command
+path is a new subcommand with no nd change. The `headway`, `agentium` and
+`notebook` skills document each app's commands.
 
 ## Running it
 
@@ -19,7 +26,13 @@ scripts/install-clis --root ~            # ...or into ~/bin
 ```
 
 `scripts/install-clis` installs both binaries in release, because nd starts
-`notedeck` itself when none is running (below), so both have to be on PATH.
+`notedeck` itself when none is running (below), so both have to be on PATH. It
+also links `headway`, `agentium` and `notebook` beside them to
+`scripts/shims/nd-shim`, which runs `nd <name> "$@"` so old scripts keep
+working; it never overwrites a file that isn't a shim. The old CLIs' identity
+and store flags (`--nsec`, `--relay`, `--db`, `--author`, `--comment-nsec`)
+and `login`/`logout` have no counterpart, and the shim refuses each with one
+line. New text should type `nd headway …`, not the shim's name.
 
 ## When no notedeck is running
 
@@ -48,17 +61,26 @@ instead.
   `--json '<object>'` or `--json-file <path|->` passes the arguments as one
   object instead.
 - `nd <app> <command> [args…]` — a tool that declares a command, e.g.
-  `nd headway show <card>`, `nd headway next --in <epic> -n 1`, and the card
-  edits `nd headway add <title…> --col todo -l a,b`, `move <card> --col
-  in-review`, `comment <card> <text…>` (`--reply-to`, `--path`/`--line`,
-  `--body-file -`), `title`, `desc`, `label`, `priority`, `due`, `estimate`,
-  `archive`, `restore`, `delete`, spelled as the `headway` CLI spells them.
-  A card ref names its board; else `--board`, else `$HEADWAY_BOARD`.
-  `nd <app> --help` lists them. It prints the text the tool renders (what the
-  app's own CLI prints, colored and paged through `$<APP>_PAGER`/`$PAGER` on a
-  terminal); `--json` prints the value instead, the same JSON as the CLI's
-  `--json`. `--pager`/`--no-pager` and `--color <auto|always|never>` go with
-  every command.
+  `nd headway show <card>`, `nd headway next --in <epic> -n 1`, `nd agentium
+  spawn --prompt-file <f> --ref`, `nd notebook add <text…> --canvas <ref>`.
+  `nd <app> --help` lists an app's commands, `nd <app> <command> --help` one
+  command's arguments and the tool it runs. A flag may go before the verb
+  (`nd headway --board b show`). It prints the text the tool renders (colored
+  and paged through `$<APP>_PAGER`/`$PAGER` on a terminal); `--json` prints
+  the value instead. `--pager`/`--no-pager` and `--color
+  <auto|always|never>` go with every command.
+  - **Caller-side arguments.** nd fills some arguments on its own side before
+    the call: `--desc-file`/`--body-file`/`--prompt-file <path|->` read a file
+    or stdin, a path argument is made absolute from the current directory, and
+    an argument with an env fallback reads it (`$HEADWAY_BOARD`,
+    `$AGENTIUM_SESSION`, …), so the notedeck never needs the caller's cwd or
+    environment.
+  - **The comment key.** `$HEADWAY_COMMENT_NSEC`, else the file
+    `$HEADWAY_COMMENT_NSEC_FILE` names, signs `nd headway comment` as the agent
+    rather than the account. nd sends it as a socket-level `signer` beside the
+    call, never as a tool argument, so MCP and Dave can't set it.
+  - **Streams.** `nd agentium log -f` and `nd agentium watch` subscribe over
+    the socket and print each event as it lands, until interrupted.
 - `nd mcp [--ui] [--read-only]` — a stdio MCP server: `tools/list` and
   `tools/call` go to the socket, one connection each, so it can start before
   notedeck. Only data tools are exposed unless `--ui`; `--read-only` keeps only
@@ -67,7 +89,7 @@ instead.
 - `nd spawn [--json] [<dir>]` — open a Dave session in `<dir>` (default the
   current directory, resolved and checked locally) and focus it, starting Dave
   if it isn't open. Prints `Spawned session <id>`, or the bare id with
-  `--json`. It calls `dave_spawn_session`; `agentium spawn` is the relay one
+  `--json`. It calls `dave_spawn_session`; `nd agentium spawn` is the relay one
   for other hosts.
 - `nd --version` — nd's version, and the running notedeck's.
 - `nd <cmd> --help`, `nd help options` — per-command pages, exit codes.

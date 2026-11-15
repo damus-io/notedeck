@@ -31,7 +31,7 @@ impl DeletedMiss {
     fn error(self, uri: &str, selector: &str) -> String {
         match self {
             DeletedMiss::Send => format!(
-                "{uri} is deleted — reopen it with `agentium resume {selector}` before sending"
+                "{uri} is deleted — reopen it with `nd agentium resume {selector}` before sending"
             ),
             DeletedMiss::Interrupt => format!("{uri} is deleted — nothing is running to interrupt"),
             DeletedMiss::Running => format!("{uri} is deleted — nothing is running"),
@@ -149,7 +149,7 @@ pub fn short_perm_id(perm_id: &uuid::Uuid) -> String {
 pub fn question_approve_error(request: &PendingPermission, uri: &str) -> String {
     format!(
         "request {} on {uri} is an AskUserQuestion — it needs answers, which a bare \
-         approve can't send; answer it in Dave, or `agentium deny` it",
+         approve can't send; answer it in Dave, or `nd agentium deny` it",
         short_perm_id(&request.perm_id)
     )
 }

@@ -142,7 +142,7 @@ pub fn vault(notes: &[LongformNote], now: u64, color: bool) -> String {
 }
 
 /// The markdown bodies of `notes`. A single note is its raw body only, so
-/// `notebook vault <note> > note.md` round-trips; more than one is separated by
+/// `nd notebook vault <note> > note.md` round-trips; more than one is separated by
 /// a muted ref header so the concatenation stays navigable.
 pub fn vault_bodies<'a>(
     notes: impl ExactSizeIterator<Item = &'a LongformNote>,

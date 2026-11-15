@@ -108,7 +108,7 @@ struct ShowBoardArgs {
 
 /// [`ShowBoard`]'s answer: one folded board, which goes out as
 /// [`event::board_json`] and renders as [`render::board`], or with `all`
-/// every readable board, as `headway show --all` prints them.
+/// every readable board, as `nd headway show --all` prints them.
 #[derive(Debug)]
 enum ShownBoard {
     One {
@@ -221,7 +221,7 @@ struct ShowCardArgs {
 }
 
 /// [`ShowCard`]'s answer: the card's board and its id. It goes out as
-/// `headway show <card> --json` prints it ([`render::cards_json`], an array of
+/// `nd headway show <card> --json` prints it ([`render::cards_json`], an array of
 /// the one card with its column) and renders as [`render::card_detail`].
 /// With `--source` it is that source's text instead, as a JSON string and as
 /// the text exactly as stored.
@@ -257,7 +257,7 @@ impl AppTool for ShowCard {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_show_card",
-            "Show a single headway card in full, as a one-element array of the card (with the `column` it sits in), the shape `headway show <card> --json` prints — description, labels, priority, comments, activity, subissues, its blocking edges (`blocked` = held back by an unfinished prerequisite; `blocked_by` = the cards it depends on; `blocks` = the cards depending on it, each edge flagged `done` when cleared), and its `related` edges (undirected \"see also\" links — purely informational context, never a prerequisite or work-order) — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
+            "Show a single headway card in full, as a one-element array of the card (with the `column` it sits in), the shape `nd headway show <card> --json` prints — description, labels, priority, comments, activity, subissues, its blocking edges (`blocked` = held back by an unfinished prerequisite; `blocked_by` = the cards it depends on; `blocks` = the cards depending on it, each edge flagged `done` when cleared), and its `related` edges (undirected \"see also\" links — purely informational context, never a prerequisite or work-order) — as JSON. Address the card by its `headway:<board>/<word-id>` ref (or the scheme-less `<board>/<word-id>`) or a hex id prefix.",
             vec![
                 ToolArg::new(
                     "card",
@@ -310,7 +310,7 @@ impl AppTool for ShowCard {
 }
 
 /// `headway_ready_items`: what to work on next, from a container's ready
-/// frontier — `headway next`.
+/// frontier — `nd headway next`.
 struct ReadyItems;
 
 /// Arguments for [`ReadyItems`].
@@ -340,7 +340,7 @@ impl AppTool for ReadyItems {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_ready_items",
-            "What to work on next on a headway board, as `headway next` answers it: the cards workable right now — not done, not already In Progress (someone has it), not blocked by an unfinished prerequisite, and not a parent whose real work is its subissues — in work-order (seq-ranked, then creation order), each as `{ref, id, title}`. By default only the single next card; `ready` gives the whole frontier, the parallel-dispatch set a pool of agents can fan out over, and `limit` caps either. Omit `container` for the whole board, or pass a card ref to scope to that card's subtree. `labels` keeps only cards carrying every one of them; it never changes what counts as blocked or done.",
+            "What to work on next on a headway board, as `nd headway next` answers it: the cards workable right now — not done, not already In Progress (someone has it), not blocked by an unfinished prerequisite, and not a parent whose real work is its subissues — in work-order (seq-ranked, then creation order), each as `{ref, id, title}`. By default only the single next card; `ready` gives the whole frontier, the parallel-dispatch set a pool of agents can fan out over, and `limit` caps either. Omit `container` for the whole board, or pass a card ref to scope to that card's subtree. `labels` keeps only cards carrying every one of them; it never changes what counts as blocked or done.",
             vec![
                 ToolArg::new(
                     "container",
@@ -394,7 +394,7 @@ impl AppTool for ReadyItems {
         ))
     }
 
-    /// One ref and title a line, as `headway next` prints them; nothing for an
+    /// One ref and title a line, as `nd headway next` prints them; nothing for an
     /// empty frontier, so `$(nd headway next)` is empty when nothing is ready.
     fn render(&self, out: &Self::Output) -> Option<String> {
         Some(render::next_lines(out, true))
@@ -453,7 +453,7 @@ fn names_board(container: Option<&str>) -> bool {
     container.and_then(wordid::parse_ref).is_some()
 }
 
-/// `headway_grep`: search card text — `headway grep`.
+/// `headway_grep`: search card text — `nd headway grep`.
 struct Grep;
 
 /// Arguments for [`Grep`].
@@ -529,7 +529,7 @@ impl AppTool for Grep {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_grep",
-            "Search headway card text — titles, descriptions, comments and review comments — as `headway grep` does: every board this account can read, archived cards included, unless `board` or `container` narrows it. Smart-case: a pattern with an uppercase letter is case-sensitive. Answers an array of cards, most recent match first, each `{ref, id, board, title, column, matches: [{field, text, created_at}]}`, one row per matching line.",
+            "Search headway card text — titles, descriptions, comments and review comments — as `nd headway grep` does: every board this account can read, archived cards included, unless `board` or `container` narrows it. Smart-case: a pattern with an uppercase letter is case-sensitive. Answers an array of cards, most recent match first, each `{ref, id, board, title, column, matches: [{field, text, created_at}]}`, one row per matching line.",
             vec![
                 ToolArg::new(
                     "pattern",
@@ -587,7 +587,7 @@ impl AppTool for Grep {
         Ok(Grepped { scope, pattern })
     }
 
-    /// Each card's header and its matching lines, as `headway grep` prints
+    /// Each card's header and its matching lines, as `nd headway grep` prints
     /// them, or `no matches`.
     fn render(&self, out: &Self::Output) -> Option<String> {
         let text = headway::grep::text(&out.hits(), &out.pattern, true);
@@ -599,7 +599,7 @@ impl AppTool for Grep {
 }
 
 /// The query and layout arguments `list` and `--save-view` share: what a
-/// `headway list` command line says beyond the saved-view flags.
+/// `nd headway list` command line says beyond the saved-view flags.
 #[derive(Deserialize)]
 struct ListLayoutArgs {
     /// The query's terms, as one string.
@@ -803,7 +803,7 @@ fn list_layout_args() -> Vec<ToolArg> {
     ]
 }
 
-/// `headway_list`: the cards a query keeps, or the views — `headway list`.
+/// `headway_list`: the cards a query keeps, or the views — `nd headway list`.
 struct List;
 
 /// Arguments for [`List`].
@@ -872,7 +872,7 @@ impl AppTool for List {
         ]);
         ToolSpec::new(
             "headway_list",
-            "List the headway cards a query keeps, as `headway list` does: every board this account can read unless `board` or `container` narrows it, open cards unless the query or `all` says otherwise. Answers an array of cards as `show <card> --json` renders them plus their `board`, `column` and, sorted by work-order, `ready`; grouped, an array of `{group, count, rows, subgroups}`. `views` lists the saved and built-in views instead.",
+            "List the headway cards a query keeps, as `nd headway list` does: every board this account can read unless `board` or `container` narrows it, open cards unless the query or `all` says otherwise. Answers an array of cards as `show <card> --json` renders them plus their `board`, `column` and, sorted by work-order, `ready`; grouped, an array of `{group, count, rows, subgroups}`. `views` lists the saved and built-in views instead.",
             args,
         )
         .titled("List cards")
@@ -919,7 +919,7 @@ impl AppTool for List {
         })
     }
 
-    /// One row per card, or the groups' headers and rows, as `headway list`
+    /// One row per card, or the groups' headers and rows, as `nd headway list`
     /// prints them, or `no cards`; with `views`, one view a line.
     fn render(&self, out: &Self::Output) -> Option<String> {
         match out {
@@ -1051,7 +1051,7 @@ fn list_or_csv<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<String>, D
 }
 
 /// An estimate as a model may send it, a number or the text a command line
-/// types (`3`, `none`), parsed as `headway estimate` parses it.
+/// types (`3`, `none`), parsed as `nd headway estimate` parses it.
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 enum Points {
@@ -2019,7 +2019,7 @@ impl AppTool for EdgeTool {
 }
 
 /// `headway_seq`: where a card sits in a container's work-order, or, with a
-/// position, move it there — `headway seq`.
+/// position, move it there — `nd headway seq`.
 struct Seq;
 
 /// Arguments for [`Seq`]: at most one of `first`, `last`, `after` and
@@ -2164,7 +2164,7 @@ impl AppTool for Seq {
 }
 
 /// `headway_set_terminal`: mark a column terminal (a "done" column), or
-/// clear the flag — `headway terminal`.
+/// clear the flag — `nd headway terminal`.
 struct SetTerminal;
 
 /// Arguments for [`SetTerminal`].
@@ -2179,7 +2179,7 @@ struct SetTerminalArgs {
 }
 
 impl SetTerminalArgs {
-    /// Whether the column ends up terminal: `state` read as `headway
+    /// Whether the column ends up terminal: `state` read as `nd headway
     /// terminal` reads it, `on` when it is left out.
     fn terminal(&self) -> Result<bool, String> {
         match self.state.as_deref() {
@@ -2532,7 +2532,7 @@ impl Serialize for ViewAnswer {
 }
 
 /// `headway_save_view`: save a list's query and layout as a named view —
-/// `headway list --save-view <name>`. Personal and local, like the app's own
+/// `nd headway list --save-view <name>`. Personal and local, like the app's own
 /// view tabs: PNS-wrapped and signed by the account, never a board edit.
 struct SaveView;
 
@@ -2561,7 +2561,7 @@ impl AppTool for SaveView {
         args.extend(list_layout_args());
         ToolSpec::new(
             "headway_save_view",
-            "Save a headway list's query and layout as a named view, as `headway list --save-view <name>` does: the same arguments as `headway_list`, saved rather than listed (over `view` when one is applied). The view is this account's own, kept encrypted; answers it as `{name, query, display, grouping, sorting, board, slug, builtin}`.",
+            "Save a headway list's query and layout as a named view, as `nd headway list --save-view <name>` does: the same arguments as `headway_list`, saved rather than listed (over `view` when one is applied). The view is this account's own, kept encrypted; answers it as `{name, query, display, grouping, sorting, board, slug, builtin}`.",
             args,
         )
         .titled("Save list view")
@@ -2584,7 +2584,7 @@ impl AppTool for SaveView {
     }
 }
 
-/// `headway_delete_view`: delete a saved list view — `headway list
+/// `headway_delete_view`: delete a saved list view — `nd headway list
 /// --delete-view <name>`.
 struct DeleteView;
 
@@ -2602,7 +2602,7 @@ impl AppTool for DeleteView {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_delete_view",
-            "Delete one of this account's saved headway list views, by name or slug, as `headway list --delete-view <name>` does. Answers the view deleted, as `headway_save_view` answers one.",
+            "Delete one of this account's saved headway list views, by name or slug, as `nd headway list --delete-view <name>` does. Answers the view deleted, as `headway_save_view` answers one.",
             vec![
                 ToolArg::new(
                     "delete_view",
@@ -2994,7 +2994,7 @@ mod tests {
             )
             .unwrap();
         let json = serde_json::to_value(&out).unwrap();
-        // `headway show <card> --json`'s shape: one card, with its column.
+        // `nd headway show <card> --json`'s shape: one card, with its column.
         assert_eq!(json.as_array().map(Vec::len), Some(1), "{json}");
         assert_eq!(json[0]["ref"], json!(card_ref));
         assert!(json[0]["title"].is_string());
@@ -3012,10 +3012,10 @@ mod tests {
         s.replace("\x1b[90m", "").replace("\x1b[0m", "")
     }
 
-    /// The tools' text is the CLI's: `nd headway show` and `headway show`
+    /// The tools' text is the CLI's: `nd headway show` and `nd headway show`
     /// render one board with one function, so the tool's text, its color
     /// stripped, is byte for byte what the CLI prints into a pipe, and its
-    /// value is what `headway show --json` prints.
+    /// value is what `nd headway show --json` prints.
     #[test]
     fn show_board_renders_what_the_cli_prints() {
         let SeededEnv {
@@ -3146,7 +3146,7 @@ mod tests {
         // `limit` caps the head of the same work-order, so it's the first item.
         assert_eq!(capped[0].id, full[0].id);
 
-        // `headway next`'s lines: the plain ref, then the title.
+        // `nd headway next`'s lines: the plain ref, then the title.
         let text = ReadyItems.render(&capped).expect("next renders");
         assert_eq!(
             plain(&text),
@@ -3459,7 +3459,7 @@ mod tests {
         let ndb = app.ndb.clone();
 
         // A plaintext board with cards, and a sealed board born the way
-        // `headway seed` makes one.
+        // `nd headway seed` makes one.
         store::seed_demo_board(
             &ndb,
             &account.pubkey,

@@ -97,7 +97,7 @@ pub fn not_ready(view: &BoardView, card: &CardView) -> Option<NotReady> {
     None
 }
 
-/// Where a card sits in a container's [`work_order`]: the answer to `headway
+/// Where a card sits in a container's [`work_order`]: the answer to `nd headway
 /// seq <card>` with no position flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Place {

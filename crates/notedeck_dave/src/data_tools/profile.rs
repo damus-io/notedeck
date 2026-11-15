@@ -1,6 +1,6 @@
 //! Data tools that edit backend profiles — list, show, set, store or drop a
 //! secret, and remove one — so `nd agentium profile …` is what
-//! `agentium profile …` was.
+//! `nd agentium profile …` was.
 //!
 //! A backend profile is a named env overlay on the Claude backend, one
 //! account-wide kind-31992 event per profile (see

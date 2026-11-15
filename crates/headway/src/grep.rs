@@ -1,11 +1,11 @@
-//! Searching card text: `headway grep` and the app's `headway_grep` tool.
+//! Searching card text: `nd headway grep` and the app's `headway_grep` tool.
 //!
 //! Each matching line comes under its owner's full, pasteable ref, cards
 //! ordered by their newest matching line. [`search`] gathers the hits once;
 //! [`hits_json`] and [`text`] are the two ways to print them, shared by the
-//! CLI and the tool so `nd headway grep` prints what `headway grep` prints.
+//! CLI and the tool so `nd headway grep` prints what `nd headway grep` prints.
 //! The smart-case compilation and the match highlight are [`cli_term`]'s,
-//! shared with `agentium grep`.
+//! shared with `nd agentium grep`.
 
 use cli_term::{highlight, paint};
 use serde_json::json;

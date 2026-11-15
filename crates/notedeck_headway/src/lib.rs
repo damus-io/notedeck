@@ -900,7 +900,7 @@ impl App for Headway {
             } else {
                 // A non-default active board is never auto-created — we wait for it
                 // to sync in. Every non-default board originates from an explicit
-                // create (the GUI's "New board" or the CLI's `headway seed`, both
+                // create (the GUI's "New board" or the CLI's `nd headway seed`, both
                 // born team-of-one SNS and in the roster from that frame). Reaching
                 // here means such a board is named by the restored board pref but
                 // hasn't folded in from its origin yet. We can't auto-create it: we
@@ -1450,7 +1450,7 @@ impl Headway {
     /// switcher only offers the active board) and land on another of `boards`,
     /// persisting the switch like [`BoardNav::Switch`]. The delete is a
     /// tombstone republished through the board's own channel, so it syncs like
-    /// any board edit and `headway restore-board` undoes it.
+    /// any board edit and `nd headway restore-board` undoes it.
     fn delete_board(
         &mut self,
         ctx: &mut AppContext<'_>,

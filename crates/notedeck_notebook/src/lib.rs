@@ -147,7 +147,7 @@ pub struct Notebook {
     live: HashMap<NodeId, LiveGeometry>,
     /// This frame's eased top-left per node, in canvas coords — egui interpolates
     /// toward each node's committed position, so a node that jumped (a drag
-    /// release, or a `notebook move` over the relay) slides instead of teleporting.
+    /// release, or a `nd notebook move` over the relay) slides instead of teleporting.
     /// Read by [`Notebook::node_rect`] so nodes, edges and handles follow together.
     /// Rebuilt every frame from egui's animation manager (the real state lives
     /// there, keyed by [`move_anim_ids`]).

@@ -71,7 +71,7 @@ pub fn card_json(board: &str, card: &CardView) -> serde_json::Value {
 }
 
 /// [`card_json`] plus each review source's `text`, for a reader that asked
-/// for this card by name (`headway show <card> --json`). [`card_json`] leaves
+/// for this card by name (`nd headway show <card> --json`). [`card_json`] leaves
 /// the text out: a source runs to [`MAX_REVIEW_SOURCE_BYTES`](super::MAX_REVIEW_SOURCE_BYTES)
 /// and a whole board's JSON would carry every one of them.
 pub fn card_detail_json(board: &str, card: &CardView) -> serde_json::Value {
@@ -178,7 +178,7 @@ pub fn review_json(review: &ReviewView) -> serde_json::Value {
 
 /// Render one review source's metadata as JSON: its id, `role` (`"explainer"`
 /// or `"code"`), file `name`, size in `bytes` and timestamp. The text itself
-/// is left out (see [`card_detail_json`]); `headway show <card> --source
+/// is left out (see [`card_detail_json`]); `nd headway show <card> --source
 /// <name>` prints it.
 pub fn review_source_json(source: &ReviewSourceView) -> serde_json::Value {
     serde_json::json!({

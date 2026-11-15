@@ -7,7 +7,7 @@ description: Hand off to a fresh Dave session — ask the user what to work on n
 
 `/handoff` starts a **new** Dave agentic session in the *current worktree* and
 seeds it with the next task, so this session can wrap up while a fresh one picks
-up with clean context. It's a single `agentium spawn` call (see the `agentium`
+up with clean context. It's a single `nd agentium spawn` call (see the `agentium`
 skill): one command spawns a sibling on this host + cwd, waits for it to come up,
 and delivers the task as its first message.
 
@@ -25,7 +25,7 @@ a short TL;DR — not the card's full text.)
 - Otherwise **ask the user what the next session should work on**, then show them
   the exact prompt you're about to send and get their OK — it's the only thing
   the new agent will see.
-- Also pick the session's **title**, so it's identifiable in `agentium list`,
+- Also pick the session's **title**, so it's identifiable in `nd agentium list`,
   and set it with `--title` rather than letting it derive from the first
   message. If the task is a **headway card, the title is the card's full ref**,
   `--title headway:<board>/<word-id>`: Dave's session list draws a ref title as
@@ -33,8 +33,8 @@ a short TL;DR — not the card's full text.)
   it opens the card. Otherwise, a terse summary of the task (a few words).
 - If the task is a **headway card**, link the session to it with
   `--issue-url headway:<board>/<word-id>` (the full ref, never a bare word-id —
-  the CLI rejects one). The card is then recorded on the session itself, so
-  `agentium show` names it and `s` on the session in Dave opens it.
+  `spawn` rejects one). The card is then recorded on the session itself, so
+  `nd agentium show` names it and `s` on the session in Dave opens it.
 - If the invocation includes **`autowork`** (`/handoff autowork <task>`, or
   `--autowork`), the new session works on the `autowork` branch. Follow
   [*`autowork`: land on the `autowork` branch*](#autowork-land-on-the-autowork-branch)
@@ -47,7 +47,7 @@ a short TL;DR — not the card's full text.)
 
 ## 2. Spawn + send, in one command
 
-`agentium spawn` already defaults `--host`/`--cwd`/`--backend` to *this* session's
+`nd agentium spawn` already defaults `--host`/`--cwd`/`--backend` to *this* session's
 own state (`$AGENTIUM_SESSION`), so a bare spawn starts a sibling in the same
 worktree on the same host — no need to look them up.
 
@@ -57,7 +57,7 @@ worktree on the same host — no need to look them up.
 `agentium:` ref, so a plain `$(...)` captures it:
 
 ```bash
-ref=$(agentium spawn --successor --title "<title>" --prompt-file <scratchpad>/handoff-prompt.md --ref)
+ref=$(nd agentium spawn --successor --title "<title>" --prompt-file <scratchpad>/handoff-prompt.md --ref)
 echo "$ref"
 ```
 
@@ -67,7 +67,7 @@ matching parens and doesn't skip heredoc bodies, quoted delimiter or not. The
 first stray `)` in the prompt (a `1)` list item) or apostrophe (`don't`) ends the
 substitution. The new session gets the prompt cut there, and the rest of the
 prompt runs as shell: backticked commands in it really execute. A file read by
-`agentium` is never parsed by the shell.
+nd is never parsed by the shell.
 
 When the task is a headway card, `<title>` is its ref and
 `--issue-url headway:<board>/<word-id>` links it too; add
@@ -85,7 +85,7 @@ Dave's list and scene draw the handoff.
 it:
 
 ```bash
-agentium log "$ref" --role user -n 1 --no-pager
+nd agentium log "$ref" --role user -n 1 --no-pager
 ```
 
 The message it shows must end with your prompt's last line (the host delivers it
@@ -94,7 +94,7 @@ missing, send the missing lines from the file. `$(sed …)` reading a file is sa
 only a heredoc *inside* `$(...)` is not:
 
 ```bash
-agentium send "$ref" "$(sed -n '<first missing line number>,$p' <scratchpad>/handoff-prompt.md)"
+nd agentium send "$ref" "$(sed -n '<first missing line number>,$p' <scratchpad>/handoff-prompt.md)"
 ```
 
 That's the whole handoff. Notes:
@@ -106,9 +106,9 @@ That's the whole handoff. Notes:
   `hostname` / `pwd`).
 - `--ref` fails, printing nothing on stdout, when the host doesn't answer in
   time. The spawn command and its prompt were still published, so run
-  `agentium list` before spawning again; never re-run blind.
-- An `agentium` older than `--ref` rejects it as an unknown flag. Use
-  `--wait --json` piped straight into `jq -r .session` instead (still with
+  `nd agentium list` before spawning again; never re-run blind.
+- If `--ref` is rejected as an unknown flag, the running notedeck predates it.
+  Use `--wait --json` piped straight into `jq -r .session` instead (still with
   `--prompt-file <path>`, still no heredoc).
 
 ## `autowork`: land on the `autowork` branch
@@ -140,7 +140,7 @@ worktree's branch onto it (`git rebase autowork`); if that fails, stop and repor
 your commit passes the repo's checks, land it on `autowork` with the *Land* block in the
 *Parallel chains* section of ~/.claude/skills/autowork/SKILL.md. Read that block from
 the file; do not invoke the `autowork` skill, since this is not a chain. Quote the landed
-hash in the card's done comment and pass it to `headway review --commit`.
+hash in the card's done comment and pass it to `nd headway review --commit`.
 ```
 
 The spawned session doesn't load any skill, so this paragraph is the only way it learns
@@ -157,7 +157,7 @@ prompt rides the command.
 **Never re-run the spawn on a timeout.** Check first:
 
 ```bash
-agentium list --cwd "$(pwd)"
+nd agentium list --cwd "$(pwd)"
 ```
 
 If the session is there, the handoff worked — take its ref and report it. Only if
@@ -175,21 +175,21 @@ to retry blindly — check `list` first.
 
 Tell the user the new session's ref and how to watch it:
 
-    handed off to <ref> — follow it with `agentium log <ref> -f`
+    handed off to <ref> — follow it with `nd agentium log <ref> -f`
 
 Then finish wrapping up *this* session per CLAUDE.md: commit, build and publish
-the explainer (`visual-explainer` skill), `headway review <card> --explainer
+the explainer (`visual-explainer` skill), `nd headway review <card> --explainer
 <url>`, then the done comment with the hash, title and explainer URL, and move
 the card. The handoff doesn't excuse leaving the current work half-done.
 
 After an `autowork` handoff, your commit is already landed (step 1 above), and the new
 session may already have moved this worktree's `HEAD`. So pass your landed hash to
-`headway review <card> --commit <hash>` instead of relying on its `HEAD` default.
+`nd headway review <card> --commit <hash>` instead of relying on its `HEAD` default.
 
 ## Notes
 
-- `agentium` needs a signing key; inside a Dave session it's already configured.
-  If a command complains you're not logged in, see the `agentium` skill's
-  "Logging in" section.
+- `nd agentium` runs in the notedeck on this machine and signs as its account,
+  so there is no key to configure. If nd exits 2, no notedeck could be reached
+  or started; say so rather than working around it.
 - One handoff = one new session. To fan out several tasks, repeat `/handoff` (or
   spawn once per task); don't cram multiple unrelated tasks into one prompt.

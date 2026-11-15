@@ -194,7 +194,7 @@ pub fn comment_action(
         }
         None => {
             let record = pick_record(&found.reviews, flags.record.as_deref())?.ok_or(
-                "this card has no review record to comment on (`headway review` adds one)",
+                "this card has no review record to comment on (`nd headway review` adds one)",
             )?;
             let location = review_location(record, flags)?;
             (

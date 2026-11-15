@@ -4,29 +4,33 @@ This document captures the current architecture, coding conventions, and design 
 
 ## Work Tracking
 
-All work is tracked on the **Headway board** via the `headway` CLI, not GitHub
+All work is tracked on the **Headway board** via `nd headway`, not GitHub
 Issues. See the `headway` skill (`.claude/skills/headway/SKILL.md`) for the full
 command reference; the board flows
-`Backlog → Todo → In Progress → In Review → Done`.
+`Backlog → Todo → In Progress → In Review → Done`. `nd` is notedeck's one CLI
+(`nd headway`, `nd agentium`, `nd notebook`; see the `nd` skill). It runs each
+command in the notedeck on this machine, starting a headless one when none is
+running, and signs as that notedeck's account.
 
-- **Before starting work**: `headway show` to read the board. If a card for the
-  work exists, move it to In Progress: `headway move <card> --col in-progress`.
-  If none exists, add one: `headway add "<title>" --col in-progress`. Then
+- **Before starting work**: `nd headway show --board <board>` to read the
+  board. If a card for the work exists, move it to In Progress: `nd headway move
+  <card> --col in-progress`. If none exists, add one: `nd headway add "<title>"
+  --board <board> --col in-progress`. Then
   comment on the card that work has begun, and if you are a Dave agentic session
-  include your own `agentium:` session ref in that comment (e.g. `headway comment
+  include your own `agentium:` session ref in that comment (e.g. `nd headway comment
   <card> "starting work (agentium:<word-id>): ..."`) so a reviewer can jump to
   the session transcript for in-progress work, not just finished work. Find your
   ref with `echo "$AGENTIUM_SESSION"` — see the `agentium` skill
   (`.claude/skills/agentium/SKILL.md`) for the fallback when that's unset.
 - **Task breakdown**: Use one card per unit of work; `desc`/`label` for detail.
 - **When done with the work**: Always commit your changes (see Committing
-  below), then record the commit on the card with `headway review <card>`, run
+  below), then record the commit on the card with `nd headway review <card>`, run
   from the checkout (add `--explainer <url>` when there is an explainer page).
   It captures the commit, branch, host, repo path and your `agentium:` ref from
-  git and `$AGENTIUM_SESSION`, so headway can later show the diff; see `headway
+  git and `$AGENTIUM_SESSION`, so headway can later show the diff; see `nd headway
   review --help`. Then comment on the card with the commit hash **and its
   title** so the reference survives a rebase (which changes the hash but not the
-  title) and future iterations can see what's already been done: `headway
+  title) and future iterations can see what's already been done: `nd headway
   comment <card> "committed <hash> (\"<title>\"): ..."`. Grab the hash-and-title
   form with `git --no-pager show -s --pretty=fixes <commit>` (it prints `Fixes:
   <hash> ("<title>")`; reuse the `<hash> ("<title>")` part). If you are a Dave
@@ -39,13 +43,14 @@ command reference; the board flows
   note anything specific that should be tested or interesting things worth
   flagging beyond the commit message that would help someone reviewing the
   implementation. Then move the card to In Review so the change can be tested:
-  `headway move <card> --col in-review`. Don't leave finished work uncommitted
+  `nd headway move <card> --col in-review`. Don't leave finished work uncommitted
   or sitting in In Progress. Leave the card in In Review until verified.
 - **On completion**: Once the change is verified, move the card to Done:
-  `headway move <card> --col done`.
-- Cards are addressed by a short id prefix (from `show`); always `show` before
-  editing. If a command fails because you're not logged in, ask the user to run
-  `headway login`.
+  `nd headway move <card> --col done`.
+- Cards are addressed by their full `headway:<board>/<word-id>` ref or a short
+  id prefix (from `show`); always `show` before editing. If nd exits 2, no
+  notedeck could be reached or started: tell the user rather than working
+  around it.
 
 **What you wanted and worked around goes in `docs/hindsight/`.** A helper you
 wrote and deleted, a check that would have caught your miss, a seam the code
@@ -66,7 +71,7 @@ test -p bin_testing --test hindsight`.
 ## Committing
 
 After a change lands, move its Headway card to In Review
-(`headway move <card> --col in-review`); move it to Done once it's verified.
+(`nd headway move <card> --col in-review`); move it to Done once it's verified.
 
 Every commit must include a Changelog git trailer. For user-facing changes, use `Changelog-{Added,Changed,Fixed,Removed}`. For internal changes (refactors, CI, tooling, docs, etc), use `Changelog-None:`. Examples:
 

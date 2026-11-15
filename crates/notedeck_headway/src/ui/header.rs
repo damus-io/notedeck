@@ -309,7 +309,7 @@ fn delete_board_confirm(
             .button(egui::RichText::new("Delete").color(theme.destructive))
             .on_hover_text(
                 "Removes the board from your boards. Its cards are kept, and \
-                 `headway restore-board` brings it back.",
+                 `nd headway restore-board` brings it back.",
             )
             .clicked();
         let cancel = ui.button("Cancel").clicked();

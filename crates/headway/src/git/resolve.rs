@@ -806,7 +806,7 @@ mod tests {
         );
     }
 
-    /// A review record as `headway review` would write it for `sha` in `dir`,
+    /// A review record as `nd headway review` would write it for `sha` in `dir`,
     /// claiming to come from `host`.
     fn record(dir: &Path, sha: &str, host: &str) -> ReviewFields {
         ReviewFields {
