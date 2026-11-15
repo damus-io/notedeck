@@ -37,6 +37,11 @@ pub enum ToolArgType {
     /// the client resolves each as it does a [`Path`](Self::Path)
     /// (`x-nd-kind: "paths"`).
     Paths,
+    /// A list of strings (JSON `array` of `string`) whose values are kept
+    /// whole. On a command line its flag repeats, one value each, never
+    /// comma-split, for values that may hold a comma, such as `NAME=VALUE`
+    /// env assignments (`x-nd-kind: "strings"`).
+    Strings,
 }
 
 impl ToolArgType {
@@ -49,7 +54,7 @@ impl ToolArgType {
             Self::Boolean => "boolean",
             Self::Enum(_) => "string",
             Self::Path => "string",
-            Self::List | Self::Paths => "array",
+            Self::List | Self::Paths | Self::Strings => "array",
         }
     }
 
@@ -60,6 +65,7 @@ impl ToolArgType {
             Self::Path => Some("path"),
             Self::List => Some("list"),
             Self::Paths => Some("paths"),
+            Self::Strings => Some("strings"),
             _ => None,
         }
     }
@@ -521,7 +527,7 @@ impl ToolSpec {
                 props.insert("default".to_string(), default.clone());
             }
 
-            if let ToolArgType::List | ToolArgType::Paths = &arg.typ {
+            if let ToolArgType::List | ToolArgType::Paths | ToolArgType::Strings = &arg.typ {
                 props.insert("items".to_string(), serde_json::json!({"type": "string"}));
             }
 

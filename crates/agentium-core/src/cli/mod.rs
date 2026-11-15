@@ -9,6 +9,7 @@ pub mod control;
 pub mod grep;
 pub mod list;
 pub mod log;
+pub mod profile;
 pub mod show;
 pub mod spawn;
 pub mod term;

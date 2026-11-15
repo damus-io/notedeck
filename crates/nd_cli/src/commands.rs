@@ -479,6 +479,9 @@ fn given_value<'g, 'a: 'g>(
     if arg.client == Some(ClientKind::Paths) {
         return paths(arg, &typed, caller).map(Some);
     }
+    if arg.client == Some(ClientKind::Strings) {
+        return Ok(Some(strings(&typed)));
+    }
     let Some(last) = typed.last() else {
         return Ok(None);
     };
@@ -494,6 +497,7 @@ fn fallback(arg: &Arg, caller: &dyn Caller) -> Result<Option<String>, String> {
         return match arg.client {
             Some(ClientKind::List) => Ok(Some(list(&[value.as_str()]))),
             Some(ClientKind::Paths) => paths(arg, &[value.as_str()], caller).map(Some),
+            Some(ClientKind::Strings) => Ok(Some(strings(&[value.as_str()]))),
             _ => resolved(arg, &value, caller).map(Some),
         };
     }
@@ -541,6 +545,11 @@ fn list(values: &[&str]) -> String {
         .filter(|item| !item.is_empty())
         .collect();
     serde_json::to_string(&items).expect("strings serialize")
+}
+
+/// `values` as a JSON array of strings, each kept as it was typed.
+fn strings(values: &[&str]) -> String {
+    serde_json::to_string(values).expect("strings serialize")
 }
 
 /// The text a file form names: stdin for `-`, else the file at `path`
@@ -697,7 +706,7 @@ fn command_page(path: &[&str], candidates: &[&Entry]) -> String {
             if arg.client == Some(ClientKind::List) {
                 text.push_str(" Repeat it, or give a comma list.");
             }
-            if arg.client == Some(ClientKind::Paths) {
+            if matches!(arg.client, Some(ClientKind::Paths | ClientKind::Strings)) {
                 text.push_str(" Repeat it for more than one.");
             }
             if let Some(var) = arg.env {
@@ -875,9 +884,10 @@ mod tests {
                             "file": {"type": "string", "description": "A file.", "x-nd-kind": "path"},
                             "sources": {"type": "array", "items": {"type": "string"}, "description": "Files.", "x-nd-long": "source", "x-nd-kind": "paths"},
                             "session": {"type": "string", "description": "Who.", "x-nd-env": "AGENTIUM_SESSION"},
+                            "env": {"type": "array", "items": {"type": "string"}, "description": "Vars.", "x-nd-kind": "strings"},
                         },
                         "required": ["card"],
-                        "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "sources", "session"],
+                        "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "sources", "session", "env"],
                     }),
                 )
             },
@@ -1318,6 +1328,18 @@ mod tests {
 
         let err = args_in(&["headway", "edit", "c", "--source", "gone.md"], &root, "").unwrap_err();
         assert!(err.starts_with("sources: 'gone.md': "), "{err}");
+    }
+
+    /// A strings flag repeats, one value each, kept whole: a comma or a
+    /// space stays in its value.
+    #[test]
+    fn a_strings_flag_repeats_and_keeps_each_whole() {
+        let Ok(Action::Call { args, .. }) =
+            run(&["headway", "edit", "c", "--env", "A=x,y", "--env= B=z "])
+        else {
+            panic!("a strings flag runs");
+        };
+        assert_eq!(args["env"], json!(["A=x,y", " B=z "]));
     }
 
     /// A list flag repeats, each value may be a comma list, and blanks

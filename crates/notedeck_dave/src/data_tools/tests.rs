@@ -6,7 +6,7 @@
 //! before a stopped Dave has updated once.
 
 use super::*;
-use agentium_core::config::{RunConfig, AI_RUN_CONFIG_KIND};
+use agentium_core::config::{RunConfig, AI_BACKEND_PROFILE_KIND, AI_RUN_CONFIG_KIND};
 use agentium_core::messages::{SubagentInfo, SubagentStatus};
 use agentium_core::session_events::{
     build_permission_request_event, build_run_config_event_at, build_subagent_event,
@@ -61,6 +61,7 @@ fn live() -> Live {
             AI_CONVERSATION_KIND as u64,
             AI_SOURCE_DATA_KIND as u64,
             AI_RUN_CONFIG_KIND as u64,
+            AI_BACKEND_PROFILE_KIND as u64,
             AI_SESSION_COMMAND_KIND as u64,
         ])
         .build();
@@ -783,4 +784,5 @@ fn every_tool_is_an_agentium_command() {
 }
 
 mod control;
+mod profile;
 mod stream;

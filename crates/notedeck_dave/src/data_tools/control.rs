@@ -82,17 +82,17 @@ pub(super) fn tools() -> Vec<RegisteredTool> {
 
 /// The selected account, ready to publish: whose sessions a selector
 /// resolves among, and an engine signing as it.
-struct Writer {
-    author: Pubkey,
-    secret: [u8; 32],
-    engine: Engine,
+pub(super) struct Writer {
+    pub(super) author: Pubkey,
+    pub(super) secret: [u8; 32],
+    pub(super) engine: Engine,
 }
 
 impl Writer {
     /// The selected account's writer, or an error a person can act on. A
     /// read-only context (no publisher) refuses too, so a command is never
     /// published where the caller asked for none.
-    fn new(cx: &ToolContext) -> Result<Self, String> {
+    pub(super) fn new(cx: &ToolContext) -> Result<Self, String> {
         if cx.publish.is_none() {
             return Err("publishing is unavailable in this context".to_owned());
         }
@@ -111,7 +111,7 @@ impl Writer {
     }
 
     /// A read transaction on the engine's db.
-    fn txn(&self) -> Result<Transaction, String> {
+    pub(super) fn txn(&self) -> Result<Transaction, String> {
         Transaction::new(self.engine.ndb()).map_err(|e| format!("opening a db transaction: {e}"))
     }
 
@@ -169,7 +169,7 @@ impl Target {
 }
 
 /// An event's id as hex.
-fn event_hex(built: &BuiltEvent) -> String {
+pub(super) fn event_hex(built: &BuiltEvent) -> String {
     hex::encode(built.note_id)
 }
 
