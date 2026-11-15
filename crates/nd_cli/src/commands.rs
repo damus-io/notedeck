@@ -217,6 +217,7 @@ pub fn resolve(
 ) -> Result<Action, String> {
     let entries = entries(tools);
     let want_help = help || words.iter().any(|w| w == "-h" || w == "--help");
+    let words = &hoist_flags(&entries, words);
     let leading: Vec<&str> = words
         .iter()
         .map(String::as_str)
@@ -276,6 +277,62 @@ pub fn resolve(
         signer: caller::signer_for(entry.tool, caller)?,
         streams: entry.tool.streams,
     })
+}
+
+/// `words` with any flag typed among the command path's words moved after
+/// them, so `headway --board b show c` reads as `headway show --board b c`,
+/// as the old per-app CLIs, which took their globals before the verb, did.
+/// A flag takes the next word with it when a tool in the namespace reads a
+/// value for it (or it is `--color`); one no tool there knows is moved
+/// alone, for [`Line::read`] to refuse. Words after `--` stay put.
+fn hoist_flags(entries: &[Entry], words: &[String]) -> Vec<String> {
+    let Some(ns) = words.first() else {
+        return Vec::new();
+    };
+    let in_ns: Vec<&Entry> = entries.iter().filter(|e| e.path()[0] == *ns).collect();
+    let mut path: Vec<String> = vec![ns.clone()];
+    let mut hoisted: Vec<String> = Vec::new();
+    let mut rest = words[1..].iter();
+    let mut tail: Vec<String> = Vec::new();
+    while let Some(word) = rest.next() {
+        if word == "--" {
+            tail.push(word.clone());
+            break;
+        }
+        if let Some(flag) = flag_name(word) {
+            hoisted.push(word.clone());
+            if !flag.contains('=') && takes_value(&in_ns, flag) {
+                hoisted.extend(rest.next().cloned());
+            }
+            continue;
+        }
+        let deeper = in_ns.iter().any(|e| {
+            e.path().len() > path.len()
+                && e.path()[..path.len()] == path[..]
+                && e.path()[path.len()] == *word
+        });
+        if !deeper {
+            tail.push(word.clone());
+            break;
+        }
+        path.push(word.clone());
+    }
+    path.extend(hoisted);
+    path.extend(tail);
+    path.extend(rest.cloned());
+    path
+}
+
+/// Whether `--<flag>` takes the next word as its value on some tool in
+/// `entries`: nd's own `--color`, or a tool argument that isn't a switch.
+fn takes_value(entries: &[&Entry], flag: &str) -> bool {
+    if flag == "color" {
+        return true;
+    }
+    entries
+        .iter()
+        .filter_map(|e| e.flag(flag))
+        .any(|hit| !hit.arg.is_switch() || hit.file)
 }
 
 /// The tools `path` runs, in the order a command line tries them: most
@@ -1328,6 +1385,25 @@ mod tests {
 
         let err = args_in(&["headway", "edit", "c", "--source", "gone.md"], &root, "").unwrap_err();
         assert!(err.starts_with("sources: 'gone.md': "), "{err}");
+    }
+
+    /// A flag typed before the verb, as the old CLIs took their globals,
+    /// reads as if typed after it, value and all; `--` still ends flags.
+    #[test]
+    fn a_flag_before_the_verb_moves_after_it() {
+        let Ok(Action::Call {
+            tool, args, output, ..
+        }) = run(&["headway", "--json", "--labels", "a", "edit", "c", "-l", "b"])
+        else {
+            panic!("a leading flag runs");
+        };
+        assert_eq!(tool, "headway_edit");
+        assert_eq!(args["labels"], json!(["a", "b"]));
+        assert!(output.json);
+        let Ok(Action::Call { args, .. }) = run(&["headway", "edit", "--", "--labels", "x"]) else {
+            panic!("-- runs");
+        };
+        assert_eq!(args["card"], "--labels", "a word after -- is not a flag");
     }
 
     /// A strings flag repeats, one value each, kept whole: a comma or a
