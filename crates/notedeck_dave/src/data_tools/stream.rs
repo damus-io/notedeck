@@ -185,7 +185,7 @@ impl Follow {
         messages: &mut SubscriptionStream,
         states: &mut SubscriptionStream,
     ) -> Result<(), String> {
-        if !self.tail(emitter)? {
+        if !self.tail(emitter).await? {
             return Ok(());
         }
         loop {
@@ -203,14 +203,24 @@ impl Follow {
     /// Show the opening tail, `--last` and all, and move the cursor past the
     /// whole conversation, not only what was shown. `false` once the
     /// subscriber is gone.
-    fn tail(&mut self, emitter: &mut Emitter) -> Result<bool, String> {
-        let txn = txn(&self.ndb)?;
-        let loaded =
-            load_session_messages_for_author(&self.ndb, &txn, &self.author, &self.session_id);
-        let shown = self.filter.select(&loaded.messages);
-        let open = emit_messages(emitter, shown.into_iter(), &mut self.printed_any);
+    ///
+    /// Without `--last` the tail is the whole history, which can outrun the
+    /// socket's queue many times over, so it waits for the subscriber to
+    /// read rather than dropping it: a long session's follow shows all of
+    /// it. Live messages after it don't wait.
+    async fn tail(&mut self, emitter: &mut Emitter) -> Result<bool, String> {
+        let loaded = {
+            let txn = txn(&self.ndb)?;
+            load_session_messages_for_author(&self.ndb, &txn, &self.author, &self.session_id)
+        };
         self.last_order = loaded.max_order;
-        Ok(open)
+        for message in self.filter.select(&loaded.messages) {
+            let text = message_text(message, &mut self.printed_any);
+            if !emitter.emit_waiting(&message.to_json(), Some(text)).await {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Show the messages past the cursor that the filter keeps, and move it.
@@ -271,25 +281,32 @@ impl<'a> StatusEvent<'a> {
     }
 }
 
-/// Emit each of `messages` as its role-tagged object, its text set off from
-/// the last one shown by a blank line. `false` once the subscriber is gone.
+/// Emit each of `messages` as its role-tagged object, with its
+/// [`message_text`]. `false` once the subscriber is gone.
 fn emit_messages<'m>(
     emitter: &mut Emitter,
     messages: impl Iterator<Item = &'m Message>,
     printed_any: &mut bool,
 ) -> bool {
     for message in messages {
-        let mut text = String::new();
-        if *printed_any {
-            text.push('\n');
-        }
-        text.push_str(&render_message(message, true));
-        *printed_any = true;
+        let text = message_text(message, printed_any);
         if !emitter.emit(&message.to_json(), Some(text)) {
             return false;
         }
     }
     true
+}
+
+/// `message` as `log` prints it, set off from the last one shown by a blank
+/// line, and noted as shown.
+fn message_text(message: &Message, printed_any: &mut bool) -> String {
+    let mut text = String::new();
+    if *printed_any {
+        text.push('\n');
+    }
+    text.push_str(&render_message(message, true));
+    *printed_any = true;
+    text
 }
 
 // ---------------------------------------------------------------------------

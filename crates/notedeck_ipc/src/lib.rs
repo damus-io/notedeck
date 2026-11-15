@@ -35,7 +35,7 @@ mod server;
 #[cfg(unix)]
 pub use client::{probe, Client};
 #[cfg(unix)]
-pub use server::{Connection, EventQueue, Incoming, Listener, Watch};
+pub use server::{Connection, EventQueue, Incoming, Listener, Pushed, Watch, DROPPED};
 
 /// The newest protocol version this crate speaks. A request carries the
 /// oldest version that spells it ([`Request::version`]), and is answered in

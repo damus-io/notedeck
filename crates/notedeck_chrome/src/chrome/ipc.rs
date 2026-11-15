@@ -17,8 +17,10 @@
 //! A [streaming tool](notedeck::StreamTool) is subscribed to, not called: its
 //! job runs as a tokio task, emitting into the connection's bounded
 //! [`EventQueue`](notedeck_ipc::EventQueue), which a writer thread of its own
-//! drains. A client too slow to keep up is dropped rather than waited on, and
-//! one that hangs up ends the task.
+//! drains. A client too slow to keep up with live events is dropped rather
+//! than waited on, and told so; a stream's opening history waits for it
+//! instead ([`notedeck::Emitter::emit_waiting`]), so a long one isn't cut
+//! short. One that hangs up ends the task.
 //!
 //! An edit answers once its write reads back. A data tool that wrote notes
 //! names them (see [`Rendered::written`](notedeck::Rendered::written)), and
@@ -48,7 +50,8 @@ use notedeck_ipc::{IntentStatus, Reply, Request, Response, Signer, ToolInfo};
 const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How many events a stream holds for a client that hasn't read them yet
-/// before it drops the client: a burst of a session's messages, with room.
+/// before a live event drops the client: a burst of a session's messages,
+/// with room. An opening history waits on it instead of dropping.
 #[cfg(unix)]
 const STREAM_QUEUE: usize = 256;
 
@@ -318,30 +321,63 @@ fn start_stream(job: StreamJob, mut connection: notedeck_ipc::Connection) {
         return;
     };
     let (hang_up, gone) = tokio::sync::watch::channel(false);
-    let queue = match connection.into_stream(STREAM_QUEUE, move || {
-        let _ = hang_up.send(true);
-    }) {
+    let room = std::sync::Arc::new(tokio::sync::Notify::new());
+    let roomy = std::sync::Arc::clone(&room);
+    let queue = match connection.into_stream(
+        STREAM_QUEUE,
+        move || roomy.notify_one(),
+        move || {
+            let _ = hang_up.send(true);
+        },
+    ) {
         Ok(queue) => queue,
         Err(err) => {
             tracing::warn!("ipc: no writer thread for a stream: {err}");
             return;
         }
     };
-    runtime.spawn(job(notedeck::Emitter::new(QueueSink(queue), gone)));
+    runtime.spawn(job(notedeck::Emitter::new(QueueSink { queue, room }, gone)));
 }
 
 /// A stream's events, on their way into its connection's queue.
 #[cfg(unix)]
-struct QueueSink(notedeck_ipc::EventQueue);
+struct QueueSink {
+    queue: notedeck_ipc::EventQueue,
+    /// Notified by the writer thread each time it takes a line off the
+    /// queue, and as the stream ends, so a waiting send tries again.
+    room: std::sync::Arc<tokio::sync::Notify>,
+}
 
 #[cfg(unix)]
 impl notedeck::EventSink for QueueSink {
     fn send(&mut self, event: serde_json::Value, text: Option<String>) -> bool {
-        self.0.push(&Response::ok(Reply::Event { event, text }))
+        self.queue.push(&Response::ok(Reply::Event { event, text }))
+    }
+
+    /// Queue the event once there's room. `notify_one` keeps a permit when
+    /// nobody waits yet, so a line taken between a full push and the wait
+    /// still wakes it.
+    fn send_waiting<'s>(
+        &'s mut self,
+        event: serde_json::Value,
+        text: Option<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 's>> {
+        use notedeck_ipc::Pushed;
+
+        let response = Response::ok(Reply::Event { event, text });
+        Box::pin(async move {
+            loop {
+                match self.queue.try_push(&response) {
+                    Pushed::Queued => return true,
+                    Pushed::Closed => return false,
+                    Pushed::Full => self.room.notified().await,
+                }
+            }
+        })
     }
 
     fn fail(&mut self, message: String) {
-        self.0.push(&Response::error(message));
+        self.queue.push(&Response::error(message));
     }
 }
 

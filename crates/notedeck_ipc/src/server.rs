@@ -7,8 +7,12 @@
 //!
 //! A subscribe's connection becomes an [`EventQueue`]: the host pushes event
 //! lines into a bounded queue without waiting, and a writer thread of the
-//! connection's own drains it to the client. A client that reads too slowly
-//! fills the queue and is dropped, so a stream never waits on its reader.
+//! connection's own drains it to the client. A live event that finds the
+//! queue full drops the client, and the writer tells it so on its last line,
+//! so a stream never waits on a reader that stopped. A burst the producer
+//! knows is finite (a follow's opening history) can instead wait for room
+//! ([`EventQueue::try_push`]); a reader that stops outright is still dropped
+//! once a write times out.
 
 use crate::{Request, Response};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -38,6 +42,10 @@ const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// How often a stream's writer thread, with nothing to write, checks whether
 /// its client hung up: the longest a stream outlives its reader.
 const HANGUP_CHECK: Duration = Duration::from_millis(250);
+
+/// The last line a client dropped for falling behind reads, so it can tell
+/// that from a stream that ended.
+pub const DROPPED: &str = "dropped: the reader fell too far behind";
 
 /// The socket notedeck listens on, and the requests waiting to be served.
 pub struct Listener {
@@ -128,32 +136,40 @@ impl Connection {
     }
 
     /// Turn the connection into a stream's: an [`EventQueue`] holding up to
-    /// `capacity` lines, drained by a writer thread of its own. `on_close`
-    /// runs on that thread once the stream is over for any reason (the
-    /// client hung up or fell behind, or the queue was dropped and drained),
-    /// so the producer can stop without waiting for its next event.
+    /// `capacity` lines, drained by a writer thread of its own.
+    ///
+    /// Both hooks run on that thread. `on_room` runs each time it takes a
+    /// line off the queue, and once more as the stream ends, so a producer
+    /// waiting on a full queue ([`EventQueue::try_push`]) wakes to find room
+    /// or the end; it should only nudge the producer. `on_close` runs once
+    /// the stream is over for any reason (the client hung up or fell behind,
+    /// or the queue was dropped and drained), so the producer can stop
+    /// without waiting for its next event.
     pub fn into_stream(
         self,
         capacity: usize,
+        on_room: impl Fn() + Send + 'static,
         on_close: impl FnOnce() + Send + 'static,
     ) -> io::Result<EventQueue> {
         self.stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT))?;
         let (lines, queued) = mpsc::sync_channel(capacity);
-        let open = Arc::new(AtomicBool::new(true));
+        let state = Arc::new(StreamState::default());
         let writer = StreamWriter {
             stream: self.stream,
             queued,
-            open: Arc::clone(&open),
+            state: Arc::clone(&state),
+            version: self.version,
         };
         thread::Builder::new()
             .name("ipc-stream".to_owned())
             .spawn(move || {
-                writer.run();
+                writer.run(&on_room);
+                on_room();
                 on_close();
             })?;
         Ok(EventQueue {
             lines,
-            open,
+            state,
             version: self.version,
         })
     }
@@ -164,34 +180,79 @@ impl Connection {
 /// has been written.
 pub struct EventQueue {
     lines: mpsc::SyncSender<String>,
-    /// Cleared when the stream is over, by either end.
-    open: Arc<AtomicBool>,
+    state: Arc<StreamState>,
     /// The version the subscribe was spelled in.
     version: u32,
+}
+
+/// What [`EventQueue::try_push`] did with a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pushed {
+    /// It's queued for the client.
+    Queued,
+    /// The queue has no room yet. The stream is still open: try again once
+    /// `on_room` runs.
+    Full,
+    /// The stream is over: stop producing.
+    Closed,
+}
+
+/// How a stream stands, shared by its [`EventQueue`] and its writer.
+#[derive(Default)]
+struct StreamState {
+    /// Set when the stream is over, by either end.
+    closed: AtomicBool,
+    /// Set when a push found the queue full and dropped the client, so the
+    /// writer's last line says why.
+    behind: AtomicBool,
+}
+
+impl StreamState {
+    fn is_open(&self) -> bool {
+        !self.closed.load(Ordering::Relaxed)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+    }
 }
 
 impl EventQueue {
     /// Queue `response` as the next line, without waiting. `false` when the
     /// stream is over: the client hung up, or reads so slowly that the queue
-    /// is full, which drops it. Stop producing then.
+    /// is full, which drops it (its last line says so). Stop producing then.
     pub fn push(&self, response: &Response) -> bool {
-        if !self.is_open() {
-            return false;
-        }
-        match self.lines.try_send(response.line_as(self.version)) {
-            Ok(()) => true,
-            Err(mpsc::TrySendError::Full(_)) => {
+        match self.try_push(response) {
+            Pushed::Queued => true,
+            Pushed::Full => {
                 // Too slow to keep up: the writer hangs up on it.
-                self.open.store(false, Ordering::Relaxed);
+                self.state.behind.store(true, Ordering::Relaxed);
+                self.state.close();
                 false
             }
-            Err(mpsc::TrySendError::Disconnected(_)) => false,
+            Pushed::Closed => false,
+        }
+    }
+
+    /// Queue `response` as the next line if there's room, without waiting
+    /// and without dropping the client when there isn't: a producer with a
+    /// finite burst to send waits for `on_room` and tries again, so a slow
+    /// reader gets all of it. One that stops reading is still dropped once
+    /// the writer's write to it times out.
+    pub fn try_push(&self, response: &Response) -> Pushed {
+        if !self.is_open() {
+            return Pushed::Closed;
+        }
+        match self.lines.try_send(response.line_as(self.version)) {
+            Ok(()) => Pushed::Queued,
+            Err(mpsc::TrySendError::Full(_)) => Pushed::Full,
+            Err(mpsc::TrySendError::Disconnected(_)) => Pushed::Closed,
         }
     }
 
     /// Whether the stream still has a client to write to.
     pub fn is_open(&self) -> bool {
-        self.open.load(Ordering::Relaxed)
+        self.state.is_open()
     }
 }
 
@@ -199,19 +260,25 @@ impl EventQueue {
 struct StreamWriter {
     stream: UnixStream,
     queued: mpsc::Receiver<String>,
-    open: Arc<AtomicBool>,
+    state: Arc<StreamState>,
+    /// The version the subscribe was spelled in, for the [`DROPPED`] line.
+    version: u32,
 }
 
 impl StreamWriter {
-    /// Write each queued line until the queue is dropped and drained, the
-    /// client hangs up, a write fails, or the queue is closed for a slow
-    /// client; then hang up.
-    fn run(self) {
-        while self.open.load(Ordering::Relaxed) {
+    /// Write each queued line, running `on_room` after taking each, until
+    /// the queue is dropped and drained, the client hangs up, a write fails,
+    /// or the queue is closed for a slow client; then hang up. A client
+    /// dropped for falling behind reads [`DROPPED`] last, unless the line
+    /// before it failed to write, which leaves no line to follow.
+    fn run(self, on_room: &dyn Fn()) {
+        let mut torn = false;
+        while self.state.is_open() {
             match self.queued.recv_timeout(HANGUP_CHECK) {
-                Ok(mut line) => {
-                    line.push('\n');
-                    if (&self.stream).write_all(line.as_bytes()).is_err() {
+                Ok(line) => {
+                    on_room();
+                    if self.write_line(line).is_err() {
+                        torn = true;
                         break;
                     }
                 }
@@ -223,8 +290,17 @@ impl StreamWriter {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        self.open.store(false, Ordering::Relaxed);
+        self.state.close();
+        if !torn && self.state.behind.load(Ordering::Relaxed) {
+            let _ = self.write_line(Response::error(DROPPED).line_as(self.version));
+        }
         let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
+    /// Write `line` and its newline.
+    fn write_line(&self, mut line: String) -> io::Result<()> {
+        line.push('\n');
+        (&self.stream).write_all(line.as_bytes())
     }
 }
 
@@ -410,10 +486,12 @@ mod tests {
     }
 
     /// A subscriber and its stream: the client's connection, and the
-    /// server's queue with a channel that hears when the stream closes.
+    /// server's queue with channels that hear when there's room in it and
+    /// when the stream closes.
     struct Subscribed {
         client: Client,
         queue: EventQueue,
+        room: mpsc::Receiver<()>,
         closed: mpsc::Receiver<()>,
     }
 
@@ -430,17 +508,41 @@ mod tests {
             .unwrap();
         let incoming = next(&listener);
         assert!(matches!(incoming.request, Request::Subscribe { .. }));
+        let (roomy, room) = mpsc::channel();
         let (tx, closed) = mpsc::channel();
         let queue = incoming
             .connection
-            .into_stream(capacity, move || {
-                let _ = tx.send(());
-            })
+            .into_stream(
+                capacity,
+                move || {
+                    let _ = roomy.send(());
+                },
+                move || {
+                    let _ = tx.send(());
+                },
+            )
             .unwrap();
         Subscribed {
             client,
             queue,
+            room,
             closed,
+        }
+    }
+
+    /// An event `n` padded to `pad` bytes, so a few fill the socket's buffer.
+    fn padded(n: usize, pad: usize) -> Response {
+        Response::ok(Reply::Event {
+            event: serde_json::json!({ "n": n, "pad": "x".repeat(pad) }),
+            text: None,
+        })
+    }
+
+    /// The `n` of an event line `response`, failing on anything else.
+    fn event_n(response: &Response) -> u64 {
+        match &response.outcome {
+            Outcome::Ok(Reply::Event { event, .. }) => event["n"].as_u64().unwrap(),
+            other => panic!("expected an event, got {other:?}"),
         }
     }
 
@@ -462,6 +564,7 @@ mod tests {
             mut client,
             queue,
             closed,
+            ..
         } = subscribe(&path, 16);
         for n in 0..5 {
             assert!(queue.push(&event(n)));
@@ -480,6 +583,7 @@ mod tests {
             client,
             queue,
             closed,
+            ..
         } = subscribe(&path, 16);
         assert!(queue.push(&event(0)));
         drop(client);
@@ -500,6 +604,7 @@ mod tests {
             client,
             queue,
             closed,
+            ..
         } = subscribe(&path, 4);
         // Big enough lines that the socket's buffer fills long before the
         // pushes run out.
@@ -523,6 +628,84 @@ mod tests {
             .recv_timeout(STREAM_WRITE_TIMEOUT * 3)
             .expect("the writer gives up on the reader");
         drop(client);
+    }
+
+    /// A client dropped for falling behind reads why on its last line,
+    /// after the events it was sent and before the end, so `nd` can tell
+    /// that from a stream that ended.
+    #[test]
+    fn a_dropped_client_reads_why_before_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notedeck.sock");
+        let Subscribed {
+            mut client,
+            queue,
+            closed,
+            ..
+        } = subscribe(&path, 4);
+        let mut pushed = 0;
+        while queue.push(&padded(pushed, 64 * 1024)) {
+            pushed += 1;
+            assert!(pushed < 10_000, "the queue never filled");
+        }
+
+        let mut expected = 0;
+        let message = loop {
+            let response = client
+                .next_response()
+                .unwrap()
+                .expect("the reason before the end");
+            if let Outcome::Error { message } = &response.outcome {
+                break message.clone();
+            }
+            assert_eq!(event_n(&response), expected, "in order, none skipped");
+            expected += 1;
+        };
+        assert_eq!(message, DROPPED);
+        assert!(
+            expected > 0 && expected < pushed as u64,
+            "{expected} of {pushed}"
+        );
+        assert!(client.next_response().unwrap().is_none(), "then the end");
+        closed.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    /// A burst pushed with [`EventQueue::try_push`], waiting on `on_room`
+    /// whenever the queue is full, reaches a client that reads slowly whole
+    /// and in order, though it is many times the queue.
+    #[test]
+    fn a_back_pressured_burst_reaches_a_slow_reader_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notedeck.sock");
+        let Subscribed {
+            mut client,
+            queue,
+            room,
+            closed,
+        } = subscribe(&path, 4);
+        const BURST: usize = 40;
+        let producer = thread::spawn(move || {
+            for n in 0..BURST {
+                loop {
+                    match queue.try_push(&padded(n, 16 * 1024)) {
+                        Pushed::Queued => break,
+                        Pushed::Full => room
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("the writer makes room"),
+                        Pushed::Closed => panic!("the slow reader was dropped at {n}"),
+                    }
+                }
+            }
+            // Dropped here: the stream ends once the burst is written.
+        });
+        for n in 0..BURST {
+            thread::sleep(Duration::from_millis(5));
+            let response = client.next_response().unwrap().expect("the whole burst");
+            assert_eq!(event_n(&response), n as u64);
+        }
+        assert!(client.next_response().unwrap().is_none(), "then the end");
+        producer.join().unwrap();
+        closed.recv_timeout(Duration::from_secs(5)).unwrap();
     }
 
     #[test]

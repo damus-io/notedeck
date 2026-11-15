@@ -341,11 +341,26 @@ pub trait SlowTool: Send + Sync {
 }
 
 /// Where a [`StreamTool`]'s events go: the subscriber's end, as the socket
-/// holds it. Never waits: an event it can't take ends the stream.
+/// holds it. [`send`](Self::send) never waits: an event it can't take ends
+/// the stream. [`send_waiting`](Self::send_waiting) waits for room, for a
+/// burst the stream knows is finite.
 pub trait EventSink: Send {
     /// Hand on one event, with its text for a person. `false` when the
     /// subscriber is gone, or too far behind to keep: stop emitting.
     fn send(&mut self, event: Value, text: Option<String>) -> bool;
+
+    /// Hand on one event, waiting while the subscriber catches up rather
+    /// than dropping it: for a stream's opening history, which can outrun
+    /// any queue, but ends. `false` when the subscriber is gone, including
+    /// one dropped for not reading at all. The default can't wait, and
+    /// [`send`](Self::send)s.
+    fn send_waiting<'s>(
+        &'s mut self,
+        event: Value,
+        text: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 's>> {
+        Box::pin(std::future::ready(self.send(event, text)))
+    }
 
     /// End the stream with an error for the subscriber.
     fn fail(&mut self, message: String);
@@ -378,6 +393,31 @@ impl Emitter {
                 self.sink
                     .fail(format!("failed to serialize an event: {err}"));
                 false
+            }
+        }
+    }
+
+    /// [`emit`](Self::emit), waiting for the subscriber to make room rather
+    /// than dropping it (see [`EventSink::send_waiting`]): for an opening
+    /// burst, such as a follow's history. Keep [`emit`](Self::emit) for live
+    /// events, so a subscriber that falls behind them is still dropped.
+    ///
+    /// The event is serialized before the returned future first runs, so it
+    /// needn't outlive the call.
+    pub fn emit_waiting(
+        &mut self,
+        event: &impl Serialize,
+        text: Option<String>,
+    ) -> impl Future<Output = bool> + Send + '_ {
+        let event = serde_json::to_value(event);
+        async move {
+            match event {
+                Ok(event) => self.sink.send_waiting(event, text).await,
+                Err(err) => {
+                    self.sink
+                        .fail(format!("failed to serialize an event: {err}"));
+                    false
+                }
             }
         }
     }

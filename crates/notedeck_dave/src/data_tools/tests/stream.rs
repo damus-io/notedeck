@@ -41,12 +41,29 @@ impl EventSink for Channel {
     }
 }
 
-/// A running stream: what it emits, and how to hang up on it.
-struct Following {
+/// A stream's job, running on a runtime of its own, and how to hang up on
+/// it.
+struct Running {
     runtime: tokio::runtime::Runtime,
-    got: mpsc::Receiver<Got>,
     hang_up: tokio::sync::watch::Sender<bool>,
     job: tokio::task::JoinHandle<()>,
+}
+
+impl Running {
+    /// Hang up, as a client closing its socket does, and see the job end.
+    fn hang_up(self) {
+        self.hang_up.send(true).unwrap();
+        self.runtime
+            .block_on(async { tokio::time::timeout(WAIT, self.job).await })
+            .expect("the stream ends once its subscriber hangs up")
+            .expect("the job didn't panic");
+    }
+}
+
+/// A running stream, and what it emits.
+struct Following {
+    running: Running,
+    got: mpsc::Receiver<Got>,
 }
 
 impl Following {
@@ -65,11 +82,7 @@ impl Following {
 
     /// Hang up, as a client closing its socket does, and see the job end.
     fn hang_up(self) {
-        self.hang_up.send(true).unwrap();
-        self.runtime
-            .block_on(async { tokio::time::timeout(WAIT, self.job).await })
-            .expect("the stream ends once its subscriber hangs up")
-            .expect("the job didn't panic");
+        self.running.hang_up();
     }
 }
 
@@ -85,6 +98,19 @@ impl Live {
     /// Subscribe to the stream `name` with `args`, as the socket does, or
     /// its error when it can't start.
     fn try_subscribe(&mut self, name: &str, args: Value) -> Result<Following, String> {
+        let (sent, got) = mpsc::channel();
+        let running = self.spawn(name, args, Channel(sent))?;
+        Ok(Following { running, got })
+    }
+
+    /// Subscribe to the stream `name` with `args`, as the socket does, and
+    /// run its job emitting into `sink`, or its error when it can't start.
+    fn spawn(
+        &mut self,
+        name: &str,
+        args: Value,
+        sink: impl EventSink + 'static,
+    ) -> Result<Running, String> {
         if self.pending > 0 {
             self.settle();
         }
@@ -99,12 +125,10 @@ impl Live {
             .enable_all()
             .build()
             .expect("runtime");
-        let (sent, got) = mpsc::channel();
         let (hang_up, gone) = tokio::sync::watch::channel(false);
-        let job = runtime.spawn(job(Emitter::new(Channel(sent), gone)));
-        Ok(Following {
+        let job = runtime.spawn(job(Emitter::new(sink, gone)));
+        Ok(Running {
             runtime,
-            got,
             hang_up,
             job,
         })
@@ -152,6 +176,74 @@ fn follow_streams_the_tail_then_each_new_message_and_status() {
     assert!(text.contains("── ◆ Needs Input ──"), "{text:?}");
 
     follow.hang_up();
+}
+
+/// A subscriber with room for only a few events at a time, as the socket's
+/// queue is to a reader that's slower than the stream: [`send`] refuses an
+/// event it has no room for, which drops the subscriber, and
+/// [`send_waiting`] waits for room.
+///
+/// [`send`]: EventSink::send
+/// [`send_waiting`]: EventSink::send_waiting
+struct Narrow(tokio::sync::mpsc::Sender<Value>);
+
+impl EventSink for Narrow {
+    fn send(&mut self, event: Value, _text: Option<String>) -> bool {
+        self.0.try_send(event).is_ok()
+    }
+
+    fn send_waiting<'s>(
+        &'s mut self,
+        event: Value,
+        _text: Option<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 's>> {
+        Box::pin(async move { self.0.send(event).await.is_ok() })
+    }
+
+    fn fail(&mut self, message: String) {
+        panic!("the stream failed: {message}");
+    }
+}
+
+/// `log --follow` with no `--last` sends the whole history first, and a
+/// history longer than the socket's queue (256) reaches a subscriber that
+/// reads slowly whole and in order: the tail waits for it rather than
+/// dropping it partway through.
+#[test]
+fn follow_waits_for_a_slow_subscriber_through_a_long_history() {
+    const HISTORY: u32 = 600;
+    let mut live = live();
+    live.state("sess-long", "Long session", "idle", CWD);
+    for n in 0..HISTORY {
+        let role = if n % 2 == 0 { "user" } else { "assistant" };
+        live.message(
+            "sess-long",
+            role,
+            &format!("message {n}"),
+            n,
+            u64::from(n) * 10,
+        );
+    }
+    let (sent, mut got) = tokio::sync::mpsc::channel(4);
+    let running = live
+        .spawn(
+            "agentium_follow_log",
+            json!({ "session": "sess-long", "follow": true }),
+            Narrow(sent),
+        )
+        .expect("follow starts");
+    for n in 0..HISTORY {
+        if n % 50 == 0 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let event = running
+            .runtime
+            .block_on(async { tokio::time::timeout(WAIT, got.recv()).await })
+            .expect("the next message within the wait")
+            .unwrap_or_else(|| panic!("the follow stopped after {n} of {HISTORY}"));
+        assert_eq!(event["text"], format!("message {n}"));
+    }
+    running.hang_up();
 }
 
 /// A follow of a session that doesn't exist fails before anything streams.
