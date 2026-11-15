@@ -3,7 +3,6 @@ resolver = "2"
 package.version = "0.11.0-beta.1"
 members = [
     "crates/agentium-core",
-    "crates/agentium_cli",
     "crates/bin_testing",
     "crates/cashflow",
     "crates/cashflow_cli",
@@ -20,9 +19,7 @@ members = [
     "crates/notebook",
     "crates/notedeck_notebook",
     "crates/headway",
-    "crates/headway_cli",
     "crates/ledgerdb",
-    "crates/notebook_cli",
     "crates/notedeck_headway",
     "crates/notedeck_nostrverse",
     "crates/notedeck_ui",

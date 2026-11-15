@@ -26,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// Picks the newest `deps/x-<hash>` executable next to `uplifted` whose dep-info
 /// (`x-<hash>.d`) says it was built through *this* worktree's `deps` dir and from
-/// sources under `crate_dir` (e.g. `"headway_cli"`), and that `is_current`
+/// sources under `crate_dir` (e.g. `"notedeck_chrome"`), and that `is_current`
 /// accepts. `is_current` is the caller's check that a binary is a current build,
 /// typically "its usage mentions the subcommand under test".
 ///

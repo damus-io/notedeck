@@ -8,8 +8,7 @@
 //! A URI scheme (not the old `#` sigil) so the ref survives nostrdb's tokenizer
 //! intact — where a mid-word `#` would be split off as a hashtag, shattering the
 //! ref across content blocks — and needs no shell quoting. The board segment
-//! scopes the fold and self-routes (see [`headway_cli`'s `ref_board`] and
-//! [`crate::event::resolve_card`]); a card is always board-scoped, so the segment
+//! scopes the fold and self-routes (see [`crate::event::resolve_card`]); a card is always board-scoped, so the segment
 //! is mandatory and a bare word-id is never a reference.
 
 pub use wordid::{SEP, encode, three_words_end};

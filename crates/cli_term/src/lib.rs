@@ -1,19 +1,18 @@
-//! Terminal output shared by the standalone CLIs (`agentium`, `headway`).
+//! Terminal output shared by the command-line tools (`nd`, `cashflow`, and the
+//! text notedeck's tools render for `nd`).
 //!
-//! Lifted out of `agentium_cli` so `headway grep` behaves exactly like
-//! `agentium grep` rather than carrying a drifting copy: the `--color` and
+//! One copy, so `nd headway grep` behaves exactly like `nd agentium grep`
+//! rather than each carrying a drifting copy: the `--color` and
 //! `--pager`/`--no-pager` modes and how they resolve against a terminal, the
 //! pager itself ([`emit`]), SGR painting ([`paint`]), and the smart-case
 //! pattern compilation and match highlighting behind `grep`. The [`help`]
 //! module holds the per-command help table and its printer, so each CLI's
-//! `--help` pages share one layout. The [`progress`] module draws the live
-//! stderr progress line the CLIs show during slow relay phases.
+//! `--help` pages share one layout.
 //!
 //! Std plus `regex` only, so a CLI can depend on it without pulling in any of
 //! the other's machinery.
 
 pub mod help;
-pub mod progress;
 
 use regex::Regex;
 

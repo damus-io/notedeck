@@ -27,7 +27,9 @@
 # Options:
 #   --relay-bin <path>  The ndb-sns-relay binary [default: on PATH, else
 #                       ~/src/rust/ndb-sns-relay/target/{release,debug}]
-#   --headway <path>    The headway CLI [default: build this checkout's]
+#   --headway <path>    A headway CLI binary from before the CLI crates were
+#                       deleted (required: the parties need their own keys,
+#                       relay and cache, which the nd shim has no flags for)
 #   --notedeck <path>   The notedeck binary [default: build this checkout's]
 #   --no-notedeck       Skip step 4 (and the notedeck build)
 #   --dir <dir>         Scratch dir [default: a fresh mktemp dir, kept]
@@ -94,10 +96,12 @@ echo "scratch dir: $dir"
 
 # Copies, so a rebuild in another checkout can't swap a binary mid-run.
 cp "$relay_bin" "$dir/ndb-sns-relay"
-if [[ -z $headway_bin ]]; then
-    (cd "$repo" && cargo build -q -p headway_cli)
-    headway_bin="$repo/target/debug/headway"
-fi
+# headway_cli is gone, and the `headway` on PATH is now the nd shim, which
+# can't take a party's --nsec/--relay/--db. Until the parties are private
+# notedecks driven over their own sockets, this needs an old CLI build.
+[[ -n $headway_bin ]] || die "pass --headway <path> to a headway CLI built before headway_cli was deleted"
+"$headway_bin" --help 2>&1 | grep -q -- "--nsec" ||
+    die "$headway_bin takes no --nsec (the nd shim?); pass an old headway CLI build"
 cp "$headway_bin" "$dir/headway"
 if ((with_notedeck)); then
     if [[ -z $notedeck_bin ]]; then

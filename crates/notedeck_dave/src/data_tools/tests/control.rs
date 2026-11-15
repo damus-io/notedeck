@@ -238,6 +238,19 @@ fn interrupt_lands_and_refuses_a_deleted_session() {
         .try_call("agentium_interrupt", json!({ "session": GONE }))
         .unwrap_err();
     assert!(err.contains("nothing is running to interrupt"), "{err}");
+
+    let err = live
+        .try_call(
+            "agentium_interrupt",
+            json!({ "session": "agentium:no-such-session" }),
+        )
+        .unwrap_err();
+    assert!(err.contains("no session matching"), "{err}");
+    assert_eq!(
+        live.conversation(WORKING, "interrupt").len(),
+        1,
+        "an unknown session publishes nothing"
+    );
 }
 
 /// A deleted session resumes: a `resume_session` command for its host,
@@ -256,6 +269,11 @@ fn resume_targets_the_sessions_host() {
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].tag("target_host"), Some(HOST));
     assert_eq!(commands[0].tag("session_id"), Some(GONE));
+
+    let err = live
+        .try_call("agentium_resume", json!({ "session": "no-such-session" }))
+        .unwrap_err();
+    assert!(err.contains("no session"), "{err}");
 }
 
 // ---------------------------------------------------------------------------

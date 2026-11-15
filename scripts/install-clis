@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 #
-# Install `nd` and the `notedeck` binary it starts onto PATH.
+# Install `nd`, the `notedeck` binary it starts, and the `headway`,
+# `agentium` and `notebook` shims onto PATH.
 #
 # nd starts `notedeck --headless --serve` itself when no notedeck is running,
 # so both have to be installed. Builds release into this checkout's own
 # target/ (so a reinstall reuses the build), and installs into ~/.cargo/bin.
+#
+# The shims (scripts/shims/nd-shim, installed under each old CLI's name)
+# run `nd <name> "$@"`, so skills and scripts that still type `headway show`
+# keep working now that the old CLI crates are gone.
 #
 # Usage:
 #     scripts/install-clis              # into ~/.cargo/bin
@@ -13,6 +18,12 @@
 # NOTEDECK_FEATURES picks the notedeck apps to build (default
 # dave,headway,notebook,messages); a notedeck without headway serves nd no
 # headway tools.
+#
+# Swapping out the old binaries: a shim is never written over a file that
+# isn't one (an old ELF build, or a symlink to one), so remove those first.
+# Each installed shim must also come first on PATH; the script says which
+# command still resolves elsewhere, e.g. a `~/bin/headway` symlink to an old
+# build in a directory ahead of ~/.cargo/bin.
 
 set -euo pipefail
 
@@ -22,3 +33,29 @@ features=${NOTEDECK_FEATURES:-dave,headway,notebook,messages}
 cargo install --locked --target-dir "$root/target" --path "$root/crates/nd_cli" "$@"
 cargo install --locked --target-dir "$root/target" --path "$root/crates/notedeck_chrome" \
     --features "$features" "$@"
+
+# Where cargo just installed: `--root <dir>` (or --root=<dir>), else
+# $CARGO_INSTALL_ROOT, else $CARGO_HOME, else ~/.cargo, and its bin/.
+install_root=${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}
+while (($#)); do
+    case $1 in
+    --root) install_root=$2; shift ;;
+    --root=*) install_root=${1#--root=} ;;
+    esac
+    shift
+done
+bin="$install_root/bin"
+
+shim="$root/scripts/shims/nd-shim"
+for name in headway agentium notebook; do
+    dest="$bin/$name"
+    if [[ -e $dest || -L $dest ]] && ! cmp -s "$shim" "$dest"; then
+        echo "install-clis: $dest is not the nd shim (an old build?); remove it and rerun to install the shim" >&2
+        continue
+    fi
+    install -m 755 "$shim" "$dest"
+    found=$(command -v "$name" || true)
+    if [[ $found != "$dest" ]]; then
+        echo "install-clis: \`$name\` resolves to ${found:-nothing} on PATH, not $dest" >&2
+    fi
+done

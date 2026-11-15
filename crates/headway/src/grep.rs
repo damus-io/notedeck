@@ -23,10 +23,6 @@ use crate::render::{PlacedCard, placed_cards, plain_ref};
 /// What `grep` prints when nothing matched.
 pub const NO_MATCHES: &str = "no matches";
 
-/// The variable naming headway's own pager command, consulted before `$PAGER`
-/// by [`cli_term::emit`] — the counterpart of agentium's `$AGENTIUM_PAGER`.
-pub const PAGER_VAR: &str = "HEADWAY_PAGER";
-
 /// Every card on `boards` with a line of text `pattern` matches, most recent
 /// first: ordered by its newest matching line, across every board searched,
 /// so the live discussion leads and a stale mention sinks.

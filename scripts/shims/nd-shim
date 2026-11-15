@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# The old `headway`, `agentium` and `notebook` commands, as `nd <ns>`.
+#
+# Installed under each of those names (scripts/install-clis), this runs
+# `nd <name> "$@"`, so a skill or script that still types `headway show`
+# runs `nd headway show` against the running notedeck. nd takes a flag typed
+# before the verb (`headway --board b show`) as if typed after it.
+#
+# The old CLIs' identity and store flags have no counterpart: nd talks to a
+# notedeck over its socket, which signs as its own account and keeps its own
+# database. Rather than drop one silently, the shim refuses it with one line.
+# `agentium --no-sync` is the exception: nd never syncs before a read, so
+# it is already what that flag asked for, and the shim drops it.
+
+set -euo pipefail
+
+ns=$(basename "$0")
+
+retired() {
+    echo "$ns: $1 has no nd counterpart: nd talks to the running notedeck, which signs as its own account and keeps its own data; use NOTEDECK_SOCKET for a private one" >&2
+    exit 1
+}
+
+args=()
+flags=1
+for arg in "$@"; do
+    if ((flags)); then
+        case $arg in
+        --) flags=0 ;;
+        --nsec | --nsec=* | --relay | --relay=* | --db | --db=* | --author | --author=* | --comment-nsec | --comment-nsec=*)
+            retired "${arg%%=*}"
+            ;;
+        --no-sync)
+            [[ $ns == agentium ]] && continue
+            ;;
+        esac
+    fi
+    args+=("$arg")
+done
+
+case ${args[0]:-} in
+login | logout)
+    retired "\`$ns ${args[0]}\`"
+    ;;
+esac
+
+exec nd "$ns" "${args[@]}"

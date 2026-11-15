@@ -1,6 +1,6 @@
 //! Small shared formatting helpers for rendering comment threads, used by both
-//! the CLI (`headway_cli`) and the egui board (`notedeck_headway`) so the two
-//! present authors and timestamps identically.
+//! the text the headway tools render for `nd headway` and the egui board
+//! (`notedeck_headway`) so the two present authors and timestamps identically.
 
 use nostrdb_net::Pubkey;
 

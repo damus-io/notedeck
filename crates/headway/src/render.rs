@@ -12,7 +12,7 @@ use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{
     BoardView, CardView, CommentView, Container, EdgeRef, LineSide, Priority, ReviewCommentView,
-    ReviewLocation, ReviewView, resolve_card,
+    ReviewLocation, ReviewView,
 };
 use crate::store::{self, DeclineReason};
 use crate::traversal::{self, NotReady};
@@ -290,25 +290,9 @@ pub fn find_card<'a>(view: &'a BoardView, id: &NoteId) -> Option<PlacedCard<'a>>
     placed_cards(view).find(|p| p.card.id == *id)
 }
 
-/// Resolve every selector in `sels` (a card ref, word-id or hex prefix) on
-/// `view`, failing on the first that names no card, so a bad id fails the
-/// whole command rather than printing part of its answer.
-pub fn resolve_cards<'a>(
-    view: &'a BoardView,
-    sels: &[String],
-) -> Result<Vec<PlacedCard<'a>>, String> {
-    sels.iter()
-        .map(|sel| {
-            let id = resolve_card(view, sel)?;
-            find_card(view, &id).ok_or_else(|| format!("no card matching '{sel}'"))
-        })
-        .collect()
-}
-
-/// The `--json` twin of [`card_details`]: an array of `cards` as
+/// An array of `cards` as
 /// [`card_detail_json`](crate::event::card_detail_json), each with the
-/// `column` it sits in. `headway show <card> --json` prints it, and the app's
-/// `headway_show_card` tool answers with it, so the two match field for field.
+/// `column` it sits in: what the app's `headway_show_card` tool answers with.
 pub fn cards_json(view: &BoardView, cards: &[PlacedCard]) -> serde_json::Value {
     cards
         .iter()
@@ -318,18 +302,6 @@ pub fn cards_json(view: &BoardView, cards: &[PlacedCard]) -> serde_json::Value {
             j
         })
         .collect()
-}
-
-/// Each of `cards` in full ([`card_detail`]), separated by a blank line.
-pub fn card_details(view: &BoardView, cards: &[PlacedCard], color: bool) -> String {
-    let mut out = String::new();
-    for (i, p) in cards.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        out.push_str(&card_detail(view, p.card, p.column, color));
-    }
-    out
 }
 
 /// One card in `git show` style: a header block of metadata, then the title
@@ -595,10 +567,6 @@ fn related(t: &mut Text, view: &BoardView, edges: &[EdgeRef]) {
 pub fn ready_line(card_ref: &str, title: &str, color: bool) -> String {
     format!("{card_ref}  {}\n", dim(color, title))
 }
-
-/// What `next` says, on stderr, when its frontier is empty.
-pub const NOTHING_READY: &str =
-    "nothing ready — everything is done, in progress or blocked (or filtered out by --label)";
 
 /// The text of `card`'s review source named `name`, exactly as stored, for
 /// `show <card> --source <name>`. The newest record that carries a file of
@@ -1088,20 +1056,6 @@ mod tests {
             r4 = r(4),
         );
         assert_eq!(text, expected);
-    }
-
-    /// Selectors resolve all-or-nothing, and several cards are separated by
-    /// a blank line.
-    #[test]
-    fn resolve_cards_fails_whole_on_a_bad_selector() {
-        let view = board_of(vec![card(1, "One"), card(2, "Two")], vec![]);
-        let err = resolve_cards(&view, &[r(1), "nope-nope-nope".to_string()]).err();
-        assert!(err.is_some(), "a bad selector fails the lot");
-
-        let cards = resolve_cards(&view, &[r(1), r(2)]).expect("both resolve");
-        let text = card_details(&view, &cards, false);
-        assert!(text.contains("\n\ncard    "), "{text}");
-        assert_eq!(cards[1].column, "Todo");
     }
 
     /// `headway next`: one plain ref and its title a line.

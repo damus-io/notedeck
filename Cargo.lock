@@ -192,28 +192,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentium_cli"
-version = "0.11.0-beta.1"
-dependencies = [
- "agentium-core",
- "bech32",
- "bin_testing",
- "cli_term",
- "enostr",
- "gethostname",
- "hex",
- "libc",
- "nostrdb",
- "nostrdb_net",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4124,26 +4102,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "headway_cli"
-version = "0.11.0-beta.1"
-dependencies = [
- "bech32",
- "bin_testing",
- "cli_term",
- "enostr",
- "futures-util",
- "headway",
- "hex",
- "nostrdb",
- "nostrdb_net",
- "regex",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.24.0",
-]
-
-[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5952,20 +5910,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "wordid",
-]
-
-[[package]]
-name = "notebook_cli"
-version = "0.11.0-beta.1"
-dependencies = [
- "bech32",
- "enostr",
- "nostrdb",
- "nostrdb_net",
- "notebook",
- "serde_json",
- "tempfile",
- "tokio",
 ]
 
 [[package]]

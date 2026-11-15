@@ -1155,3 +1155,115 @@ fn a_notedeck_that_wont_start_exits_2() {
     let log = std::fs::read_to_string(dir.path().join("nd.log")).unwrap();
     assert!(log.contains("boom"), "{log}");
 }
+
+/// A shim's command line, and the dir holding the `nd` it finds first on
+/// PATH, which lives as long as the run needs it.
+struct Shim {
+    cmd: Command,
+    _bin: TempDir,
+}
+
+/// `scripts/shims/<name>`: the bash shim installed as the old `<name>` CLI,
+/// with [`nd_bin`] first on its PATH as `nd`.
+fn shim(name: &str) -> Shim {
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/shims")
+        .join(name);
+    let bin = tempfile::tempdir().expect("a bin dir");
+    std::os::unix::fs::symlink(nd_bin(), bin.path().join("nd")).expect("link nd");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::iter::once(bin.path().to_owned()).chain(std::env::split_paths(&path));
+    let mut cmd = Command::new(shim);
+    cmd.env("PATH", std::env::join_paths(dirs).expect("a PATH"))
+        .env("ND_NO_START", "1")
+        .env_remove("HEADWAY_COMMENT_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC_FILE")
+        .env_remove("HEADWAY_BOARD");
+    Shim { cmd, _bin: bin }
+}
+
+/// The `headway` shim is `nd headway`: an old-style `headway --board b show
+/// --json`, its global before the verb, reaches the tool and prints its JSON.
+#[test]
+fn the_headway_shim_runs_nd_headway() {
+    let dir = socket_dir();
+    let result = Response::ok(Reply::Result {
+        result: json!({"id": "b", "columns": []}),
+        text: Some("board b\n".to_owned()),
+        notice: None,
+    });
+    let Fake { socket, server } = serve(&dir, vec![app_list(), result]);
+    let Shim { mut cmd, _bin } = shim("headway");
+    let out = cmd
+        .args(["--board", "b", "show", "--json"])
+        .env("NOTEDECK_SOCKET", &socket)
+        .output()
+        .expect("run the shim");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let printed: Value = serde_json::from_str(&stdout(&out)).expect("JSON on stdout");
+    assert_eq!(printed, json!({"id": "b", "columns": []}));
+    let seen = server.join().unwrap();
+    assert_eq!(
+        seen[1],
+        Request::CallTool {
+            name: "headway_show_board".to_owned(),
+            args: json!({"board": "b"}),
+            signer: None,
+        }
+    );
+}
+
+/// A flag of the old CLIs' that nd has no counterpart for fails with one
+/// line saying why, before anything reaches the socket; `agentium
+/// --no-sync`, which nd always honours, is dropped instead.
+#[test]
+fn a_shim_refuses_the_old_identity_flags() {
+    let dir = socket_dir();
+    let socket = dir.path().join("none.sock");
+    for (name, args) in [
+        ("headway", &["--nsec", "nsec1x", "show"][..]),
+        ("headway", &["show", "--relay=ws://x"][..]),
+        ("agentium", &["--db", "/tmp/db", "list"][..]),
+        ("notebook", &["--author", "abc", "show"][..]),
+        ("headway", &["login"][..]),
+    ] {
+        let Shim { mut cmd, _bin } = shim(name);
+        let out = cmd
+            .args(args)
+            .env("NOTEDECK_SOCKET", &socket)
+            .output()
+            .expect("run the shim");
+        assert_eq!(out.status.code(), Some(1), "{name} {args:?}");
+        let err = stderr(&out);
+        assert_eq!(err.lines().count(), 1, "{err}");
+        assert!(err.starts_with(&format!("{name}: ")), "{err}");
+        assert!(err.contains("NOTEDECK_SOCKET"), "{err}");
+    }
+
+    let result = Response::ok(Reply::Result {
+        result: json!([]),
+        text: Some(String::new()),
+        notice: None,
+    });
+    let list = Response::ok(Reply::Tools {
+        tools: vec![ToolInfo {
+            command: vec!["agentium".to_owned(), "list".to_owned()],
+            name: "agentium_list_sessions".to_owned(),
+            input_schema: json!({"type": "object", "properties": {}, "required": []}),
+            ..tools().remove(0)
+        }],
+    });
+    let Fake { socket, server } = serve(&dir, vec![list, result]);
+    let Shim { mut cmd, _bin } = shim("agentium");
+    let out = cmd
+        .args(["--no-sync", "list"])
+        .env("NOTEDECK_SOCKET", &socket)
+        .output()
+        .expect("run the shim");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let seen = server.join().unwrap();
+    assert!(
+        matches!(&seen[1], Request::CallTool { name, .. } if name == "agentium_list_sessions"),
+        "{seen:?}"
+    );
+}

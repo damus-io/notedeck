@@ -160,13 +160,6 @@ pub fn workspace_channel(secret: &[u8; 32]) -> Option<SnsChannel> {
     })
 }
 
-/// The team public key that authors this account's vault envelopes — what the
-/// CLI's kind-1081 reconcile filter is keyed on. `None` mirrors
-/// [`workspace_channel`].
-pub fn workspace_team_pubkey(secret: &[u8; 32]) -> Option<Pubkey> {
-    Some(workspace_channel(secret)?.keys.team_keypair.pubkey)
-}
-
 /// Register the account's [`workspace_root`] with nostrdb so it auto-unwraps the
 /// vault's kind-1081 envelopes, then run one catch-up peel for envelopes ingested
 /// before the root was registered.

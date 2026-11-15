@@ -1,8 +1,7 @@
-//! Core notebook data model, shared by the `notedeck_notebook` egui app and the
-//! `notebook_cli` binary — mirroring the `headway` core crate.
+//! Core notebook data model behind the `notedeck_notebook` egui app and its
+//! tools — mirroring the `headway` core crate.
 //!
-//! This is pure logic with no egui/notedeck dependency, so the CLI can link it
-//! without pulling in the whole GUI stack:
+//! This is pure logic with no egui/notedeck dependency:
 //!
 //! - [`event`] — the nostr-backed vault schema (canvases, nodes, edges, longform
 //!   notes) and the reducer that folds events into views;

@@ -54,21 +54,6 @@ impl Identity {
 /// first. Getting it wrong is silent both ways: folding a shared board the
 /// plaintext way omits every co-member's edit, and writing plaintext to one
 /// produces events no other front end will ever fold.
-///
-/// The roster also drives the CLI's envelope sync leg (`sync_envelopes` in
-/// `headway_cli`, which walks [`Self::teams`]): a sealed board's edits reach the
-/// relay only as kind-1081 envelopes signed by the team keypair, which the
-/// account-scoped plaintext reconcile can't see, so the CLI reconciles each
-/// channel's envelopes by its team pubkey. This is the one-shot
-/// counterpart of the long-lived `relay::sync::Session` envelope pipe
-/// (headway:notedeck/clap-matrix-machine): the CLI reconciles once per run and
-/// exits rather than holding a live subscription, but both move the same
-/// envelopes. It replaced an earlier assumption that the peeled rumors — stored
-/// beside their envelopes and matching the plaintext [`event::headway_filter`] —
-/// were enough to piggyback a sealed board onto the plaintext leg. They are not:
-/// a fresh cache has no envelope to peel until this leg pulls it, and pushing a
-/// rumor on the plaintext leg would leak it in the clear (see
-/// `plaintext_sync_filter` in `headway_cli`).
 pub struct Roster {
     /// The channels *we* (the signer) hold keys for, each naming the board
     /// coordinate its key unlocks. Our membership, not the owner's: a member's
@@ -132,13 +117,6 @@ impl Roster {
     pub fn channel_pubkeys(&self, board_id: &str) -> Vec<Pubkey> {
         let addr = event::board_address(&self.id.owner, board_id);
         teams::board_channel_pubkeys(&self.teams, &addr)
-    }
-
-    /// The channels this account holds keys for — every [`teams::Team`] the
-    /// roster was loaded from, in [`teams::teams_from_ndb`]'s order. The CLI's
-    /// envelope sync walks these to reconcile each channel by its team pubkey.
-    pub fn teams(&self) -> &[teams::Team] {
-        &self.teams
     }
 
     /// The same roster, addressing `owner`'s boards instead — for when the

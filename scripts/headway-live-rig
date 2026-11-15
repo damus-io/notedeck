@@ -29,14 +29,24 @@
 #   --size <WxH>       Window size, and screen size with --xvfb [default: 1600x1000]
 #   --xvfb             Run in a window on a private Xvfb display, not headless
 #   --bin <path>       Use this notedeck binary instead of building one
-#   --no-build         Reuse <dir>/notedeck from an earlier `up --dir <dir>`
+#                      (nd is still built, unless --no-build)
+#   --no-build         Reuse <dir>/notedeck and <dir>/nd from an earlier
+#                      `up --dir <dir>`
 #   --commits <n>      In Review cards to seed, one per commit HEAD~0.. [default: 4]
 #   --no-seed          Leave the board empty
 #
-# Needs: cargo, nak, jq, headway, and for `session` the `ndb` CLI and agentium;
-# with --xvfb also Xvfb, xdotool and (for `shot`) ImageMagick's `import`.
-# Everything the rig starts is stopped by pid (never by name, so other
-# sessions' processes survive).
+# The rig's notedeck serves its own tool socket (RIG_SOCKET in rig.env, a
+# short path under $XDG_RUNTIME_DIR, since a socket path must fit SUN_LEN and
+# <dir> may not), and the
+# rig drives it with this checkout's `nd` (copied to <dir>/nd), so nothing it
+# does reaches a notedeck the user is running. It runs no local relay and
+# dials none (`-r ws://127.0.0.1:9` is a closed port): every edit goes
+# straight into its own nostrdb.
+#
+# Needs: cargo, nak, jq, and for `session` the `ndb` CLI; with --xvfb also
+# Xvfb, xdotool and (for `shot`) ImageMagick's `import`. Everything the rig
+# starts is stopped by pid (never by name, so other sessions' processes
+# survive).
 
 set -euo pipefail
 
@@ -63,11 +73,6 @@ need() {
     done
 }
 
-# Whether something is listening on 127.0.0.1:<port>.
-port_open() {
-    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
 # The first display number with neither a socket nor a lock file.
 free_display() {
     local n
@@ -78,18 +83,6 @@ free_display() {
         fi
     done
     die "no free X display in :90-:199"
-}
-
-# The first free local port from 6690 up.
-free_port() {
-    local p
-    for p in $(seq 6690 6790); do
-        if ! port_open "$p"; then
-            echo "$p"
-            return
-        fi
-    done
-    die "no free port in 6690-6790"
 }
 
 # Poll `cmd…` every 0.2s until it succeeds, for at most <secs>.
@@ -115,24 +108,31 @@ rig_dir() {
     echo "$dir"
 }
 
-# The headway CLI against the rig: its relay, its key, its own cache and data
-# dir, so nothing reaches the user's stored headway config. The env vars that
-# would otherwise leak the caller's identity into the demo are dropped:
-# $AGENTIUM_SESSION would stamp *this* shell's session on every review record,
-# and $HEADWAY_COMMENT_NSEC* would sign comments with a real key.
-rig_headway() {
-    env -u AGENTIUM_SESSION -u HEADWAY_NSEC -u HEADWAY_BOARD -u HEADWAY_RELAY \
+# nd against the rig's notedeck, over its own socket, never starting one (a
+# rig that is down should fail, not start a data-only notedeck elsewhere).
+# The env vars that would otherwise leak the caller's identity into the demo
+# are dropped: $AGENTIUM_SESSION would stamp *this* shell's session on every
+# review record, $HEADWAY_COMMENT_NSEC* would sign comments with a real key,
+# and $HEADWAY_BOARD would pick the caller's board.
+rig_nd() {
+    env -u AGENTIUM_SESSION -u HEADWAY_BOARD \
         -u HEADWAY_COMMENT_NSEC -u HEADWAY_COMMENT_NSEC_FILE \
-        XDG_DATA_HOME="$RIG_DIR/xdg" \
-        headway --board "$board" --relay "ws://127.0.0.1:$RIG_PORT" \
-        --db "$RIG_DIR/headway-db" --nsec "$RIG_NSEC" "$@"
+        NOTEDECK_SOCKET="$RIG_SOCKET" "$RIG_DIR/nd" --no-start "$@"
 }
 
-# The agentium: ref of a session d-tag. An installed `agentium` older than its
-# `id` command falls back to this checkout's.
+# `nd headway` on the rig's board.
+rig_headway() {
+    rig_nd headway --board "$board" "$@"
+}
+
+# The agentium: ref of a session d-tag.
 session_ref() {
-    agentium id "$1" 2>/dev/null ||
-        (cd "$repo" && cargo run -q -p agentium_cli -- id "$1")
+    rig_nd agentium id "$1"
+}
+
+# Whether the rig's notedeck answers on its socket with its tools.
+socket_up() {
+    rig_nd tools >/dev/null 2>&1
 }
 
 # The word-id of the card a `headway add` printed.
@@ -140,25 +140,26 @@ added_card() {
     grep -o "headway:$board/[a-z]*-[a-z]*-[a-z]*" | head -n1
 }
 
-# notedeck's own arguments for the rig: its data, its key, and no real relay
+# notedeck's own arguments for the rig: its data, its key, no local relay
+# (whose default port belongs to the user's notedeck), and no real relay
 # (`-r ws://127.0.0.1:9` is a closed port).
 rig_notedeck_args() {
-    rig_args=(--datapath "$RIG_DIR/data" --sec "$RIG_SEC" -r ws://127.0.0.1:9)
+    rig_args=(--datapath "$RIG_DIR/data" --sec "$RIG_SEC" -r ws://127.0.0.1:9 --no-local-relay)
 }
 
-# Start the rig's headless notedeck, its embedded relay on $RIG_PORT, and
-# record its pid in rig.env.
+# Start the rig's headless notedeck on its own socket, and record its pid in
+# rig.env.
 start_headless() {
     local rig_args
     rig_notedeck_args
     # setsid so a Ctrl-C in this terminal doesn't reach it; as a background
     # job it isn't a group leader, so setsid execs in place and $! is notedeck.
-    env -u DISPLAY -u WAYLAND_DISPLAY setsid "$RIG_DIR/notedeck" --headless \
-        "${rig_args[@]}" --relay-bind "127.0.0.1:$RIG_PORT" \
+    env -u DISPLAY -u WAYLAND_DISPLAY NOTEDECK_SOCKET="$RIG_SOCKET" \
+        setsid "$RIG_DIR/notedeck" --headless "${rig_args[@]}" \
         >>"$RIG_DIR/notedeck.log" 2>&1 &
     RIG_NOTEDECK_PID=$!
     sed -i "s/^RIG_NOTEDECK_PID=.*/RIG_NOTEDECK_PID=$RIG_NOTEDECK_PID/" "$RIG_DIR/rig.env"
-    wait_for 30 "the embedded relay on :$RIG_PORT" port_open "$RIG_PORT"
+    wait_for 60 "notedeck's socket $RIG_SOCKET" socket_up
 }
 
 # Stop the rig's notedeck and wait for it to go, so its database is closed.
@@ -184,7 +185,7 @@ cmd_up() {
     done
     [[ $size =~ ^([0-9]+)x([0-9]+)$ ]] || die "--size wants WxH, got '$size'"
     local width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]}
-    need nak jq headway
+    need nak jq
     ((xvfb)) && need Xvfb xdotool
 
     if [[ -z $dir ]]; then
@@ -194,40 +195,39 @@ cmd_up() {
     dir=$(cd "$dir" && pwd)
     # A reused dir keeps its binary but not its state: every `up` has a new
     # key, and the last run's board and review-cards list belong to the old one.
-    rm -rf "$dir/data" "$dir/headway-db" "$dir/xdg" "$dir/review-cards"
+    rm -rf "$dir/data" "$dir/review-cards"
 
-    # 1. The binary, copied out of target/: sibling worktrees share it and
+    # 1. The binaries, copied out of target/: sibling worktrees share it and
     #    overwrite target/release/notedeck under a running rig.
-    if [[ -n $bin ]]; then
-        cp "$bin" "$dir/notedeck"
-    elif ((build)); then
+    if ((build)); then
         need cargo
-        echo "building notedeck (release, headway+dave)..." >&2
-        (cd "$repo" && cargo build --release -p notedeck_chrome --features headway,dave)
-        local target
+        local target packages=(-p nd_cli) what=nd
+        if [[ -z $bin ]]; then
+            packages+=(-p notedeck_chrome --features "notedeck_chrome/headway notedeck_chrome/dave")
+            what="nd and notedeck (headway+dave)"
+        fi
+        echo "building $what (release)..." >&2
+        (cd "$repo" && cargo build --release "${packages[@]}")
         target=$(cd "$repo" && cargo metadata --format-version 1 --no-deps | jq -r .target_directory)
-        cp "$target/release/notedeck" "$dir/notedeck"
+        cp "$target/release/nd" "$dir/nd"
+        [[ -n $bin ]] || cp "$target/release/notedeck" "$dir/notedeck"
     fi
+    [[ -z $bin ]] || cp "$bin" "$dir/notedeck"
     [[ -x $dir/notedeck ]] || die "$dir/notedeck missing (drop --no-build, or pass --bin)"
+    [[ -x $dir/nd ]] || die "$dir/nd missing (drop --no-build)"
 
-    # 2. A throwaway key. notedeck takes it as hex, the CLIs as an nsec.
-    #    (nak blocks reading stdin unless it is closed.)
-    local sec nsec
+    # 2. A throwaway key, as hex. (nak blocks reading stdin unless it is
+    #    closed.)
+    local sec
     sec=$(nak key generate </dev/null)
-    nsec=$(nak encode nsec "$sec" </dev/null)
 
-    # 3. notedeck with its embedded relay on a free port, headless or in a
-    #    window on a private display. `-r ws://127.0.0.1:9` keeps it off every
-    #    real relay; the embedded relay ingests what the CLIs publish into the
-    #    app's ndb.
-    local port
-    port=$(free_port)
+    # 3. notedeck on its own socket, headless or in a window on a private
+    #    display.
     cat >"$dir/rig.env" <<EOF
 RIG_DIR=$dir
-RIG_PORT=$port
 RIG_SEC=$sec
-RIG_NSEC=$nsec
 RIG_SIZE=$size
+RIG_SOCKET=$(mktemp -u "${XDG_RUNTIME_DIR:-/tmp}/headway-live-rig.XXXXXX.sock")
 RIG_NOTEDECK_PID=
 EOF
     echo "$dir" >"$last_file"
@@ -257,7 +257,7 @@ EOF
 # Start notedeck in a window on a private Xvfb display, sized to the screen
 # and focused.
 up_xvfb() {
-    local width=$1 height=$2 dir=$RIG_DIR port=$RIG_PORT sec=$RIG_SEC display
+    local width=$1 height=$2 dir=$RIG_DIR display rig_args
     display=$(free_display)
 
     Xvfb ":$display" -screen 0 "${width}x${height}x24" -nolisten tcp \
@@ -267,9 +267,9 @@ up_xvfb() {
 
     # setsid so a Ctrl-C in this terminal doesn't reach it; as a background
     # job it isn't a group leader, so setsid execs in place and $! is notedeck.
-    env -u WAYLAND_DISPLAY DISPLAY=":$display" setsid "$dir/notedeck" \
-        --datapath "$dir/data" --sec "$sec" -r ws://127.0.0.1:9 \
-        --relay-bind "127.0.0.1:$port" >"$dir/notedeck.log" 2>&1 &
+    rig_notedeck_args
+    env -u WAYLAND_DISPLAY DISPLAY=":$display" NOTEDECK_SOCKET="$RIG_SOCKET" \
+        setsid "$dir/notedeck" "${rig_args[@]}" >"$dir/notedeck.log" 2>&1 &
     local notedeck_pid=$!
 
     sed -i "s/^RIG_NOTEDECK_PID=.*/RIG_NOTEDECK_PID=$notedeck_pid/" "$dir/rig.env"
@@ -299,14 +299,14 @@ EOF
     echo "RIG_WINDOW=$win" >>"$dir/rig.env"
     RIG_WINDOW=$win
 
-    wait_for 30 "the embedded relay on :$port" port_open "$port"
+    wait_for 60 "notedeck's socket $RIG_SOCKET" socket_up
 }
 
 print_headless_rig() {
     cat <<EOF
 
 rig up in $RIG_DIR (headless)
-  relay     ws://127.0.0.1:$RIG_PORT
+  socket    $RIG_SOCKET
   pid       notedeck $RIG_NOTEDECK_PID
   log       $RIG_DIR/notedeck.log
 
@@ -316,8 +316,7 @@ or script it with notedeck's shot steps, e.g. the review queue:
   $0 shot $RIG_DIR out.png $(printf '%q ' "${default_steps[@]}")--key R --wait 1
 Each shot stops the app, films it offscreen, and starts it again.
 Dave refs:   $0 session $RIG_DIR [--attach]
-Headway CLI: source $RIG_DIR/rig.env, then
-  headway --board $board --relay ws://127.0.0.1:$RIG_PORT --db $RIG_DIR/headway-db --nsec \$RIG_NSEC show
+nd:          NOTEDECK_SOCKET=$RIG_SOCKET $RIG_DIR/nd --no-start headway --board $board show
 Teardown:    $0 down $RIG_DIR     (kills pid $RIG_NOTEDECK_PID)
 EOF
 }
@@ -328,7 +327,7 @@ print_xvfb_rig() {
 
 rig up in $dir
   display   $RIG_DISPLAY ($RIG_SIZE)    window $win
-  relay     ws://127.0.0.1:$RIG_PORT
+  socket    $RIG_SOCKET
   pids      Xvfb $RIG_XVFB_PID, notedeck $RIG_NOTEDECK_PID
   log       $dir/notedeck.log
 
@@ -337,8 +336,7 @@ last item). R on the board opens the review queue. Drive it with
   DISPLAY=$RIG_DISPLAY xdotool key --window $win <key>
 Screenshot:  $0 shot $dir out.png
 Dave refs:   start a session in Dave, then  $0 session $dir [--attach]
-Headway CLI: source $dir/rig.env, then
-  headway --board $board --relay ws://127.0.0.1:$RIG_PORT --db $dir/headway-db --nsec \$RIG_NSEC show
+nd:          NOTEDECK_SOCKET=$RIG_SOCKET $dir/nd --no-start headway --board $board show
 Teardown:    $0 down $dir     (kills pids $RIG_NOTEDECK_PID $RIG_XVFB_PID)
 EOF
 }
@@ -347,7 +345,7 @@ seed_board() {
     local commits=$1
     echo "seeding the demo board..." >&2
     # A headless app runs every app's update, so Headway has usually made its
-    # default board already; then the CLI only titles it.
+    # default board already; then nd only titles it.
     if ! rig_headway seed --title "Live rig" >/dev/null 2>&1; then
         rig_headway rename "Live rig" >/dev/null
     fi
@@ -440,12 +438,13 @@ cmd_shot() {
     local rig_args
     rig_notedeck_args
     # One process at a time on the database: stop the live app, film a fresh
-    # one from the same data, then bring the live one back. The shot keeps
-    # the embedded relay off, so the port stays free for the restart.
+    # one from the same data, then bring the live one back. The shot serves
+    # the rig's socket too, never the user's.
     stop_notedeck
     local ok=1
-    env -u DISPLAY -u WAYLAND_DISPLAY "$RIG_DIR/notedeck" "${rig_args[@]}" \
-        --no-local-relay --size "$RIG_SIZE" "${steps[@]}" --shot "$out" \
+    env -u DISPLAY -u WAYLAND_DISPLAY NOTEDECK_SOCKET="$RIG_SOCKET" \
+        "$RIG_DIR/notedeck" "${rig_args[@]}" \
+        --size "$RIG_SIZE" "${steps[@]}" --shot "$out" \
         >>"$RIG_DIR/shot.log" 2>&1 || ok=0
     start_headless
     ((ok)) || die "the shot failed; see $RIG_DIR/shot.log"

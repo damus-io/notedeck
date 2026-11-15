@@ -2,8 +2,8 @@
 //! nostr events.
 //!
 //! This crate is UI- and app-framework-agnostic: it only depends on `nostrdb`
-//! and `enostr`. Both the egui app (`notedeck_headway`) and the CLI
-//! (`headway_cli`) build on it.
+//! and `enostr`. The egui app (`notedeck_headway`) and its tools, which `nd
+//! headway` drives, build on it.
 //!
 //! - [`event`] — the pure schema: builders, parsers, and the reducer that folds
 //!   a set of nostr events into a [`event::BoardView`]. No I/O.
