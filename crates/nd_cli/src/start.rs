@@ -8,7 +8,7 @@
 //! open. `--no-start`, or `$ND_NO_START`, keeps the old answer: exit 2.
 
 use crate::{Failure, NOT_RUNNING};
-use notedeck_ipc::{Request, Response};
+use notedeck_ipc::{Request, Response, ToolInfo};
 use std::path::PathBuf;
 #[cfg(unix)]
 use {
@@ -80,6 +80,30 @@ impl Reach {
             path: notedeck_ipc::socket_path(),
             start,
         }
+    }
+
+    /// Whether nd may start a notedeck here when none answers.
+    pub fn may_start(&self) -> bool {
+        self.start == Start::IfNeeded
+    }
+
+    /// The tools of the notedeck on the socket, when one answers within
+    /// `timeout`. It never starts one, and a slow or stale socket is `None`
+    /// rather than a wait, so help that asks stays instant.
+    #[cfg(unix)]
+    pub fn peek_tools(&self, timeout: Duration) -> Option<Vec<ToolInfo>> {
+        let client = connect(&self.path).ok()?;
+        client.set_read_timeout(Some(timeout)).ok()?;
+        match talk(client, &Request::ListTools).ok()?.outcome {
+            Outcome::Ok(Reply::Tools { tools }) => Some(tools),
+            _ => None,
+        }
+    }
+
+    /// There is no socket off Unix, so no notedeck to peek at.
+    #[cfg(not(unix))]
+    pub fn peek_tools(&self, _timeout: std::time::Duration) -> Option<Vec<ToolInfo>> {
+        None
     }
 
     /// There is no socket off Unix, so no notedeck to reach or start.

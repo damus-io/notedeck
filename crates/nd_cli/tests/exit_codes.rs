@@ -1156,6 +1156,86 @@ fn a_notedeck_that_wont_start_exits_2() {
     assert!(log.contains("boom"), "{log}");
 }
 
+/// `nd --help` lists the running notedeck's app commands, each namespace's
+/// verbs under it, between nd's own groups and the options.
+#[test]
+fn help_lists_the_running_notedecks_app_commands() {
+    let dir = socket_dir();
+    let Fake { socket, server } = serve(&dir, vec![app_list()]);
+    let out = nd(&socket, &["--help"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let page = stderr(&out);
+    let apps = page.find("APPS (from the running notedeck)\n    headway\n");
+    let serve = page.find("SERVE\n").unwrap();
+    let options = page.find("OPTIONS (every command):").unwrap();
+    assert!(
+        apps.is_some_and(|apps| serve < apps && apps < options),
+        "{page}"
+    );
+    assert!(
+        page.contains("      show            Show card / Show board\n"),
+        "{page}"
+    );
+    assert!(
+        page.contains("App commands: `nd <app> <cmd> --help`."),
+        "{page}"
+    );
+    assert!(!page.contains("no notedeck running"), "{page}");
+    assert_eq!(server.join().unwrap(), vec![Request::ListTools]);
+}
+
+/// With nothing on the socket, `nd --help` prints the static page at once and
+/// exits 0, without starting a notedeck to ask.
+#[test]
+fn help_without_notedeck_starts_none() {
+    let dir = socket_dir();
+    let socket = dir.path().join("nd.sock");
+    let bin = notedeck_script(dir.path(), "exit 0");
+    let started = std::time::Instant::now();
+    for args in [&[][..], &["--help"], &["help"]] {
+        let out = nd_starting(&socket, &bin, args);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let page = stderr(&out);
+        assert!(
+            page.contains("App commands: `nd <app> <command>`"),
+            "{page}"
+        );
+        assert!(
+            page.contains("(no notedeck running: start one, or run `nd <app> --help`"),
+            "{page}"
+        );
+        assert!(!page.contains("APPS"), "{page}");
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(!dir.path().join("args").exists(), "help started a notedeck");
+
+    let out = nd_starting(&socket, &bin, &["--no-start", "--help"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--no-start / $ND_NO_START keeps nd from starting one"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// A socket that takes the connection and never answers costs `nd --help`
+/// its short wait, not a hang: it prints the page without the apps.
+#[test]
+fn help_doesnt_wait_on_a_socket_that_never_answers() {
+    let dir = socket_dir();
+    let socket = dir.path().join("nd.sock");
+    let _listener = UnixListener::bind(&socket).expect("bind");
+    let started = std::time::Instant::now();
+    let out = nd(&socket, &["--help"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no notedeck running"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+}
+
 /// A shim's command line, and the dir holding the `nd` it finds first on
 /// PATH, which lives as long as the run needs it.
 struct Shim {

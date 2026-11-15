@@ -218,18 +218,8 @@ fn terminal_width() -> Option<usize> {
 
 /// The width of the terminal on stdout, in columns, or `None` when stdout
 /// isn't one.
-#[cfg(unix)]
 fn stdout_width() -> Option<usize> {
-    // SAFETY: TIOCGWINSZ only writes a `winsize` into the struct passed, and
-    // fails harmlessly (returning -1) when stdout isn't a terminal.
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
-    (ok && ws.ws_col > 0).then_some(ws.ws_col as usize)
-}
-
-#[cfg(not(unix))]
-fn stdout_width() -> Option<usize> {
-    None
+    crate::output::stdout_size().map(|size| size.cols)
 }
 
 /// `text` with each line clipped to `width` visible columns, or whole when

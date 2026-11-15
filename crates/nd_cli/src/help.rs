@@ -34,14 +34,28 @@ pub const GLOBALS: &[GlobalOption] = &[
     },
 ];
 
-/// What `nd --help` prints after the overview: the commands that come from
-/// the running notedeck's tools, which a page printed without asking it can't
-/// list.
+/// What `nd --help` prints after the overview when no notedeck answered: the
+/// commands that come from the running notedeck's tools, which a page printed
+/// without one can't list.
 pub const APPS_HINT: &str = "\
 App commands: `nd <app> <command>` runs a tool that declares one, e.g.
 `nd headway show <card>`; `nd <app> --help` lists an app's, from the running
 notedeck.
 ";
+
+/// The line after [`APPS_HINT`] saying why the app commands aren't listed,
+/// and how to see them.
+pub const NOT_RUNNING_NOTE: &str =
+    "(no notedeck running: start one, or run `nd <app> --help` to start a data-only one)\n";
+
+/// [`NOT_RUNNING_NOTE`] under `--no-start` / `$ND_NO_START`, when
+/// `nd <app> --help` won't start one either.
+pub const NOT_RUNNING_NO_START_NOTE: &str =
+    "(no notedeck running, and --no-start / $ND_NO_START keeps nd from starting one)\n";
+
+/// What `nd --help` prints after the overview when its APPS section lists
+/// the running notedeck's commands.
+pub const APPS_PER_COMMAND: &str = "App commands: `nd <app> <cmd> --help`.\n";
 
 /// What `nd help options` prints after the flags: the exit codes and the
 /// socket, which hold for every command.

@@ -690,6 +690,49 @@ fn owned(words: &[&str]) -> Vec<String> {
 /// `nd <ns> --help`: every command under `prefix`, one line each, with the
 /// titles of the tools it runs.
 fn namespace_page(entries: &[Entry], prefix: &[&str]) -> String {
+    let ns = prefix.join(" ");
+    let mut out = format!(
+        "nd {ns} — the running notedeck's {ns} commands\n\nUSAGE: nd {ns} <COMMAND> [ARGS...]\n\nCOMMANDS\n"
+    );
+    out.push_str(&command_lines(entries, prefix, NAMESPACE_INDENT));
+    out.push_str(&format!("\nPer command: `nd {ns} <cmd> --help`.\n"));
+    out
+}
+
+/// How far [`namespace_page`] indents its commands, as nd's own overview
+/// indents its.
+const NAMESPACE_INDENT: usize = 4;
+
+/// How far [`apps_section`] indents an app's commands: under its name, which
+/// sits where nd's own commands do.
+const APP_VERB_INDENT: usize = NAMESPACE_INDENT + 2;
+
+/// `nd --help`'s APPS section: every namespace the running notedeck's tools
+/// declare, sorted, each with its commands under it as
+/// [`namespace_page`] lists them. `None` when no tool declares a command.
+pub fn apps_section(tools: &[ToolInfo]) -> Option<String> {
+    let entries = entries(tools);
+    let mut namespaces: Vec<&str> = entries.iter().map(|e| e.path()[0].as_str()).collect();
+    namespaces.sort_unstable();
+    namespaces.dedup();
+    if namespaces.is_empty() {
+        return None;
+    }
+
+    let mut out = "APPS (from the running notedeck)\n".to_owned();
+    for ns in namespaces {
+        out.push_str(&format!("{:NAMESPACE_INDENT$}{ns}\n", ""));
+        out.push_str(&command_lines(&entries, &[ns], APP_VERB_INDENT));
+    }
+    out.push('\n');
+    Some(out)
+}
+
+/// One line for every command under `prefix`, sorted: its words after the
+/// prefix, then the titles of the tools it runs. The line starts `indent`
+/// spaces in, and the titles line up in the column nd's own overview puts
+/// its summaries in, however deep the indent.
+fn command_lines(entries: &[Entry], prefix: &[&str], indent: usize) -> String {
     let prefix_owned = owned(prefix);
     let mut paths: Vec<&[String]> = entries
         .iter()
@@ -699,19 +742,20 @@ fn namespace_page(entries: &[Entry], prefix: &[&str]) -> String {
     paths.sort_unstable();
     paths.dedup();
 
-    let ns = prefix.join(" ");
-    let mut out = format!(
-        "nd {ns} — the running notedeck's {ns} commands\n\nUSAGE: nd {ns} <COMMAND> [ARGS...]\n\nCOMMANDS\n"
-    );
+    let width = (NAMESPACE_INDENT + NAME_COL).saturating_sub(indent);
+    let mut out = String::new();
     for path in paths {
         let name = path[prefix.len()..].join(" ");
         let titles: Vec<&str> = candidates(entries, path)
             .iter()
             .map(|e| e.tool.title.as_str())
             .collect();
-        out.push_str(&format!("    {name:<NAME_COL$}{}\n", titles.join(" / ")));
+        out.push_str(&format!(
+            "{:indent$}{name:<width$}{}\n",
+            "",
+            titles.join(" / ")
+        ));
     }
-    out.push_str(&format!("\nPer command: `nd {ns} <cmd> --help`.\n"));
     out
 }
 
@@ -1282,6 +1326,60 @@ mod tests {
         );
         // A tool with no command isn't one.
         assert!(!page.contains("review"), "{page}");
+    }
+
+    /// `nd --help`'s APPS section lists every namespace, sorted, each with
+    /// the lines its own page lists, titles in the same column.
+    #[test]
+    fn the_apps_section_lists_each_namespaces_commands() {
+        let empty = json!({"type": "object", "properties": {}, "required": [], "x-nd-order": []});
+        let mut tools = fixture();
+        tools.push(tool("notebook_show", &["notebook", "show"], empty.clone()));
+        tools.push(tool("agentium_list", &["agentium", "list"], empty));
+        let section = apps_section(&tools).unwrap();
+        assert!(
+            section.starts_with("APPS (from the running notedeck)\n"),
+            "{section}"
+        );
+        assert!(
+            section.ends_with("\n\n"),
+            "a blank line closes it, as a group"
+        );
+
+        let agentium = section.find("\n    agentium\n").unwrap();
+        let headway = section.find("\n    headway\n").unwrap();
+        let notebook = section.find("\n    notebook\n").unwrap();
+        assert!(agentium < headway && headway < notebook, "{section}");
+
+        // Each namespace's block is its page's command lines, two deeper.
+        let entries = entries(&tools);
+        for ns in ["agentium", "headway", "notebook"] {
+            let page = namespace_page(&entries, &[ns]);
+            let listed: Vec<&str> = page
+                .lines()
+                .skip_while(|l| *l != "COMMANDS")
+                .skip(1)
+                .take_while(|l| !l.is_empty())
+                .collect();
+            assert!(!listed.is_empty(), "{page}");
+            let start = section.find(&format!("\n    {ns}\n")).unwrap() + ns.len() + 6;
+            let block: Vec<&str> = section[start..]
+                .lines()
+                .take_while(|l| l.starts_with("      "))
+                .collect();
+            assert_eq!(block.len(), listed.len(), "{section}");
+            for (line, page_line) in block.iter().zip(&listed) {
+                assert_eq!(
+                    line.split_whitespace().collect::<Vec<_>>(),
+                    page_line.split_whitespace().collect::<Vec<_>>()
+                );
+                // The title starts in the same column on both.
+                let title_col = NAMESPACE_INDENT + NAME_COL;
+                assert_eq!(&line[title_col..], &page_line[title_col..], "{line:?}");
+            }
+        }
+
+        assert_eq!(apps_section(&[]), None);
     }
 
     #[test]

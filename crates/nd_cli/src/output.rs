@@ -76,6 +76,36 @@ pub fn print_json(value: &Value) {
     println!("{}", text.expect("a JSON value always serializes"));
 }
 
+/// The terminal on stdout, in character cells.
+pub struct TermSize {
+    pub cols: usize,
+    pub rows: usize,
+}
+
+/// The size of the terminal on stdout, or `None` when stdout isn't one.
+#[cfg(unix)]
+pub fn stdout_size() -> Option<TermSize> {
+    // SAFETY: TIOCGWINSZ only writes a `winsize` into the struct passed, and
+    // fails harmlessly (returning -1) when stdout isn't a terminal.
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
+    (ok && ws.ws_col > 0 && ws.ws_row > 0).then_some(TermSize {
+        cols: ws.ws_col as usize,
+        rows: ws.ws_row as usize,
+    })
+}
+
+#[cfg(not(unix))]
+pub fn stdout_size() -> Option<TermSize> {
+    None
+}
+
+/// The height of the terminal on stdout, in rows, or `None` when stdout
+/// isn't one.
+pub fn stdout_rows() -> Option<usize> {
+    stdout_size().map(|size| size.rows)
+}
+
 /// The variable naming the pager for commands under `ns`: `$HEADWAY_PAGER`
 /// for `nd headway …`, the one the `headway` CLI reads.
 pub fn pager_var(ns: &str) -> String {

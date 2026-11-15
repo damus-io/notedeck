@@ -22,6 +22,12 @@ impl Client {
         })
     }
 
+    /// Give up on an answer that takes longer than `timeout` (`None` waits
+    /// for as long as it takes, the default): a read past it is an error.
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.reader.get_ref().set_read_timeout(timeout)
+    }
+
     /// Send `request` as one line.
     pub fn send(&mut self, request: &Request) -> io::Result<()> {
         self.send_line(&request.to_line())
@@ -74,14 +80,11 @@ impl Client {
 /// A `--serve` notedeck asks this before it binds, so it never takes the
 /// socket from a notedeck that is running.
 pub fn probe(path: &Path, timeout: Duration) -> bool {
-    let Ok(stream) = UnixStream::connect(path) else {
+    let Ok(mut client) = Client::connect(path) else {
         return false;
     };
-    if stream.set_read_timeout(Some(timeout)).is_err() {
+    if client.set_read_timeout(Some(timeout)).is_err() {
         return false;
     }
-    let mut client = Client {
-        reader: BufReader::new(stream),
-    };
     client.request(&Request::ListTools).is_ok()
 }

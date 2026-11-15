@@ -39,8 +39,9 @@ use std::process::ExitCode;
 enum Invocation {
     /// A command, and whether nd may start a notedeck to run it in.
     Run { command: Command, no_start: bool },
-    /// `nd`, or `nd --help`: the command list.
-    Usage,
+    /// `nd`, or `nd --help`: the command list, and whether `--no-start`
+    /// was given, which only changes what the page says.
+    Usage { no_start: bool },
     /// `nd <cmd> --help` or `nd help <cmd>`.
     CommandHelp(&'static CommandHelp<'static>),
     /// `nd help options`.
@@ -112,8 +113,9 @@ fn main() -> ExitCode {
         }
     };
     let result = match invocation {
-        Invocation::Usage => {
-            eprint!("{}{}", help::CLI.overview(help::GLOBALS), help::APPS_HINT);
+        Invocation::Usage { no_start } => {
+            let env = std::env::var(start::NO_START_ENV).ok();
+            usage(&Reach::new(Start::resolve(no_start, env.as_deref())));
             Ok(())
         }
         Invocation::CommandHelp(cmd) => {
@@ -164,7 +166,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
 
     let name = loop {
         let Some(arg) = args.next() else {
-            return Ok(Invocation::Usage);
+            return Ok(Invocation::Usage { no_start });
         };
         match arg.as_str() {
             "-h" | "--help" => want_help = true,
@@ -504,6 +506,41 @@ fn read_json(source: JsonSource) -> Result<Value, Failure> {
     serde_json::from_str(&text).map_err(|e| Failure::new(format!("{from} is not JSON: {e}")))
 }
 
+/// How long `nd --help` waits for a running notedeck to list its tools
+/// before printing the page without them.
+const HELP_PEEK: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// `nd` / `nd --help`: nd's own commands, then the running notedeck's app
+/// commands when one answers within [`HELP_PEEK`]. It never starts one, so
+/// help stays instant and leaves nothing running. A page taller than the
+/// terminal goes through the pager.
+fn usage(reach: &Reach) {
+    let apps = reach
+        .peek_tools(HELP_PEEK)
+        .and_then(|tools| commands::apps_section(&tools));
+    let page = match &apps {
+        Some(apps) => format!(
+            "{}{}",
+            help::CLI.overview_with(help::GLOBALS, apps),
+            help::APPS_PER_COMMAND
+        ),
+        None => format!(
+            "{}{}{}",
+            help::CLI.overview(help::GLOBALS),
+            help::APPS_HINT,
+            match reach.may_start() {
+                true => help::NOT_RUNNING_NOTE,
+                false => help::NOT_RUNNING_NO_START_NOTE,
+            }
+        ),
+    };
+    let tall = output::stdout_rows().is_some_and(|rows| page.lines().count() > rows);
+    match tall {
+        true => cli_term::emit(&page, true, &output::pager_var("nd")),
+        false => eprint!("{page}"),
+    }
+}
+
 /// `nd --version`: this build's version, then the running notedeck's when
 /// one answers. It never starts one to ask.
 fn version(reach: &Reach) {
@@ -577,9 +614,15 @@ mod tests {
 
     #[test]
     fn help_picks_the_overview_or_a_page() {
-        assert!(matches!(parse_args(&[]), Ok(Invocation::Usage)));
-        assert!(matches!(parse_args(&["--help"]), Ok(Invocation::Usage)));
-        assert!(matches!(parse_args(&["help"]), Ok(Invocation::Usage)));
+        let usage = |args: &[&str]| match parse_args(args) {
+            Ok(Invocation::Usage { no_start }) => Some(no_start),
+            _ => None,
+        };
+        assert_eq!(usage(&[]), Some(false));
+        assert_eq!(usage(&["--help"]), Some(false));
+        assert_eq!(usage(&["help"]), Some(false));
+        assert_eq!(usage(&["--no-start"]), Some(true));
+        assert_eq!(usage(&["--no-start", "--help"]), Some(true));
         assert_eq!(page_of(&["call", "--help"]), Some("call"));
         assert_eq!(page_of(&["help", "tools"]), Some("tools"));
         assert_eq!(page_of(&["--help", "call"]), Some("call"));

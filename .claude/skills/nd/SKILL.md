@@ -92,6 +92,10 @@ instead.
   `--json`. It calls `dave_spawn_session`; `nd agentium spawn` is the relay one
   for other hosts.
 - `nd --version` — nd's version, and the running notedeck's.
+- `nd` / `nd --help` — nd's own commands, then an APPS section listing every
+  `nd <app> <verb>` the running notedeck's tools declare. It only peeks at the
+  socket (300ms) and never starts a notedeck, so with none running it prints
+  the static page; `nd <app> --help` starts one and lists that app's.
 - `nd <cmd> --help`, `nd help options` — per-command pages, exit codes.
 
 ## Examples

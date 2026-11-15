@@ -111,6 +111,15 @@ impl Cli {
     /// [`options_page`](Cli::options_page). The last line points at both kinds
     /// of page, so the overview stays a map rather than a manual.
     pub fn overview(&self, globals: &[GlobalOption]) -> String {
+        self.overview_with(globals, "")
+    }
+
+    /// [`overview`](Cli::overview) with `extra` printed after the command
+    /// groups and before the options: a section the CLI builds at runtime,
+    /// such as commands it learns from elsewhere. `extra` is
+    /// newline-terminated and ends with a blank line, as a group does, or is
+    /// empty for none.
+    pub fn overview_with(&self, globals: &[GlobalOption], extra: &str) -> String {
         let bin = self.bin;
         let mut out = format!(
             "{bin} — {about}\n\nUSAGE: {bin} [OPTIONS] <COMMAND> [ARGS...]\n\n",
@@ -130,6 +139,7 @@ impl Cli {
             }
             out.push('\n');
         }
+        out.push_str(extra);
 
         // One line per option, so a flag wider than the usual column widens
         // the column for the whole block rather than wrapping onto two lines.
@@ -418,6 +428,20 @@ mod tests {
         assert!(out.ends_with(
             "\nPer command: `demo <cmd> --help`. Options in full: `demo help options`.\n"
         ));
+    }
+
+    /// An extra section lands after the last group and before the options.
+    #[test]
+    fn overview_with_puts_the_extra_before_the_options() {
+        let out = FIXTURE.overview_with(GLOBALS, "MORE\n    thing             A thing\n\n");
+        let writing = out.find("WRITING\n").unwrap();
+        let more = out.find("\nMORE\n    thing").unwrap();
+        let options = out.find("OPTIONS (every command):").unwrap();
+        assert!(writing < more && more < options, "{out}");
+        assert_eq!(
+            FIXTURE.overview_with(GLOBALS, ""),
+            FIXTURE.overview(GLOBALS)
+        );
     }
 
     /// `help options` prints every global's full text, then `-h`'s, then the
