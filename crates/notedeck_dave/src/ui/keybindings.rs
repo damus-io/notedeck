@@ -126,7 +126,9 @@ pub enum KeyAction {
 /// UI tools before Dave renders. Chrome's which-key strip lists them. What
 /// stays here is the mode itself:
 ///
-/// - Esc in the input enters it. Esc at its root is left for chrome, which
+/// - Esc in the input enters it, and so does the input losing focus to
+///   nothing (a click on the transcript or the panel): an input that isn't
+///   listening is normal mode. Esc at its root is left for chrome, which
 ///   toggles the side menu, and normal mode stays on; a held Esc's
 ///   auto-repeats are swallowed, so holding it doesn't flicker the menu.
 /// - A bare key the keymap didn't take is swallowed, so it reaches no widget,
@@ -156,6 +158,9 @@ pub struct NormalMode {
     /// Normal mode ended wanting the active input focused; taken by
     /// [`Self::take_input_focus`].
     input_focus_due: bool,
+    /// Whether the chat input held focus at the last check, so the next one
+    /// can tell it just lost it ([`Self::input_blurred`]).
+    input_focused: bool,
 }
 
 /// Which part of Dave normal mode's motions move through.
@@ -261,6 +266,15 @@ impl NormalMode {
         if !keys.sessions_shown {
             self.pane = Pane::Chat;
         }
+    }
+
+    /// Record whether the chat input holds focus this frame
+    /// ([`KeyContext::input_focused`]), and say whether it just lost it.
+    /// Normal mode holds focus requests rather than granting them, so a
+    /// request pending while it is on is no focus to lose.
+    fn input_blurred(&mut self, focused: bool) -> bool {
+        let focused = focused && !self.on;
+        std::mem::replace(&mut self.input_focused, focused) && !focused
     }
 
     /// Whether normal mode is on: bare keys are commands, not typing. Dave's
@@ -434,6 +448,9 @@ pub struct KeyContext {
     /// The active chat has a message range picked: Esc drops it first, in
     /// either mode.
     pub has_range: bool,
+    /// The active session's chat input has keyboard focus, or a request for
+    /// it is pending. Its losing focus to nothing enters normal mode.
+    pub input_focused: bool,
 }
 
 /// Check for keybinding actions.
@@ -453,8 +470,10 @@ pub fn check_keybindings(
     keys: KeyContext,
 ) -> Option<KeyAction> {
     mode.observe(&keys);
+    let input_blurred = mode.input_blurred(keys.input_focused);
     let KeyContext {
         ai_mode,
+        has_pending_permission,
         in_tentative_state,
         overlay_open,
         renaming,
@@ -499,6 +518,23 @@ pub fn check_keybindings(
         && !overlay_open
         && !renaming
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
+    {
+        mode.open(ctx);
+        return None;
+    }
+
+    // The input losing focus to nothing (a click on the transcript, the
+    // panel, the scene) leaves it not listening, which is normal mode. Not
+    // when something set its focus aside for us: an overlay or the rename
+    // field took the keyboard, or a pending permission request surrenders it
+    // so its bare keys work. Mobile has no keyboard to hand normal mode.
+    if input_blurred
+        && !mode.is_normal()
+        && !overlay_open
+        && !renaming
+        && !has_pending_permission
+        && !notedeck::ui::is_compiled_as_mobile()
+        && ctx.memory(|m| m.focused()).is_none()
     {
         mode.open(ctx);
         return None;
@@ -737,6 +773,7 @@ mod tests {
             overlay_open: false,
             renaming: false,
             has_range: false,
+            input_focused: false,
         },
         offers: ActiveOffers {
             ai_mode: AiMode::Agentic,
@@ -1320,9 +1357,16 @@ mod tests {
     /// claims. Normal mode's request to focus the input is honoured the way
     /// `settle_normal_mode_focus` does it.
     fn input_harness(input_id: egui::Id) -> Harness<'static, Typing> {
+        input_harness_in(FRAME, input_id)
+    }
+
+    /// [`input_harness`] in `frame`, with [`KeyContext::input_focused`] read
+    /// off the field each frame the way Dave reads it off the chat input.
+    fn input_harness_in(frame: Frame, input_id: egui::Id) -> Harness<'static, Typing> {
         let mut harness = Harness::new_ui_state(
             move |ui, Typing { keys, text }: &mut Typing| {
-                keys.frame(ui.ctx(), FRAME);
+                let focused = ui.memory(|m| m.has_focus(input_id));
+                keys.frame(ui.ctx(), frame.keys(|k| k.input_focused = focused));
                 if keys.mode.take_input_focus() {
                     ui.memory_mut(|m| m.request_focus(input_id));
                 }
@@ -1391,6 +1435,59 @@ mod tests {
             "",
             "j moves the cursor instead of typing"
         );
+    }
+
+    /// Click the primary button at `pos`, as a click off the input lands.
+    fn click_at<S>(harness: &mut Harness<'_, S>, pos: egui::Pos2) {
+        harness.hover_at(pos);
+        harness.run_steps(1);
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        harness.run_steps(2);
+    }
+
+    /// Somewhere well clear of [`input_harness`]'s one-line field.
+    const OFF_THE_INPUT: egui::Pos2 = egui::pos2(200.0, 300.0);
+
+    #[test]
+    fn clicking_off_the_input_enters_normal_mode() {
+        let input_id = egui::Id::unique("chat_input");
+        let mut harness = input_harness(input_id);
+        assert!(!harness.state().keys.mode.is_normal());
+
+        click_at(&mut harness, OFF_THE_INPUT);
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+        assert!(
+            harness.state().keys.mode.is_normal(),
+            "an input that isn't listening is normal mode"
+        );
+
+        type_key(&mut harness, Key::J, "j");
+        assert_eq!(harness.state().text, "", "j is a command, not text");
+
+        type_key(&mut harness, Key::I, "i");
+        assert!(!harness.state().keys.mode.is_normal());
+        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id));
+    }
+
+    #[test]
+    fn a_pending_permission_taking_focus_is_not_normal_mode() {
+        let input_id = egui::Id::unique("chat_input");
+        let pending = FRAME.keys(|k| k.has_pending_permission = true);
+        let mut harness = input_harness_in(pending, input_id);
+
+        // Dave surrenders the input's focus while a request waits, so its
+        // bare 1 / 2 / 3 reach the permission bindings.
+        harness.ctx.memory_mut(|m| m.surrender_focus(input_id));
+        harness.run();
+        harness.run();
+        assert!(!harness.state().keys.mode.is_normal());
     }
 
     #[test]

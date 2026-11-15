@@ -613,6 +613,7 @@ impl Dave {
                 .session_manager
                 .get_active()
                 .is_some_and(|s| s.chat_range.span().is_some()),
+            input_focused: ui::input_focused(egui_ctx, &self.session_manager),
         };
         match check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
             Some(action) => self.dispatch_with_jump(action, egui_ctx),

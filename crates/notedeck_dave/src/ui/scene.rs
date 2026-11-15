@@ -1868,6 +1868,7 @@ mod tests {
             overlay_open: false,
             renaming: false,
             has_range: false,
+            input_focused: false,
         };
         if let Some(action) = check_keybindings(ui.ctx(), &mut s.normal, keys) {
             s.dispatch(action, ui.ctx());

@@ -3010,6 +3010,7 @@ mod tests {
                     overlay_open: false,
                     renaming: false,
                     has_range: false,
+                    input_focused: false,
                 };
                 if let Some(a) = check_keybindings(ui.ctx(), mode, keys) {
                     *action = Some(a);

@@ -1280,6 +1280,16 @@ pub fn handle_key_action(
     }
 }
 
+/// Whether the active session's chat input holds the keyboard: it has focus,
+/// or a request for it is pending (a session switch, a new agent), so the
+/// frame before that request lands isn't read as the input losing focus.
+/// Feeds [`keybindings::KeyContext::input_focused`].
+pub(crate) fn input_focused(ctx: &egui::Context, session_manager: &SessionManager) -> bool {
+    session_manager
+        .get_active()
+        .is_some_and(|s| s.focus_requested || ctx.memory(|m| m.has_focus(input_id(s.id))))
+}
+
 /// Keep normal mode in charge of keyboard focus, and hand focus to the active
 /// input when it ends. Runs every frame, after the keybindings are dispatched.
 ///
@@ -1771,6 +1781,7 @@ mod tests {
                 .session_manager
                 .get_active()
                 .is_some_and(|s| s.chat_range.span().is_some()),
+            input_focused: super::input_focused(ui.ctx(), &d.session_manager),
         };
         if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
             d.dispatch(action, ui.ctx());
@@ -1825,6 +1836,7 @@ mod tests {
                 m.has_focus(id) || m.had_focus_last_frame(id)
             }),
             has_range: false,
+            input_focused: false,
         };
         if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
             d.dispatch(action, ui.ctx());

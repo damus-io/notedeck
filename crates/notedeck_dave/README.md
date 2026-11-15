@@ -53,9 +53,10 @@ You can use either mode depending on your needs—simple chat for quick Nostr qu
 ### Keyboard-Driven Workflow
 
 Dave's keyboard is vim-shaped. **Insert mode** is the default: the chat input
-has focus and keys type into it. **Esc** enters **normal mode**: the input gives
-up focus, dims, and its placeholder turns into a `-- NORMAL --` cue, and bare
-keys become commands. The keys are notedeck's keymap
+has focus and keys type into it. **Esc** enters **normal mode**, and so does
+clicking off the input (onto the transcript, the panel, anywhere that isn't a
+text field): the input gives up focus, dims, and its placeholder turns into a
+`-- NORMAL --` cue, and bare keys become commands. The keys are notedeck's keymap
 (`crates/notedeck_chrome/src/keymap/default_keymap.toml`, the `dave.*` scopes),
 and `?` pins its which-key strip along the bottom of the window; it also shows
 what can finish a half-typed prefix like `z`.
