@@ -20,17 +20,32 @@
 //! drains. A client too slow to keep up is dropped rather than waited on, and
 //! one that hangs up ends the task.
 //!
+//! An edit answers once its write reads back. A data tool that wrote notes
+//! names them (see [`Rendered::written`](notedeck::Rendered::written)), and
+//! since nostrdb ingests, and unwraps a sealed board's envelopes,
+//! asynchronously, the answer is held until `get_note_by_id` finds every one,
+//! or [`SETTLE_DEADLINE`] passes. So `nd headway add`, then an edit of the new
+//! ref, never folds a board without the card. The wait is checked each tick,
+//! never blocked on: a subscription on the ids wakes the loop when they land.
+//!
 //! Only the real notedeck serves: [`Chrome::serve_ipc`] is called by its
 //! entry points, never by a constructor, so a test chrome leaves the socket of
 //! the notedeck running on the same machine alone.
 
 use super::actions::chrome_handle_app_action;
 use super::Chrome;
+use nostrdb_net::NoteId;
 use nostrdb_net::{FullKeypair, SecretKey};
 use notedeck::{
     AppAction, AppContext, Finished, PendingCall, Started, StreamJob, ToolOutcome, ToolSpec,
 };
 use notedeck_ipc::{IntentStatus, Reply, Request, Response, Signer, ToolInfo};
+
+/// How long an edit's answer waits for its write to read back before it
+/// answers anyway, with a notice. Ingest takes milliseconds; this is for a
+/// note nostrdb refused, which would otherwise hold the client forever.
+#[cfg(unix)]
+const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How many events a stream holds for a client that hasn't read them yet
 /// before it drops the client: a burst of a session's messages, with room.
@@ -51,6 +66,25 @@ pub(super) struct IpcServer {
     /// once each finishes. Empty but while one runs.
     #[cfg(unix)]
     running: Vec<RunningCall>,
+    /// Edits answered but not yet told, waiting for their writes to read
+    /// back. Empty but for the few milliseconds an ingest takes.
+    #[cfg(unix)]
+    settling: Vec<SettlingCall>,
+}
+
+/// An edit's answer, held until the notes it wrote read back.
+#[cfg(unix)]
+struct SettlingCall {
+    /// The notes to find before answering.
+    written: Vec<NoteId>,
+    /// A subscription on `written`, only so nostrdb's callback wakes the
+    /// loop when they land; nothing polls it. `None` if it couldn't be made,
+    /// when the idle tick finds them instead.
+    sub: Option<nostrdb::Subscription>,
+    /// When to answer even if they haven't.
+    deadline: std::time::Instant,
+    response: Response,
+    connection: notedeck_ipc::Connection,
 }
 
 /// A slow tool's work on its worker thread, and the client waiting on it.
@@ -68,11 +102,16 @@ struct PendingIntent {
     connection: notedeck_ipc::Connection,
 }
 
-/// What a request comes to: an answer now, an intent for the window to
-/// carry out before answering, a slow tool's work to run before answering,
-/// or a stream to run for as long as the client listens.
+/// What a request comes to: an answer now, an answer once the notes it
+/// wrote read back, an intent for the window to carry out before answering,
+/// a slow tool's work to run before answering, or a stream to run for as
+/// long as the client listens.
 pub(super) enum Served {
     Reply(Response),
+    Settle {
+        response: Response,
+        written: Vec<NoteId>,
+    },
     Apply(AppAction),
     Run(PendingCall),
     Stream(StreamJob),
@@ -116,7 +155,7 @@ impl Chrome {
         self.answer_finished_calls();
         loop {
             let Some(incoming) = self.ipc.listener.as_ref().and_then(|l| l.try_recv()) else {
-                return;
+                break;
             };
             let notedeck_ipc::Incoming {
                 request,
@@ -124,6 +163,11 @@ impl Chrome {
             } = incoming;
             let response = match serve(self, ctx, request) {
                 Served::Reply(response) => response,
+                Served::Settle { response, written } => {
+                    let call = SettlingCall::new(ctx.ndb, written, response, connection);
+                    self.ipc.settling.push(call);
+                    continue;
+                }
                 Served::Apply(action) => {
                     if let Some(egui) = ctx.egui {
                         egui.request_repaint();
@@ -152,6 +196,49 @@ impl Chrome {
             if let Err(err) = connection.reply(&response) {
                 tracing::debug!("ipc: the client left before its answer: {err}");
             }
+        }
+        // After the requests, so an edit whose write already landed is
+        // answered on the tick it arrived.
+        self.answer_settled_calls(ctx);
+    }
+
+    /// Answer each held edit whose writes have read back, or whose deadline
+    /// has passed, and in the GUI schedule a frame for the next deadline.
+    /// Allocates nothing.
+    #[cfg(unix)]
+    fn answer_settled_calls(&mut self, ctx: &mut AppContext) {
+        if self.ipc.settling.is_empty() {
+            return;
+        }
+        let ndb = &mut *ctx.ndb;
+        let now = std::time::Instant::now();
+        self.ipc.settling.retain_mut(|call| {
+            let landed = nostrdb::Transaction::new(ndb).is_ok_and(|txn| {
+                call.written
+                    .iter()
+                    .all(|id| ndb.get_note_by_id(&txn, id.bytes()).is_ok())
+            });
+            if !landed && now < call.deadline {
+                return true;
+            }
+            if !landed {
+                tracing::warn!(
+                    "ipc: an edit's {} notes hadn't read back after {SETTLE_DEADLINE:?}",
+                    call.written.len()
+                );
+                mark_unsettled(&mut call.response);
+            }
+            if let Some(sub) = call.sub.take() {
+                let _ = ndb.unsubscribe(sub);
+            }
+            if let Err(err) = call.connection.reply(&call.response) {
+                tracing::debug!("ipc: the client left before its answer: {err}");
+            }
+            false
+        });
+        let next = self.ipc.settling.iter().map(|call| call.deadline).min();
+        if let (Some(egui), Some(next)) = (ctx.egui, next) {
+            egui.request_repaint_after(next.saturating_duration_since(now));
         }
     }
 
@@ -284,6 +371,7 @@ fn call_tool(
         outcome,
         text,
         notice,
+        written,
     } = match ctx.start_tool_rendered(name, args, comment_signer.as_ref()) {
         Started::Done(rendered) => rendered,
         Started::Pending(pending) => return Served::Run(pending),
@@ -301,15 +389,60 @@ fn call_tool(
         }
         outcome => outcome,
     };
-    match outcome {
-        ToolOutcome::Data(result) => Served::Reply(Response::ok(Reply::Result {
+    let response = |result| {
+        Response::ok(Reply::Result {
             result,
             text,
             notice,
-        })),
+        })
+    };
+    match outcome {
+        ToolOutcome::Data(result) if written.is_empty() => Served::Reply(response(result)),
+        ToolOutcome::Data(result) => Served::Settle {
+            response: response(result),
+            written,
+        },
         ToolOutcome::Error(err) => Served::Reply(Response::error(err)),
         ToolOutcome::Intent(action) => Served::Apply(action),
     }
+}
+
+#[cfg(unix)]
+impl SettlingCall {
+    /// Hold `response` for `connection` until `written` reads back from
+    /// `ndb`, subscribing on the ids so their arrival wakes the loop. The
+    /// subscription comes before the first check, so a note landing between
+    /// the two still wakes it.
+    fn new(
+        ndb: &nostrdb::Ndb,
+        written: Vec<NoteId>,
+        response: Response,
+        connection: notedeck_ipc::Connection,
+    ) -> Self {
+        let filter = nostrdb::Filter::new()
+            .ids(written.iter().map(NoteId::bytes))
+            .build();
+        Self {
+            sub: ndb.subscribe(&[filter]).ok(),
+            written,
+            deadline: std::time::Instant::now() + SETTLE_DEADLINE,
+            response,
+            connection,
+        }
+    }
+}
+
+/// Give `response` a notice that its write hadn't read back yet, so the
+/// person knows a command right after it may not see it.
+#[cfg(unix)]
+fn mark_unsettled(response: &mut Response) {
+    let notedeck_ipc::Outcome::Ok(Reply::Result { notice, .. }) = &mut response.outcome else {
+        return;
+    };
+    *notice = Some(format!(
+        "the edit was written, but hadn't read back after {SETTLE_DEADLINE:?}; \
+         a command right after it may not see it yet"
+    ));
 }
 
 /// Run a slow tool's work on a thread of its own, waking the loop when it
@@ -407,6 +540,43 @@ mod tests {
     const SLOW: &str = "test_slow";
     /// A stream that emits its `to` numbers, then ends.
     const COUNT: &str = "test_count";
+    /// A data tool that writes a note and names it in
+    /// [`ToolContext::written`]: ingested unless `lost` is set, so the note
+    /// a `lost` call names never lands.
+    const WRITES: &str = "test_writes";
+
+    struct Writes;
+
+    impl AppTool for Writes {
+        type Args = Value;
+        type Output = String;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new(WRITES, "Writes a note", Vec::new())
+        }
+
+        fn call(&self, cx: &mut ToolContext, args: Value) -> Result<String, String> {
+            let key = nostrdb_net::FullKeypair::generate();
+            let note = nostrdb::NoteBuilder::new()
+                .kind(1)
+                .content("written")
+                .sign(&key.secret_key.secret_bytes())
+                .build()
+                .ok_or("no note")?;
+            let id = NoteId::new(*note.id());
+            if !args["lost"].as_bool().unwrap_or(false) {
+                let frame = nostrdb_net::ClientMessage::event(&note)
+                    .map_err(|err| err.to_string())?
+                    .to_json()
+                    .map_err(|err| err.to_string())?;
+                cx.ndb
+                    .process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+                    .map_err(|err| err.to_string())?;
+            }
+            cx.written.push(id);
+            Ok(id.hex())
+        }
+    }
 
     struct Count;
 
@@ -517,6 +687,7 @@ mod tests {
                 RegisteredTool::new(WhoSigns),
                 RegisteredTool::slow(Slow),
                 RegisteredTool::stream(Count),
+                RegisteredTool::new(Writes),
             ]
         }
 
@@ -681,7 +852,7 @@ mod tests {
 
     fn reply(served: Served) -> Outcome {
         match served {
-            Served::Reply(response) => response.outcome,
+            Served::Reply(response) | Served::Settle { response, .. } => response.outcome,
             Served::Apply(_) => panic!("expected a reply, got an intent"),
             Served::Run(pending) => finished_response(pending.run()).outcome,
             Served::Stream(_) => panic!("expected a reply, got a stream"),
@@ -716,8 +887,13 @@ mod tests {
     #[tokio::test]
     async fn a_data_tool_answers_with_its_result() {
         let mut f = fixture();
+        let served = call(&mut f, ECHO, json!({"a": 1}));
+        assert!(
+            matches!(served, Served::Reply(_)),
+            "a call that writes nothing answers on its own tick"
+        );
         assert_eq!(
-            reply(call(&mut f, ECHO, json!({"a": 1}))),
+            reply(served),
             Outcome::Ok(Reply::Result {
                 result: json!({"a": 1}),
                 text: Some("echoed {\"a\":1}\n".to_owned()),
@@ -1092,5 +1268,95 @@ mod tests {
                 notice: Some("waited for the gate".to_owned()),
             })
         );
+    }
+
+    /// Call [`WRITES`] over a temp socket with `args`, ticking the chrome
+    /// until the client is answered; the client looks its note up the moment
+    /// the answer arrives. Answers with the reply, whether the note was there
+    /// then, and how many ticks the answer was held.
+    #[cfg(unix)]
+    fn write_over_socket(f: &mut Fixture, args: Value) -> WroteOverSocket {
+        let sock = f._dir.path().join("notedeck.sock");
+        f.chrome.ipc.listener = Some(notedeck_ipc::Listener::bind(&sock, || {}).unwrap());
+        let ndb = f.notedeck.app_context().ndb.clone();
+        let client = std::thread::spawn(move || {
+            let response = notedeck_ipc::Client::connect(&sock)
+                .unwrap()
+                .request(&Request::CallTool {
+                    name: WRITES.to_owned(),
+                    args,
+                    signer: None,
+                })
+                .unwrap();
+            let Outcome::Ok(Reply::Result { result, .. }) = &response.outcome else {
+                panic!("expected a result, got {:?}", response.outcome);
+            };
+            let id = NoteId::from_hex(result.as_str().unwrap()).unwrap();
+            let txn = nostrdb::Transaction::new(&ndb).unwrap();
+            let landed = ndb.get_note_by_id(&txn, id.bytes()).is_ok();
+            (response, landed)
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut held = 0;
+        while !client.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            let mut ctx = f.notedeck.app_context();
+            f.chrome.poll_ipc(&mut ctx);
+            held += usize::from(!f.chrome.ipc.settling.is_empty());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let (response, landed) = client.join().unwrap();
+        WroteOverSocket {
+            response,
+            landed,
+            held,
+        }
+    }
+
+    /// What [`write_over_socket`] saw.
+    #[cfg(unix)]
+    struct WroteOverSocket {
+        response: Response,
+        /// Was the note in nostrdb when the client was answered?
+        landed: bool,
+        /// Ticks the answer was held for.
+        held: usize,
+    }
+
+    /// An edit's answer waits for its write: when the client is told, the
+    /// note it names is already in nostrdb, so its next command sees it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_edit_answers_once_its_write_reads_back() {
+        let mut f = fixture();
+        for _ in 0..20 {
+            let wrote = write_over_socket(&mut f, json!({}));
+            assert!(wrote.landed, "answered before the write read back");
+            let Outcome::Ok(Reply::Result { notice, .. }) = wrote.response.outcome else {
+                panic!("expected a result");
+            };
+            assert_eq!(notice, None, "settled well inside the deadline");
+        }
+        assert!(f.chrome.ipc.settling.is_empty());
+    }
+
+    /// A write that never lands holds its answer only until the deadline,
+    /// then answers with a notice saying so, rather than hanging the client.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_edit_whose_write_never_lands_answers_at_the_deadline() {
+        let mut f = fixture();
+        let started = std::time::Instant::now();
+        let wrote = write_over_socket(&mut f, json!({ "lost": true }));
+        assert!(!wrote.landed);
+        assert!(wrote.held > 1, "held across ticks");
+        assert!(started.elapsed() >= SETTLE_DEADLINE, "answered early");
+        let Outcome::Ok(Reply::Result { notice, .. }) = wrote.response.outcome else {
+            panic!("expected a result");
+        };
+        let notice = notice.expect("a notice");
+        assert!(notice.contains("hadn't read back"), "{notice}");
+        assert!(f.chrome.ipc.settling.is_empty());
     }
 }

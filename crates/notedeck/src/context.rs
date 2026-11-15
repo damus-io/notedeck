@@ -173,6 +173,7 @@ impl<'a> AppContext<'a> {
             publish: Some(self.remote.publisher_explicit()),
             comment_signer: None,
             path: Some(self.path),
+            written: Vec::new(),
         }
     }
 

@@ -949,17 +949,27 @@ impl AppTool for List {
 /// A write is a plaintext event on an own board and a kind-1081 envelope on a
 /// shared one, so each frame is routed by its kind: an encrypted-only private
 /// relay gets the envelopes and never the plaintext.
+///
+/// Each note it is told was ingested goes in the context's
+/// [`written`](ToolContext::written), so `nd` answers once the edit reads
+/// back rather than while nostrdb is still unwrapping it.
 struct RelayFanout<'x, 'a> {
     api: &'x mut ExplicitPublishApi<'a>,
     targets: PrivateRelayTargets,
     /// The frames published so far.
     sent: usize,
+    /// The context's [`written`](ToolContext::written).
+    written: &'x mut Vec<NoteId>,
 }
 
 impl store::Publisher for RelayFanout<'_, '_> {
     fn publish(&mut self, event_frame: &str) {
         fan_out_routed_event_frame(self.api, event_frame, &self.targets);
         self.sent += 1;
+    }
+
+    fn ingested(&mut self, id: &NoteId) {
+        self.written.push(*id);
     }
 }
 
@@ -976,6 +986,7 @@ fn publisher<'x, 'a>(cx: &'x mut ToolContext<'a>) -> Result<RelayFanout<'x, 'a>,
         api,
         targets,
         sent: 0,
+        written: &mut cx.written,
     })
 }
 
@@ -2782,6 +2793,7 @@ mod tests {
             publish: None,
             comment_signer: None,
             path: None,
+            written: Vec::new(),
         }
     }
 

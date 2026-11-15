@@ -89,6 +89,15 @@ pub struct ToolContext<'a> {
     /// git fetch's bare repos). `None` in a context with no host, where such
     /// a tool reports an error.
     pub path: Option<&'a DataPath>,
+    /// The ids of the notes this call wrote, for a caller that answers only
+    /// once they read back from [`ndb`](Self::ndb): ingest is asynchronous,
+    /// so a client that edits what it just made (`nd headway add`, then a
+    /// `title` of the new ref) would otherwise fold a board without it. A
+    /// writing tool pushes each id here; the registry hands them on as
+    /// [`Rendered::written`], and the socket holds the
+    /// answer until they land. Empty for a read, and a backend that answers
+    /// a model (Dave) ignores them.
+    pub written: Vec<nostrdb_net::NoteId>,
 }
 
 /// The result of running a [`ToolCall`].
@@ -117,6 +126,9 @@ pub struct Rendered {
     /// prints to stderr, so piping the text stays clean (see
     /// [`SlowTool::notice`]). `None` for most tools.
     pub notice: Option<String>,
+    /// The notes the call wrote (see [`ToolContext::written`]), which a
+    /// socket client's answer waits on. Empty for a read.
+    pub written: Vec<nostrdb_net::NoteId>,
 }
 
 impl From<ToolOutcome> for Rendered {
@@ -126,6 +138,7 @@ impl From<ToolOutcome> for Rendered {
             outcome,
             text: None,
             notice: None,
+            written: Vec::new(),
         }
     }
 }
@@ -151,6 +164,7 @@ impl From<Finished> for Rendered {
             outcome,
             text: done.text,
             notice: done.notice,
+            written: Vec::new(),
         }
     }
 }
@@ -593,13 +607,21 @@ impl RegisteredTool {
     }
 
     /// Run the handler, first taking the caller's comment key away from a
-    /// tool that didn't ask for one, so no other tool can sign with it.
+    /// tool that didn't ask for one, so no other tool can sign with it. The
+    /// notes the call wrote ride out on its answer as
+    /// [`Rendered::written`].
     fn run(&self, cx: &mut ToolContext, args: &Value, text: bool) -> Started {
         if !self.spec.takes_comment_signer() {
             cx.comment_signer = None;
         }
         match &self.handler {
-            Handler::Call(handler) => handler(cx, args, text),
+            Handler::Call(handler) => match handler(cx, args, text) {
+                Started::Done(mut rendered) => {
+                    rendered.written = std::mem::take(&mut cx.written);
+                    Started::Done(rendered)
+                }
+                pending => pending,
+            },
             Handler::Stream(_) => error(format!(
                 "'{}' streams, so it can't be called for one answer; subscribe to it (`nd {}`)",
                 self.name(),
@@ -1049,6 +1071,7 @@ mod tests {
             publish: None,
             comment_signer: None,
             path: None,
+            written: Vec::new(),
         };
         let mut reg = ToolRegistry::default();
         reg.register(RegisteredTool::stream(Count));
@@ -1101,6 +1124,7 @@ mod tests {
             publish: None,
             comment_signer: None,
             path: None,
+            written: Vec::new(),
         };
 
         let mut reg = ToolRegistry::default();
@@ -1160,6 +1184,7 @@ mod tests {
             publish: None,
             comment_signer: None,
             path: None,
+            written: Vec::new(),
         };
         let mut reg = ToolRegistry::default();
         reg.register(RegisteredTool::slow(Double));
@@ -1201,6 +1226,7 @@ mod tests {
             publish: None,
             comment_signer: None,
             path: None,
+            written: Vec::new(),
         };
         let mut reg = ToolRegistry::default();
         reg.register(RegisteredTool::new(Echo));
@@ -1272,6 +1298,7 @@ mod tests {
                 publish: None,
                 comment_signer: Some(&key),
                 path: None,
+                written: Vec::new(),
             };
             let outcome = if rendered {
                 reg.call_rendered(&mut cx, name, &json!({})).outcome
@@ -1304,6 +1331,7 @@ mod tests {
             publish: None,
             comment_signer: None,
             path: None,
+            written: Vec::new(),
         };
 
         let mut reg = ToolRegistry::default();
@@ -1370,6 +1398,7 @@ mod tests {
             publish: None,
             comment_signer: None,
             path: None,
+            written: Vec::new(),
         };
 
         let mut reg = ToolRegistry::default();

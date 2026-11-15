@@ -109,6 +109,7 @@ impl Live {
             notedeck::ToolOutcome::Data(json) => Ack {
                 json,
                 text: rendered.text.expect("an edit renders its ack"),
+                written: rendered.written.len(),
             },
             notedeck::ToolOutcome::Error(err) => panic!("{name} {args}: {err}"),
             notedeck::ToolOutcome::Intent(_) => panic!("{name} answered with an intent"),
@@ -172,6 +173,9 @@ impl Live {
 pub(super) struct Ack {
     pub(super) json: serde_json::Value,
     pub(super) text: String,
+    /// How many notes it named as written (see
+    /// [`notedeck::Rendered::written`]), which `nd`'s answer waits on.
+    pub(super) written: usize,
 }
 
 /// The keys of a JSON object, sorted.

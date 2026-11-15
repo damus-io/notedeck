@@ -32,6 +32,11 @@ async fn add_answers_with_its_ref_and_every_field_round_trips() {
     );
     assert_eq!(keys(&added.json), ["card", "events", "ok", "ref"]);
     assert_eq!(added.json["ok"], json!(true));
+    assert_eq!(
+        json!(added.written),
+        added.json["events"],
+        "every event it wrote is named for nd to wait on"
+    );
     assert!(added.json["events"].as_u64().unwrap() > 1, "{}", added.json);
     let card_ref = added.json["ref"].as_str().unwrap().to_owned();
     assert!(card_ref.starts_with("headway:headway/"), "{card_ref}");

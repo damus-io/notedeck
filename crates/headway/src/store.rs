@@ -191,6 +191,16 @@ pub trait Publisher {
     /// Called once per successfully ingested event with its `["EVENT", {...}]`
     /// JSON frame, ready to write to a relay websocket.
     fn publish(&mut self, event_frame: &str);
+
+    /// Called by [`ingest_signed`] with the id of each note it wrote, just
+    /// before [`publish`](Self::publish): on a shared board the *rumor's* id,
+    /// which is what nostrdb unwraps the envelope into, not the envelope's.
+    ///
+    /// A caller that must not answer before its write reads back (`nd`, whose
+    /// next command folds the board) collects these and waits until
+    /// `ndb.get_note_by_id` finds each one, since ingest is asynchronous. The
+    /// default ignores them.
+    fn ingested(&mut self, _id: &NoteId) {}
 }
 
 /// A [`Publisher`] that drops everything: local ingest only, no fan-out. Used by
@@ -330,6 +340,7 @@ pub fn ingest_signed(
             nostrdb_net::sns::ingest_rumor(ndb, &channel.keys, &member, &note).ok()?
         }
     };
+    publisher.ingested(&id);
     publisher.publish(&frame);
     Some(id)
 }
@@ -4690,6 +4701,67 @@ mod tests {
             &mut NoPublish,
         );
         assert_eq!(outcome.created, None);
+    }
+
+    /// [`ingest_signed`] tells the publisher every note it wrote, by the
+    /// id nostrdb unwraps a sealed board's envelope into: one per frame it
+    /// publishes, and each one reads back by id once ingested, which is what
+    /// `nd` waits on before it answers an edit.
+    #[tokio::test]
+    async fn the_publisher_hears_each_written_rumor_id_on_a_sealed_board() {
+        struct Written {
+            ids: Vec<NoteId>,
+            frames: usize,
+        }
+        impl Publisher for Written {
+            fn publish(&mut self, _event_frame: &str) {
+                self.frames += 1;
+            }
+            fn ingested(&mut self, id: &NoteId) {
+                self.ids.push(*id);
+            }
+        }
+
+        let t = TestNdb::new();
+        let ch = test_channel("src", &t.secret());
+        seed_via(&t, "src", Some(&ch));
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns.len() == 5).await;
+        let secret = t.secret();
+        let signer = Signer::new(&secret, Some(&ch.channel));
+
+        let mut written = Written {
+            ids: Vec::new(),
+            frames: 0,
+        };
+        let outcome = apply_outcome(
+            &t.ndb,
+            "src",
+            &view,
+            &t.kp.pubkey,
+            &signer,
+            BoardAction::AddCard(NewCard {
+                col: 0,
+                title: "Minted".to_string(),
+                labels: vec!["bug".to_string()],
+                ..NewCard::default()
+            }),
+            &mut written,
+        );
+        let created = outcome.created.expect("AddCard reports its id");
+        assert_eq!(written.ids.len(), written.frames, "one id per write");
+        assert_eq!(written.ids[0], created, "the issue's rumor id comes first");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !written.ids.iter().all(|id| {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            t.ndb.get_note_by_id(&txn, id.bytes()).is_ok()
+        }) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a written id never read back"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]

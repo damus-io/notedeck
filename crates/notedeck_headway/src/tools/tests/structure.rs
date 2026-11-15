@@ -133,6 +133,7 @@ async fn next_follows_blocks_terminal_columns_and_containers() {
     let again = live.edit("headway_block", json!({ "card": a, "on": b }));
     assert_eq!(again.json["events"], json!(0));
     assert!(again.json["noop"].is_string(), "{}", again.json);
+    assert_eq!(again.written, 0, "a no-op names nothing to wait on");
 
     // Done (In Review is terminal on a new board) clears what it blocks.
     live.edit(

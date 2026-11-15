@@ -156,3 +156,105 @@ fn a_serve_exits_when_its_socket_is_taken() {
         taken.elapsed()
     );
 }
+
+/// `notedeck --serve` signed in as a fresh account, its data in `data`, as
+/// `nd` starts one to edit a board.
+#[cfg(feature = "headway")]
+fn serve_signed_in(socket: &Path, data: &Path) -> Child {
+    let account = nostrdb_net::FullKeypair::generate();
+    Command::new(notedeck_bin())
+        .args(["--testrunner", "--serve", "--datapath"])
+        .arg(data)
+        .args(["--idle-exit", "600", "--nsec"])
+        .arg(account.secret_key.to_secret_hex())
+        .env("NOTEDECK_SOCKET", socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start notedeck")
+}
+
+/// Call the tool `name` on `socket`, as `nd` does: one connection per
+/// command. Its value, or its error.
+#[cfg(feature = "headway")]
+fn call(socket: &Path, name: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let response = notedeck_ipc::Client::connect(socket)
+        .unwrap()
+        .request(&notedeck_ipc::Request::CallTool {
+            name: name.to_owned(),
+            args,
+            signer: None,
+        })
+        .unwrap();
+    match response.outcome {
+        notedeck_ipc::Outcome::Ok(Reply::Result { result, .. }) => Ok(result),
+        notedeck_ipc::Outcome::Error { message } => Err(message),
+        other => panic!("{name}: expected a result, got {other:?}"),
+    }
+}
+
+/// Back-to-back edits on a sealed board, each its own call as a script of
+/// `nd` commands makes them: an edit of a card answered right after its add
+/// finds it every time, and the cycle check of a second `block` sees the
+/// first edge. Before an edit's answer waited for its write to read back,
+/// 4 of 5 `add`→`title` pairs said "no card matching", and the reversed
+/// block went through.
+#[cfg(feature = "headway")]
+#[test]
+fn back_to_back_edits_see_each_others_writes() {
+    let dir = socket_dir();
+    let socket = dir.path().join("s.sock");
+    let data = TempDir::new().unwrap();
+    let mut child = serve_signed_in(&socket, data.path());
+    wait_served(&socket, &mut child);
+
+    call(
+        &socket,
+        "headway_seed_board",
+        serde_json::json!({ "board": "race" }),
+    )
+    .expect("seed");
+    let board = |args: serde_json::Value| {
+        let mut args = args;
+        args["board"] = "race".into();
+        args
+    };
+    let mut refs = Vec::new();
+    for n in 0..20 {
+        let added = call(
+            &socket,
+            "headway_add_card",
+            board(serde_json::json!({ "title": format!("card {n}") })),
+        )
+        .expect("add");
+        let card = added["ref"]
+            .as_str()
+            .expect("an add names its ref")
+            .to_owned();
+        call(
+            &socket,
+            "headway_set_title",
+            board(serde_json::json!({ "card": card, "title": format!("renamed {n}") })),
+        )
+        .unwrap_or_else(|err| panic!("title {n} right after its add: {err}"));
+        refs.push(card);
+    }
+
+    call(
+        &socket,
+        "headway_block",
+        board(serde_json::json!({ "card": refs[0], "on": refs[1] })),
+    )
+    .expect("block");
+    let err = call(
+        &socket,
+        "headway_block",
+        board(serde_json::json!({ "card": refs[1], "on": refs[0] })),
+    )
+    .expect_err("the reversed block closes a cycle");
+    assert!(err.contains("refused"), "{err}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
