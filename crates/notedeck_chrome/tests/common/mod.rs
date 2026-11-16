@@ -11,7 +11,8 @@ use std::sync::mpsc;
 use egui::{Event, Key, Modifiers};
 use notedeck::{
     App, AppContext, AppResponse, AppTool, JumpLocation, JumpTarget, Notedeck, RegisteredTool,
-    SearchHit, SearchHits, SearchQuery, ToolArg, ToolArgType, ToolContext, ToolOutcome, ToolSpec,
+    SearchHit, SearchHits, SearchQuery, SearchScope, ToolArg, ToolArgType, ToolContext,
+    ToolOutcome, ToolSpec,
 };
 use notedeck_chrome::keymap::{self, KeySeq};
 use notedeck_chrome::testing::ChromeDriver;
@@ -86,6 +87,15 @@ pub struct FakeState {
     pub searched: Vec<String>,
     /// Whether the app's answers are still coming, so it is asked again.
     pub search_pending: bool,
+    /// The scope each of [`searched`](Self::searched) was asked in.
+    pub searched_in: Vec<Option<String>>,
+    /// The scoped searches the app offers beside its hits.
+    pub offers: Vec<SearchScope>,
+    /// What the app finds for any query in a scope, once it settles.
+    pub scoped_results: Vec<SearchHit>,
+    /// How many more times a scoped answer comes back pending, with no hits
+    /// yet, before it settles.
+    pub scoped_pending: usize,
 }
 
 /// [`DATA_TOOL`]: sends its args to the test, which runs it on another
@@ -137,6 +147,23 @@ impl App for FakeApp {
     fn search(&mut self, _ctx: &mut AppContext<'_>, query: &SearchQuery<'_>, out: &mut SearchHits) {
         let mut state = self.state.borrow_mut();
         state.searched.push(query.text.to_owned());
+        state.searched_in.push(query.scope.map(str::to_owned));
+        if query.scope.is_some() {
+            if state.scoped_pending > 0 {
+                state.scoped_pending -= 1;
+                out.set_pending();
+                return;
+            }
+            for hit in &state.scoped_results {
+                if !out.push(hit.clone()) {
+                    break;
+                }
+            }
+            return;
+        }
+        for offer in &state.offers {
+            out.offer(offer.clone());
+        }
         for hit in &state.results {
             if !out.push(hit.clone()) {
                 break;
@@ -330,6 +357,10 @@ impl Fixture {
             results: Vec::new(),
             searched: Vec::new(),
             search_pending: false,
+            searched_in: Vec::new(),
+            offers: Vec::new(),
+            scoped_results: Vec::new(),
+            scoped_pending: 0,
         }));
         // The fake app as the nav root unless `front` has apps: switching to
         // it from another app would slide, and a full chrome frame mid-slide
@@ -357,6 +388,12 @@ impl Fixture {
     /// The queries the app was asked to search so far.
     pub fn searched(&self) -> Vec<String> {
         self.state.borrow().searched.clone()
+    }
+
+    /// The scope each query the app was asked to search so far was asked
+    /// in, in order.
+    pub fn searched_in(&self) -> Vec<Option<String>> {
+        self.state.borrow().searched_in.clone()
     }
 
     /// The UI tools that reached the app so far.

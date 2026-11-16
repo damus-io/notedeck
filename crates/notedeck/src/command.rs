@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 
-use crate::{AppId, HitPreview, OpenUri, ToolInvocation};
+use crate::{AppId, HitPreview, OpenUri, SearchScope, ToolInvocation};
 
 /// One row of a command bar.
 #[derive(Debug, Clone, PartialEq)]
@@ -103,4 +103,15 @@ pub enum CommandAction {
     Open(OpenUri),
     /// Switch to the app in this slot of the chrome's roster.
     SwitchApp(AppId),
+    /// Step into the scoped search `scope` the app in slot `app` offered
+    /// (see [`search`](crate::search)): the bar asks only that app from
+    /// then on, the query carried over. The bar ranks such a row by its
+    /// [`found`](CommandItem::found) score alone, since its title quotes the
+    /// query and would otherwise match it best of all.
+    EnterScope {
+        /// The app that offered it.
+        app: AppId,
+        /// The scope.
+        scope: SearchScope,
+    },
 }

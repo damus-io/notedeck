@@ -1,8 +1,8 @@
 //! Universal search in the Cmd-K bar through real chrome frames: the fake
 //! app's hits are listed under its name and Enter opens one, the query is
 //! searched once per change rather than per frame, a pending answer is asked
-//! again until it settles, an app's name switches to it, and a typed
-//! reference opens.
+//! again until it settles, an app's name switches to it, a typed reference
+//! opens, and a scoped search an app offers is searched alone once entered.
 
 mod common;
 
@@ -13,7 +13,7 @@ use std::time::Duration;
 use common::{bar_key, Fixture};
 use egui::{Event, Key, Modifiers};
 use nostrdb::{Filter, IngestMetadata, NoteBuilder};
-use notedeck::{App, AppContext, AppResponse, OpenUri, SearchHit};
+use notedeck::{App, AppContext, AppResponse, OpenUri, SearchHit, SearchScope};
 use notedeck_chrome::NotedeckApp;
 
 /// No bindings: these tests only type into the bar.
@@ -411,4 +411,146 @@ fn a_hit_standing_for_a_note_the_db_lacks_is_drawn_as_text() {
     type_text(&mut f, "missing");
     f.frame(Vec::new());
     assert!(drew_in(&f, "A missing note"), "its title, as any row's");
+}
+
+/// The fake app's offer of a transcript search for `query`.
+fn transcripts(query: &str) -> SearchScope {
+    SearchScope {
+        key: "transcripts".to_owned(),
+        label: "Transcripts".to_owned(),
+        title: format!("Search transcripts for “{query}”"),
+    }
+}
+
+/// The titles the bar lists under `section`, in order.
+fn listed_under(f: &mut Fixture, section: &str) -> Vec<String> {
+    f.chrome
+        .command_bar_mut()
+        .matches()
+        .filter(|item| item.section == section)
+        .map(|item| item.title.clone())
+        .collect()
+}
+
+/// Move the selection to the row titled `title` and press Enter.
+fn choose(f: &mut Fixture, title: &str) {
+    let at = listed(f)
+        .iter()
+        .position(|listed| listed == title)
+        .unwrap_or_else(|| panic!("{title:?} isn't listed: {:?}", listed(f)));
+    for _ in 0..at {
+        f.key(Key::ArrowDown);
+    }
+    f.key(Key::Enter);
+}
+
+#[test]
+fn an_offered_scope_is_searched_alone_once_entered_and_not_after_it_is_left() {
+    let mut f = Fixture::new(KEYMAP);
+    {
+        let mut state = f.state.borrow_mut();
+        state.results = vec![hit("A quick hit", "quick")];
+        state.offers = vec![transcripts("fake")];
+        state.scoped_results = vec![hit("A deep hit", "deep").kind("Transcript")];
+        state.scoped_pending = 2;
+    }
+    cmd_k(&mut f);
+    type_text(&mut f, "fake");
+    f.frame(Vec::new());
+    assert_eq!(
+        listed_under(&mut f, "fake"),
+        ["A quick hit", "Search transcripts for “fake”"],
+        "the offer lists last in its app's section, though its title quotes the query"
+    );
+    assert!(
+        !drew_in(&f, "A deep hit"),
+        "nothing scoped is searched unasked"
+    );
+    assert_eq!(f.searched_in(), [None]);
+
+    choose(&mut f, "Search transcripts for “fake”");
+    assert!(
+        f.chrome.command_bar().is_open(),
+        "entering a scope keeps it open"
+    );
+    assert_eq!(f.chrome.command_bar().prompt(), Some("Transcripts"));
+    assert_eq!(
+        f.chrome.command_bar().query(),
+        "fake",
+        "the query carries over"
+    );
+    f.frame(Vec::new());
+    assert_eq!(
+        f.searched_in().last(),
+        Some(&Some("transcripts".to_owned())),
+        "asked in the scope"
+    );
+    assert!(f.drew("Searching…"), "while its answer is pending");
+
+    f.idle(0.35);
+    assert_eq!(
+        listed(&mut f),
+        ["A deep hit"],
+        "only the scope's hits: no quick hit, no offer"
+    );
+    assert!(drew_in(&f, "Transcript"), "with their kind");
+    let scoped_asks = |f: &Fixture| {
+        f.searched_in()
+            .iter()
+            .filter(|scope| scope.is_some())
+            .count()
+    };
+    assert_eq!(scoped_asks(&f), 3, "pending twice, then settled");
+    f.idle(0.3);
+    assert_eq!(scoped_asks(&f), 3, "a settled answer isn't asked");
+
+    type_text(&mut f, "r");
+    f.frame(Vec::new());
+    assert_eq!(f.searched().last().map(String::as_str), Some("faker"));
+    assert_eq!(scoped_asks(&f), 4, "an edit asks the scope again");
+
+    // Leave it with an answer still pending: it is never asked again.
+    f.state.borrow_mut().scoped_pending = 100;
+    type_text(&mut f, "x");
+    f.frame(Vec::new());
+    let before = scoped_asks(&f);
+    f.chrome.command_bar_mut().set_query("");
+    f.frame(Vec::new());
+    f.key(Key::Backspace);
+    assert_eq!(f.chrome.command_bar().prompt(), None, "stepped out");
+    assert_eq!(
+        f.chrome.command_bar().query(),
+        "fake",
+        "to the query left there"
+    );
+    f.idle(0.5);
+    assert_eq!(scoped_asks(&f), before, "the scope isn't asked once left");
+    assert_eq!(f.searched_in().last(), Some(&None), "everything is again");
+    assert_eq!(
+        listed_under(&mut f, "fake"),
+        ["A quick hit", "Search transcripts for “fake”"]
+    );
+}
+
+#[test]
+fn enter_on_an_offer_steps_in_and_a_scoped_hit_opens_like_any_other() {
+    let mut f = Fixture::new(KEYMAP);
+    f.state.borrow_mut().offers = vec![transcripts("lava")];
+    f.state.borrow_mut().scoped_results = vec![hit("Lavapipe crash", "lava")];
+    cmd_k(&mut f);
+    type_text(&mut f, "lava");
+    f.frame(Vec::new());
+    assert_eq!(listed(&mut f), ["Search transcripts for “lava”"]);
+
+    f.key(Key::Enter);
+    assert_eq!(f.chrome.command_bar().prompt(), Some("Transcripts"));
+    f.frame(Vec::new());
+    assert_eq!(listed(&mut f), ["Lavapipe crash"]);
+    f.key(Key::Enter);
+    assert!(!f.chrome.command_bar().is_open());
+    assert_eq!(
+        f.chrome.pending_open(),
+        Some(&OpenUri::new("fake:lava")),
+        "a scoped hit opens like any other"
+    );
 }

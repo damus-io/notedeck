@@ -207,7 +207,7 @@ mod tests {
     /// The hits `query` finds in `canvases`, best first.
     fn found(canvases: &[CanvasView], query: &str) -> SearchHits {
         let mut out = SearchHits::new(HITS_PER_PROVIDER);
-        search(canvases, &SearchQuery { text: query }, &mut out);
+        search(canvases, &SearchQuery::new(query), &mut out);
         out
     }
 

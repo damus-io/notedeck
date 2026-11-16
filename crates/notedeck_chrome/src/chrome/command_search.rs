@@ -9,6 +9,13 @@
 //! asked again. An empty query, or the bar asking for a tool's argument,
 //! runs no search: the query is a value then, not a search.
 //!
+//! A provider can offer a scoped search beside its hits (see
+//! [`notedeck::search`]), listed as a row after them. Once the bar steps
+//! into it, the query is searched in that scope by that provider alone, its
+//! cap [`SCOPED_HITS`], and the chrome's own rows are left out; stepping
+//! back out searches everything again, and the scoped provider is no longer
+//! asked.
+//!
 //! The providers are the chrome's own two, then each running app's
 //! [`App::search`](notedeck::App::search), the active app first:
 //!
@@ -23,13 +30,14 @@
 use std::borrow::Cow;
 
 use notedeck::fuzzy::fuzzy_match;
-use notedeck::search::{HITS_PER_PROVIDER, REFINE_INTERVAL};
+use notedeck::search::{HITS_PER_PROVIDER, REFINE_INTERVAL, SCOPED_HITS};
 use notedeck::{
     tr, App, AppContext, AppId, CommandAction, CommandItem, OpenUri, ReferenceParserRegistry,
-    SearchHit, SearchHits, SearchQuery,
+    SearchHit, SearchHits, SearchQuery, SearchScope,
 };
 
 use super::actions::resolve_reference;
+use super::command_bar::{Scoped, Searching};
 use super::sidebar::app_label;
 use super::Chrome;
 
@@ -57,6 +65,8 @@ struct Answer {
 pub(super) struct SearchState {
     /// The query, trimmed, that `answers` answer.
     query: String,
+    /// The scope it was searched in, if the bar stepped into one.
+    scope: Option<Scoped>,
     /// Each provider's answer, the chrome's first, then the apps' in the
     /// order they were asked.
     answers: Vec<Answer>,
@@ -70,6 +80,7 @@ impl Default for SearchState {
     fn default() -> Self {
         Self {
             query: String::new(),
+            scope: None,
             answers: Vec::new(),
             refine_at: None,
             hits: SearchHits::new(HITS_PER_PROVIDER),
@@ -77,21 +88,35 @@ impl Default for SearchState {
     }
 }
 
+impl SearchState {
+    /// Whether a provider's answer to the query is still coming.
+    pub(super) fn is_pending(&self) -> bool {
+        self.answers.iter().any(|answer| answer.pending)
+    }
+}
+
 impl Chrome {
-    /// Search for the open bar's query if it changed since the last search,
-    /// or ask a pending provider again if its time is up (see the module
-    /// docs). Does nothing, and allocates nothing, on any other frame.
+    /// Search for the open bar's query if it or the bar's scope changed
+    /// since the last search, or ask a pending provider again if its time is
+    /// up (see the module docs). Does nothing, and allocates nothing, on any
+    /// other frame.
     #[profiling::function]
     pub(super) fn search_if_due(&mut self, ctx: &mut AppContext, egui_ctx: &egui::Context) {
         let bar = &self.command_bar;
-        if !bar.is_open() || bar.prompt().is_some() {
+        if !bar.is_open() {
             return;
         }
+        let scope = match bar.searching() {
+            Searching::Nothing => return,
+            Searching::Everything => None,
+            Searching::Scope(scoped) => Some(scoped),
+        };
         let now = egui_ctx.input(|i| i.time);
         let query = bar.query().trim();
-        if query != bar.search.query {
+        if query != bar.search.query || scope != bar.search.scope.as_ref() {
             let query = query.to_owned();
-            self.search(ctx, query);
+            let scope = scope.cloned();
+            self.search(ctx, query, scope);
         } else if bar.search.refine_at.is_some_and(|at| now >= at) {
             self.refine(ctx);
         } else {
@@ -99,7 +124,7 @@ impl Chrome {
         }
 
         let search = &mut self.command_bar.search;
-        let pending = search.answers.iter().any(|answer| answer.pending);
+        let pending = search.is_pending();
         search.refine_at = pending.then(|| now + REFINE_INTERVAL.as_secs_f64());
         if pending {
             egui_ctx.request_repaint_after(REFINE_INTERVAL);
@@ -120,11 +145,17 @@ impl Chrome {
         egui_ctx.request_repaint();
     }
 
-    /// Ask every provider about `query`, replacing the last query's answers.
-    fn search(&mut self, ctx: &mut AppContext, query: String) {
+    /// Ask every provider about `query`, or in `scope` only its app,
+    /// replacing the last query's answers.
+    fn search(&mut self, ctx: &mut AppContext, query: String, scope: Option<Scoped>) {
         let mut answers = std::mem::take(&mut self.command_bar.search.answers);
         answers.clear();
-        if !query.is_empty() {
+        if let Some(scoped) = scope.as_ref().filter(|_| !query.is_empty()) {
+            let slot = scoped.app.slot();
+            if slot < self.apps.len() && self.is_running(slot) {
+                answers.push(self.ask_app(ctx, slot, &query, Some(&scoped.key)));
+            }
+        } else if scope.is_none() && !query.is_empty() {
             answers.push(Answer {
                 provider: Provider::Chrome,
                 rows: self.chrome_rows(ctx, &query),
@@ -134,12 +165,13 @@ impl Chrome {
             let others = (0..self.apps.len()).filter(|&slot| slot != active);
             for slot in std::iter::once(active).chain(others) {
                 if slot < self.apps.len() && self.is_running(slot) {
-                    answers.push(self.ask_app(ctx, slot, &query));
+                    answers.push(self.ask_app(ctx, slot, &query, None));
                 }
             }
         }
         let search = &mut self.command_bar.search;
         search.query = query;
+        search.scope = scope;
         search.answers = answers;
     }
 
@@ -147,27 +179,50 @@ impl Chrome {
     fn refine(&mut self, ctx: &mut AppContext) {
         let mut answers = std::mem::take(&mut self.command_bar.search.answers);
         let query = std::mem::take(&mut self.command_bar.search.query);
+        let scope = self.command_bar.search.scope.take();
+        let key = scope.as_ref().map(|scoped| scoped.key.as_str());
         for answer in answers.iter_mut().filter(|answer| answer.pending) {
             if let Provider::App(slot) = answer.provider {
-                *answer = self.ask_app(ctx, slot, &query);
+                *answer = self.ask_app(ctx, slot, &query, key);
             }
         }
         let search = &mut self.command_bar.search;
         search.query = query;
+        search.scope = scope;
         search.answers = answers;
     }
 
-    /// The app in `slot`'s answer to `query`, its hits listed under its
-    /// name.
-    fn ask_app(&mut self, ctx: &mut AppContext, slot: usize, query: &str) -> Answer {
+    /// The app in `slot`'s answer to `query`, in `scope` if given, its hits
+    /// listed under its name, then a row for each scoped search it offers
+    /// (none in a scope).
+    fn ask_app(
+        &mut self,
+        ctx: &mut AppContext,
+        slot: usize,
+        query: &str,
+        scope: Option<&str>,
+    ) -> Answer {
         let mut hits = std::mem::replace(&mut self.command_bar.search.hits, SearchHits::new(0));
-        hits.clear();
-        self.apps[slot].search(ctx, &SearchQuery { text: query }, &mut hits);
+        let (cap, asked) = match scope {
+            Some(scope) => (SCOPED_HITS, SearchQuery::new(query).scoped(scope)),
+            None => (HITS_PER_PROVIDER, SearchQuery::new(query)),
+        };
+        hits.reset(cap);
+        self.apps[slot].search(ctx, &asked, &mut hits);
         let section = app_label(ctx.i18n, &self.apps[slot]);
+        let offers = match scope {
+            Some(_) => &[][..],
+            None => hits.offers(),
+        };
         let rows = hits
             .hits()
             .iter()
             .map(|hit| hit_row(hit, Cow::Owned(section.clone())))
+            .chain(
+                offers
+                    .iter()
+                    .map(|offer| offer_row(offer, AppId(slot), Cow::Owned(section.clone()))),
+            )
             .collect();
         let answer = Answer {
             provider: Provider::App(slot),
@@ -257,6 +312,20 @@ fn hit_row(hit: &SearchHit, section: Cow<'static, str>) -> CommandItem {
         Some(subtitle) => row.subtitled(subtitle),
         None => row,
     }
+}
+
+/// How an offer of a scoped search ranks: below every hit, so it lists last
+/// in its app's section.
+const OFFER: i32 = i32::MIN;
+
+/// The bar's row for `offer`, made by the app in `app`, under `section`:
+/// its title, stepping into the scope.
+fn offer_row(offer: &SearchScope, app: AppId, section: Cow<'static, str>) -> CommandItem {
+    let action = CommandAction::EnterScope {
+        app,
+        scope: offer.clone(),
+    };
+    CommandItem::new(section, offer.title.as_str(), action).found(OFFER)
 }
 
 #[cfg(test)]

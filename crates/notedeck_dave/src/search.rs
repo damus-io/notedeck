@@ -327,7 +327,7 @@ mod tests {
         let mut out = SearchHits::new(HITS_PER_PROVIDER);
         search(
             sessions,
-            &SearchQuery { text: query },
+            &SearchQuery::new(query),
             by_word_id,
             titles,
             &mut out,
@@ -347,9 +347,7 @@ mod tests {
         let mut out = SearchHits::new(HITS_PER_PROVIDER);
         search(
             &sessions,
-            &SearchQuery {
-                text: "relay reconnect",
-            },
+            &SearchQuery::new("relay reconnect"),
             None,
             &CardTitles::default(),
             &mut out,
@@ -448,7 +446,7 @@ mod tests {
         let mut out = SearchHits::new(HITS_PER_PROVIDER);
         search(
             &sessions,
-            &SearchQuery { text: "review" },
+            &SearchQuery::new("review"),
             None,
             &CardTitles::default(),
             &mut out,
@@ -476,9 +474,7 @@ mod tests {
         );
 
         let mut out = SearchHits::new(HITS_PER_PROVIDER);
-        let query = SearchQuery {
-            text: "sessions card title",
-        };
+        let query = SearchQuery::new("sessions card title");
         search(&sessions, &query, None, &titles, &mut out);
         let [hit] = out.hits() else {
             panic!("one hit: {:?}", out.hits());

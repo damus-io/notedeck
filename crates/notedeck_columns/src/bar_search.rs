@@ -408,7 +408,7 @@ mod tests {
     fn answer(search: &mut BarSearch, ndb: &Ndb, jobs: &JobPool, text: &str) -> Vec<SearchHit> {
         let mut i18n = Localization::default();
         let contacts = ContactState::Unreceived;
-        let query = SearchQuery { text };
+        let query = SearchQuery::new(text);
         let start = Instant::now();
         let deadline = start + Duration::from_secs(5);
         let mut now = start;
@@ -492,7 +492,7 @@ mod tests {
                 contacts: &contacts,
                 i18n: &mut i18n,
             };
-            search.search(ctx, &SearchQuery { text }, now, &mut out);
+            search.search(ctx, &SearchQuery::new(text), now, &mut out);
             out.is_pending()
         };
 

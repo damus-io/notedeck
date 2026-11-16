@@ -1105,6 +1105,9 @@ Save_changes_00db = Save changes
 # Dave session inspector files: a remote session's temp files are on the host running it
 Scratchpad_and_task_output_live_on__host_0268 = Scratchpad and task output live on {$host}
 
+# Placeholder in the command bar's query field inside a scoped search, like transcripts
+Search_4c66 = Search…
+
 # Column title for search page
 Search_c573 = Search
 
@@ -1116,6 +1119,9 @@ Search_profiles_7e59 = Search profiles...
 
 # Placeholder for profile search input
 Search_profiles_or_enter_nip05_address_7e59 = Search profiles or enter nip05 address...
+
+# Shown in the command bar while nothing matches yet but a search is still running
+Searching_d866 = Searching…
 
 # label describing secret key
 SECRET_ACCOUNT_LOGIN_KEY_8440 = SECRET ACCOUNT LOGIN KEY

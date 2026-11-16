@@ -1925,7 +1925,7 @@ fn search_finds_a_node_and_opening_it_centres_it_on_its_canvas() {
         {
             let state = harness.state_mut();
             let mut app_ctx = state.notedeck.app_context();
-            let query = notedeck::SearchQuery { text: "zebra" };
+            let query = notedeck::SearchQuery::new("zebra");
             state.notebook.search(&mut app_ctx, &query, &mut out);
         }
         if !out.is_pending() {

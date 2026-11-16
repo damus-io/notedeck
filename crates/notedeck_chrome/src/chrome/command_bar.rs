@@ -27,6 +27,12 @@
 //! [`super::command_tools`]). The bar then steps into a new level, its prompt
 //! drawn before the query: another list to pick from, or the query itself as
 //! the argument's text. Backspace in an empty query steps back out.
+//!
+//! A search hit can be an offer instead: a scoped search its app runs only
+//! when asked (see [`notedeck::search`]). Choosing it steps into a level
+//! whose prompt is the scope's name, the query carried over, where only
+//! that app is asked. The offer lists last in its app's section, whatever
+//! its title matches.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -40,9 +46,9 @@ use nostrdb::Transaction;
 use notedeck::fuzzy::{contains_words, fuzzy_match};
 use notedeck::tokens::{RADIUS_LG, RADIUS_MD, SPACING_LG, SPACING_MD, SPACING_SM, STROKE_THIN};
 use notedeck::{
-    get_profile_url, tr, AppAction, AppContext, ColorTheme, CommandAction, CommandItem, HitPreview,
-    InlineChrome, Interaction, KindRenderRequest, Localization, NamedFontFamily, RenderContext,
-    ToolInvocation, ToolOutcome, ToolSpec,
+    get_profile_url, tr, AppAction, AppContext, AppId, ColorTheme, CommandAction, CommandItem,
+    HitPreview, InlineChrome, Interaction, KindRenderRequest, Localization, NamedFontFamily,
+    RenderContext, SearchScope, ToolInvocation, ToolOutcome, ToolSpec,
 };
 use notedeck_ui::keybind_hint::{keycap_width, KeybindHint, KEYCAP};
 use notedeck_ui::ProfilePic;
@@ -185,6 +191,28 @@ enum Asking {
     Row,
     /// Text typed into the query, for one argument of a tool call.
     Text(TextArg),
+    /// One of its rows, which only one app's scoped search finds.
+    Scope(Scoped),
+}
+
+/// A scoped search the bar stepped into: one app's, asked alone.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Scoped {
+    /// The app that offered it.
+    pub app: AppId,
+    /// Its [key](SearchScope::key), the scope the app is asked in.
+    pub key: String,
+}
+
+/// What the bar's query searches at the level it is at.
+pub(super) enum Searching<'a> {
+    /// Nothing: the query is a tool argument's value, or picks from a
+    /// fixed list.
+    Nothing,
+    /// Every provider: the top level.
+    Everything,
+    /// Only the app whose scope the bar stepped into.
+    Scope(&'a Scoped),
 }
 
 /// A tool call waiting on one argument, typed into the query.
@@ -328,6 +356,12 @@ pub struct CommandBar {
     /// What it says while the query is a tool argument's text, translated
     /// as the bar opens.
     enter_to_run: String,
+    /// What it says while nothing matches yet but a search is still
+    /// coming, translated as the bar opens.
+    searching: String,
+    /// The query field's placeholder in a scoped search, translated as the
+    /// bar opens.
+    scope_hint: String,
     /// What this level asks for, drawn before the query; `None` at the top.
     prompt: Option<String>,
     /// [`prompt`](Self::prompt), laid out.
@@ -405,6 +439,15 @@ impl CommandBar {
         self.prompt.as_deref()
     }
 
+    /// What the query searches at the level it is at.
+    pub(super) fn searching(&self) -> Searching<'_> {
+        match &self.asking {
+            Asking::Scope(scoped) => Searching::Scope(scoped),
+            Asking::Row if self.prompt.is_none() => Searching::Everything,
+            Asking::Row | Asking::Text(_) => Searching::Nothing,
+        }
+    }
+
     /// The tools chosen from it lately, by name, latest first.
     pub fn recent(&self) -> impl Iterator<Item = &str> {
         self.recent.iter().map(String::as_str)
@@ -429,6 +472,19 @@ impl CommandBar {
     /// under `prompt`, with `hint` as the query's placeholder.
     pub(super) fn ask_text(&mut self, prompt: String, hint: String, arg: TextArg) {
         self.step_in(prompt, hint, Asking::Text(arg), Vec::new());
+    }
+
+    /// Step into the scoped search `scope` that the app `app` offered, the
+    /// query carried over, with `hint` as the query's placeholder. Only that
+    /// app is asked from then on.
+    pub(super) fn ask_scope(&mut self, app: AppId, scope: SearchScope, hint: String) {
+        let query = self.query.clone();
+        let scoped = Scoped {
+            app,
+            key: scope.key,
+        };
+        self.step_in(scope.label, hint, Asking::Scope(scoped), Vec::new());
+        self.query = query;
     }
 
     /// Keep this level to step back to and start a new one.
@@ -491,6 +547,16 @@ impl CommandBar {
             i18n,
             "Press Enter to run it",
             "Shown in the command bar while the query is the text a command needs"
+        );
+        self.searching = tr!(
+            i18n,
+            "Searching…",
+            "Shown in the command bar while nothing matches yet but a search is still running"
+        );
+        self.scope_hint = tr!(
+            i18n,
+            "Search…",
+            "Placeholder in the command bar's query field inside a scoped search, like transcripts"
         );
     }
 
@@ -558,7 +624,14 @@ impl CommandBar {
         self.reveal_selected = true;
 
         for (item, entry) in self.items.iter().enumerate() {
-            let title = fuzzy_match(&self.query, &entry.title, &mut self.scratch);
+            let title = match entry.action {
+                // Its title quotes the query: ranked by `found` alone.
+                CommandAction::EnterScope { .. } => {
+                    self.scratch.clear();
+                    None
+                }
+                _ => fuzzy_match(&self.query, &entry.title, &mut self.scratch),
+            };
             let score = match (title, entry.found) {
                 (Some(score), _) => score,
                 (None, Some(found)) => found,
@@ -835,8 +908,9 @@ impl CommandBar {
         self.lay_out(ui.ctx(), theme, layout);
         let empty = match self.asking {
             Asking::Text(_) => Some(self.enter_to_run.as_str()),
-            Asking::Row if self.rows.is_empty() => Some(self.no_results.as_str()),
-            Asking::Row => None,
+            _ if !self.rows.is_empty() => None,
+            _ if self.search.is_pending() => Some(self.searching.as_str()),
+            _ => Some(self.no_results.as_str()),
         };
         if let Some(empty) = empty {
             egui::Frame::new()
@@ -1176,8 +1250,9 @@ impl Chrome {
         }
         match self.command_bar.choose() {
             Some(action) => self.run_command(app_ctx, action, ui),
-            // Nothing to run: an empty list closes, an argument's text not
-            // typed yet waits for it.
+            // Nothing to run: an empty list closes; an argument's text not
+            // typed yet, or a scoped search that hasn't found anything yet,
+            // waits.
             None if matches!(self.command_bar.asking, Asking::Row) => self.command_bar.close(&ctx),
             None => {}
         }
@@ -1194,7 +1269,8 @@ impl Chrome {
 
     /// Do what a chosen row does: step into the next argument its tool asks
     /// for, or close the bar and run the tool as a key bound to it would,
-    /// open its reference, or switch to its app. Closing first lets a tool that opens a view land
+    /// open its reference, or switch to its app; or step into the scoped
+    /// search it offers. Closing first lets a tool that opens a view land
     /// on it.
     fn run_command(&mut self, app_ctx: &mut AppContext, action: CommandAction, ui: &mut egui::Ui) {
         let action = match action {
@@ -1214,6 +1290,11 @@ impl Chrome {
             CommandAction::SwitchApp(app) => {
                 self.command_bar.close(ui.ctx());
                 self.set_active(app.slot() as i32);
+                None
+            }
+            CommandAction::EnterScope { app, scope } => {
+                let hint = self.command_bar.scope_hint.clone();
+                self.command_bar.ask_scope(app, scope, hint);
                 None
             }
         };

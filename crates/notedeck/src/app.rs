@@ -369,8 +369,11 @@ pub trait App {
     /// [`SearchHits::is_full`](crate::SearchHits::is_full). An answer that
     /// needs slow I/O returns what it has and marks itself
     /// [pending](crate::SearchHits::set_pending), and is asked again until it
-    /// isn't: see [`search`](crate::search) for the whole contract. Defaults
-    /// to finding nothing.
+    /// isn't. An answer too slow to give on every keystroke is
+    /// [offered](crate::SearchHits::offer) as a scope instead, and asked
+    /// with [`SearchQuery::scope`](crate::SearchQuery::scope) set once the
+    /// user steps into it. See [`search`](crate::search) for the whole
+    /// contract. Defaults to finding nothing.
     fn search(
         &mut self,
         ctx: &mut AppContext<'_>,

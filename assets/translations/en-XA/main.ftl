@@ -1105,6 +1105,9 @@ Save_changes_00db = {"["}Sàvé çhàñgés{"]"}
 # Dave session inspector files: a remote session's temp files are on the host running it
 Scratchpad_and_task_output_live_on__host_0268 = {"["}Sçràtçhpàd àñd tàsk óútpút lívé óñ {$host}{"]"}
 
+# Placeholder in the command bar's query field inside a scoped search, like transcripts
+Search_4c66 = {"["}Séàrçh…{"]"}
+
 # Column title for search page
 Search_c573 = {"["}Séàrçh{"]"}
 
@@ -1116,6 +1119,9 @@ Search_profiles_7e59 = {"["}Séàrçh prófílés...{"]"}
 
 # Placeholder for profile search input
 Search_profiles_or_enter_nip05_address_7e59 = {"["}Séàrçh prófílés ór éñtér ñíp05 àddréss...{"]"}
+
+# Shown in the command bar while nothing matches yet but a search is still running
+Searching_d866 = {"["}Séàrçhíñg…{"]"}
 
 # label describing secret key
 SECRET_ACCOUNT_LOGIN_KEY_8440 = {"["}SÉÇRÉT ÀÇÇÓÚÑT LÓGÍÑ KÉY{"]"}

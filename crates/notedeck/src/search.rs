@@ -20,6 +20,18 @@
 //!   its hits each time, until an answer comes back not pending. A provider
 //!   must not block for the work, and must drop or ignore the work of a query
 //!   it is no longer asked about.
+//!
+//! ## Scoped searches
+//!
+//! Some answers are too slow to give on every keystroke even off-thread, like
+//! a scan of every agent transcript. A provider doesn't run those unasked: it
+//! [offers](SearchHits::offer) a [`SearchScope`] beside its hits, which costs
+//! nothing and lists last in its section. Choosing the offer steps the bar
+//! into a level that asks only that provider, with the scope's
+//! [key](SearchScope::key) in [`SearchQuery::scope`] and room for
+//! [`SCOPED_HITS`]; the contract above holds there too. A provider answers a
+//! scoped query from that scope alone, and offers made in a scoped answer are
+//! ignored.
 
 use std::time::Duration;
 
@@ -30,6 +42,10 @@ use crate::OpenUri;
 /// How many hits one provider may give for a query.
 pub const HITS_PER_PROVIDER: usize = 8;
 
+/// How many hits the one provider of a [scoped search](SearchScope) may give:
+/// more than [`HITS_PER_PROVIDER`], since it is the only answer listed.
+pub const SCOPED_HITS: usize = 50;
+
 /// How long the chrome waits before asking a provider whose answer was
 /// [pending](SearchHits::set_pending) again.
 pub const REFINE_INTERVAL: Duration = Duration::from_millis(100);
@@ -39,6 +55,38 @@ pub const REFINE_INTERVAL: Duration = Duration::from_millis(100);
 pub struct SearchQuery<'a> {
     /// The query, trimmed; never empty.
     pub text: &'a str,
+    /// The [key](SearchScope::key) of the scope the user stepped into, when
+    /// the bar asks only this provider (see the module docs); `None` for the
+    /// search every provider answers on each keystroke.
+    pub scope: Option<&'a str>,
+}
+
+impl<'a> SearchQuery<'a> {
+    /// The search every provider answers for `text`, in no scope.
+    pub fn new(text: &'a str) -> Self {
+        Self { text, scope: None }
+    }
+
+    /// This query asked within the scope keyed `scope`.
+    pub fn scoped(mut self, scope: &'a str) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+}
+
+/// A search a provider offers to run on purpose, beside its hits (see the
+/// module docs): a row in the bar that steps into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchScope {
+    /// What the provider knows it by, handed back in
+    /// [`SearchQuery::scope`] (`transcripts`).
+    pub key: String,
+    /// What the scope is called, drawn as the prompt chip before the query
+    /// once the user is in it (`Transcripts`).
+    pub label: String,
+    /// The offer's row, as a person reads it, the query quoted in it
+    /// (`Search transcripts for “lavapipe”`).
+    pub title: String,
 }
 
 /// One thing a provider found: a row in the bar that opens what `uri` names.
@@ -124,6 +172,8 @@ pub struct SearchHits {
     cap: usize,
     /// Whether the answer is still coming.
     pending: bool,
+    /// The scoped searches offered beside the hits.
+    offers: Vec<SearchScope>,
 }
 
 impl SearchHits {
@@ -133,7 +183,19 @@ impl SearchHits {
             hits: Vec::new(),
             cap,
             pending: false,
+            offers: Vec::new(),
         }
+    }
+
+    /// Offer the scoped search `scope` beside the hits (see the module
+    /// docs). Offers don't count against the cap.
+    pub fn offer(&mut self, scope: SearchScope) {
+        self.offers.push(scope);
+    }
+
+    /// The scoped searches offered, in the order they were.
+    pub fn offers(&self) -> &[SearchScope] {
+        &self.offers
     }
 
     /// Add `hit`, unless the answer is full. Returns whether it was kept.
@@ -166,10 +228,18 @@ impl SearchHits {
         &self.hits
     }
 
-    /// Empty it for the next provider's answer, keeping its buffer and cap.
+    /// Empty it for the next provider's answer, keeping its buffers and
+    /// cap.
     pub fn clear(&mut self) {
         self.hits.clear();
+        self.offers.clear();
         self.pending = false;
+    }
+
+    /// [`clear`](Self::clear) it, and take at most `cap` hits from now on.
+    pub fn reset(&mut self, cap: usize) {
+        self.clear();
+        self.cap = cap;
     }
 }
 
@@ -193,15 +263,54 @@ mod tests {
         assert_eq!(titles, ["a", "b"]);
     }
 
+    fn scope(key: &str) -> SearchScope {
+        SearchScope {
+            key: key.to_owned(),
+            label: key.to_owned(),
+            title: format!("Search {key}"),
+        }
+    }
+
     #[test]
-    fn clear_forgets_hits_and_pending_but_keeps_the_cap() {
+    fn clear_forgets_hits_offers_and_pending_but_keeps_the_cap() {
         let mut out = SearchHits::new(1);
         out.push(hit("a"));
+        out.offer(scope("deep"));
         out.set_pending();
         out.clear();
         assert!(out.hits().is_empty());
+        assert!(out.offers().is_empty());
         assert!(!out.is_pending());
         assert!(out.push(hit("b")));
         assert!(out.is_full());
+    }
+
+    #[test]
+    fn an_offer_is_kept_past_the_cap() {
+        let mut out = SearchHits::new(1);
+        out.push(hit("a"));
+        assert!(out.is_full());
+        out.offer(scope("deep"));
+        assert_eq!(out.offers(), [scope("deep")], "offers aren't hits");
+    }
+
+    #[test]
+    fn reset_takes_a_new_cap() {
+        let mut out = SearchHits::new(1);
+        out.push(hit("a"));
+        out.reset(2);
+        assert!(out.hits().is_empty());
+        assert!(out.push(hit("b")));
+        assert!(out.push(hit("c")), "room for two now");
+        assert!(out.is_full());
+    }
+
+    #[test]
+    fn a_query_is_unscoped_until_scoped() {
+        let query = SearchQuery::new("lavapipe");
+        assert_eq!(query.scope, None);
+        let scoped = query.scoped("transcripts");
+        assert_eq!(scoped.text, "lavapipe");
+        assert_eq!(scoped.scope, Some("transcripts"));
     }
 }

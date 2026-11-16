@@ -1447,7 +1447,7 @@ fn search_finds_boards_and_cards_and_opens_a_card_on_its_board() {
         let mut out = SearchHits::new(notedeck::search::HITS_PER_PROVIDER);
         state
             .headway
-            .search(&mut app_ctx, &SearchQuery { text }, &mut out);
+            .search(&mut app_ctx, &SearchQuery::new(text), &mut out);
         out.hits().to_vec()
     }
     fn titles(hits: &[SearchHit]) -> Vec<&str> {
