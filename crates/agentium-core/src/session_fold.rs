@@ -205,6 +205,13 @@ impl SessionReducer {
         self.latest.values()
     }
 
+    /// The folded session whose `claude_session_id` is `session_id`, a
+    /// `deleted` tombstone included, borrowed: one map lookup. For a reader
+    /// that already holds a session id, like a transcript search hit.
+    pub fn get_including_deleted(&self, session_id: &str) -> Option<&SessionView> {
+        self.latest.get(session_id)
+    }
+
     /// The state-event note id of the session whose word-id is `words`,
     /// **including tombstones**. A session's stable identity is its
     /// `claude_session_id`, whose word-id (SHA-256 → BIP-39 — see

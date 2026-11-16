@@ -36,8 +36,9 @@
 //! state note and the chrome routes to Dave, the way a click on the session's
 //! inline chip is.
 //!
-//! Message text is not searched (as `agentium grep` does): that needs a
-//! full-text query per keystroke, on a worker.
+//! Message text is not searched here: that is a scan too slow for every
+//! keystroke, which Dave offers beside these hits and runs on a worker once
+//! asked (see [`transcript_search`](crate::transcript_search)).
 
 use agentium_core::session_loader::SessionState;
 use agentium_core::wordid;
@@ -122,6 +123,7 @@ impl crate::Dave {
 /// [`CardTitles::is_current`]), or that have none: the ones
 /// [`refresh_titles`] looks up. Only strings that are exactly one reference
 /// a registered parser recognizes, so a plain title is never looked up.
+/// Deleted sessions are skipped, since the title search never lists them.
 #[profiling::function]
 pub(crate) fn stale_refs(
     sessions: &[SessionView],
@@ -130,13 +132,25 @@ pub(crate) fn stale_refs(
     titles: &CardTitles,
     now: f64,
 ) -> Vec<String> {
+    let live = sessions
+        .iter()
+        .map(|view| &view.state)
+        .filter(|state| !state.is_deleted());
+    stale_refs_of(live, registries, ctx, titles, now)
+}
+
+/// [`stale_refs`] among `states`, deleted or not: for a search that lists
+/// deleted sessions too, like the transcript search.
+pub(crate) fn stale_refs_of<'s>(
+    states: impl Iterator<Item = &'s SessionState>,
+    registries: &AppRegistries,
+    ctx: &ReferenceResolveCtx,
+    titles: &CardTitles,
+    now: f64,
+) -> Vec<String> {
     let parsers: &ReferenceParserRegistry = &registries.reference_parsers;
     let mut stale = Vec::new();
-    for view in sessions {
-        let state = &view.state;
-        if state.is_deleted() {
-            continue;
-        }
+    for state in states {
         let issue = state.issue_url.as_deref();
         for text in std::iter::once(state.display_title()).chain(issue) {
             let text = text.trim();
@@ -247,7 +261,7 @@ fn score(
 
 /// The title kept for what `text` references, when the whole of it is a
 /// reference that resolved.
-fn ref_title<'a>(titles: &'a CardTitles, text: &str) -> Option<&'a str> {
+pub(crate) fn ref_title<'a>(titles: &'a CardTitles, text: &str) -> Option<&'a str> {
     titles.get(text.trim())
 }
 

@@ -149,6 +149,20 @@ impl AgentiumSessionCache {
             .flatten()
     }
 
+    /// Advance `author`'s fold and run `read` against it whole, tombstones
+    /// included (unlike [`with_sessions`](Self::with_sessions)), seeding it on
+    /// first touch. `None` until the reducer seeds. For a reader that must show
+    /// deleted sessions too, like the transcript search's hits.
+    pub fn with_fold<R>(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        author: &Pubkey,
+        read: impl FnOnce(&SessionReducer) -> R,
+    ) -> Option<R> {
+        self.authors.with_reducer(ndb, txn, author, |r| read(&r.0))
+    }
+
     /// The current folded state for `session_id` (a `claude_session_id` d-tag), if
     /// held and not deleted — the renderer's live-state read for a chip's title and
     /// status. `None` before the first fold or when no such session is folded

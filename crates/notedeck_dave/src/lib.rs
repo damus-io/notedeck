@@ -46,6 +46,7 @@ mod stream_events;
 mod test_refs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+mod transcript_search;
 mod turn_rows;
 mod ui_tools;
 pub use ui_tools::SPAWN_SESSION;
@@ -224,6 +225,9 @@ pub struct Dave {
     /// renderer this app registers, so a chip drawn in a note/Dave-chat reads the
     /// same live state as the open surface. Pumped every frame in [`Self::update`].
     session_cache: std::rc::Rc<std::cell::RefCell<session_cache::AgentiumSessionCache>>,
+    /// The Cmd-K bar's transcript search, scanning on its worker while the bar
+    /// asks about it (see [`transcript_search`]).
+    transcript_search: Option<transcript_search::TranscriptSearch>,
     /// The Claude account's rate-limit windows, as the newest report from any
     /// local session left them. Account state, not session state, so every
     /// local session's Rate limits card and status bar read this one.
@@ -563,6 +567,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             avatar,
             session_manager,
             session_cache: std::rc::Rc::new(std::cell::RefCell::new(session_cache)),
+            transcript_search: None,
             rate_limit: None,
             tools: Arc::new(tools),
             model_config,
@@ -1324,6 +1329,8 @@ const NOT_A_HOST: &str = "this notedeck serves data only (started by nd, `--serv
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>) {
+        self.drop_idle_transcript_search();
+
         // Not a host: keep the session cache current and touch nothing that
         // could start, resume or message an agent.
         if !self.host {
@@ -1794,12 +1801,24 @@ impl notedeck::App for Dave {
     /// or issue references, on every host, read off the shared session fold
     /// the inline chips read. While that fold is still seeding on its worker
     /// the answer is pending, so the bar asks again.
+    ///
+    /// Beside them, Dave offers to search the sessions' transcripts, which
+    /// the bar asks in a [scope](notedeck::SearchQuery::scope) of its own,
+    /// answered on a worker (see [`transcript_search`]).
     fn search(
         &mut self,
         ctx: &mut AppContext<'_>,
         query: &notedeck::SearchQuery<'_>,
         out: &mut notedeck::SearchHits,
     ) {
+        if query.scope.is_some() {
+            self.search_transcripts(ctx, query, out);
+            return;
+        }
+        // Asked outside the scope: the user left it.
+        self.transcript_search = None;
+        out.offer(transcript_search::offer(ctx.i18n, query.text));
+
         let author = *ctx.accounts.selected_account_pubkey();
         let Ok(txn) = Transaction::new(ctx.ndb) else {
             return;

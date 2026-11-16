@@ -1120,6 +1120,9 @@ Search_profiles_7e59 = {"["}Séàrçh prófílés...{"]"}
 # Placeholder for profile search input
 Search_profiles_or_enter_nip05_address_7e59 = {"["}Séàrçh prófílés ór éñtér ñíp05 àddréss...{"]"}
 
+# Cmd-K bar: the row offering to search agent session transcripts for what was typed
+Search_transcripts_for___query_7f49 = {"["}Séàrçh tràñsçrípts fór “{$query}”{"]"}
+
 # Shown in the command bar while nothing matches yet but a search is still running
 Searching_d866 = {"["}Séàrçhíñg…{"]"}
 
@@ -1336,6 +1339,9 @@ tokens__tokens_61fd = {"["}{$tokens} tókéñs{"]"}
 # Dave session inspector subagents: tokens a subagent has used
 tokens__tokens_d3b5 = {"["}{$tokens} tókéñs{"]"}
 
+# Cmd-K bar: the prompt chip of Dave's transcript search, before the query
+Transcripts_d904 = {"["}Tràñsçrípts{"]"}
+
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = {"["}Túrñ {$number} · {$context}{"]"}
 
@@ -1522,6 +1528,14 @@ count__files_changed_23c6 =
     { $count ->
         [one] {"["}{$count} fílé çhàñgéd{"]"}
        *[other] {"["}{$count} fílés çhàñgéd{"]"}
+    }
+
+
+# Cmd-K bar: how many of a session's messages matched a transcript search, after its newest matching line
+count__messages_03f7 =
+    { $count ->
+        [one] {"["}{$count} méssàgé{"]"}
+       *[other] {"["}{$count} méssàgés{"]"}
     }
 
 
