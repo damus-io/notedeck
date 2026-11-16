@@ -10,12 +10,15 @@
 //!
 //! ```text
 //! agentium:some-word-id?msg="launch a /code-review for the work done in this session"
+//! agentium:some-word-id?at=<64-hex note id>
 //! ```
+
+use nostrdb_net::NoteId;
 
 /// A request to open the entity `reference` names, with optional parameters.
 ///
 /// Built with [`OpenUri::parse`] from a `reference?key=value&…` string, or
-/// directly. Only `msg` is understood today; unknown keys are ignored so a newer
+/// directly. `msg` and `at` are understood; unknown keys are ignored so a newer
 /// sender doesn't break an older receiver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenUri {
@@ -27,6 +30,12 @@ pub struct OpenUri {
     /// to the owning app: Dave sends it into the opened session as a user
     /// message; apps that take no message log and drop it.
     pub msg: Option<String>,
+    /// A note inside the opened entity to land on, rather than its top: the
+    /// shell carries it to the owning app, which scrolls to where that note
+    /// shows. Dave lands an agentium session on the chat row of the kind-1988
+    /// message `at` names (a Cmd-K transcript hit); apps that take no
+    /// locator ignore it.
+    pub at: Option<NoteId>,
 }
 
 impl OpenUri {
@@ -35,7 +44,15 @@ impl OpenUri {
         Self {
             reference: reference.into(),
             msg: None,
+            at: None,
         }
+    }
+
+    /// This open, landing on note `at` inside the opened entity (see
+    /// [`at`](OpenUri::at)).
+    pub fn landing_at(mut self, at: NoteId) -> Self {
+        self.at = Some(at);
+        self
     }
 
     /// Parse `reference?key=value&…`.
@@ -44,8 +61,9 @@ impl OpenUri {
     /// must be non-empty, or this returns `None`. The part after is a
     /// `application/x-www-form-urlencoded` query: pairs are percent-decoded (`+`
     /// is a space), one pair of surrounding double quotes is stripped from a
-    /// value so `msg="two words"` works, `msg` is kept (the last one wins), and
-    /// any other key is ignored. A `?` with nothing after it is the same as none.
+    /// value so `msg="two words"` works, `msg` is kept (the last one wins), `at`
+    /// is kept when it is a 64-hex note id (else dropped), and any other key is
+    /// ignored. A `?` with nothing after it is the same as none.
     pub fn parse(uri: &str) -> Option<Self> {
         let (reference, query) = match uri.split_once('?') {
             Some((reference, query)) => (reference, Some(query)),
@@ -59,8 +77,10 @@ impl OpenUri {
         let mut open = Self::new(reference);
         let pairs = query.map(|q| url::form_urlencoded::parse(q.as_bytes()));
         for (key, value) in pairs.into_iter().flatten() {
-            if key == "msg" {
-                open.msg = Some(unquote(&value).to_owned());
+            match key.as_ref() {
+                "msg" => open.msg = Some(unquote(&value).to_owned()),
+                "at" => open.at = NoteId::from_hex(unquote(&value)).ok(),
+                _ => {}
             }
         }
         Some(open)
@@ -85,6 +105,7 @@ mod tests {
         Some(OpenUri {
             reference: reference.to_owned(),
             msg: msg.map(str::to_owned),
+            at: None,
         })
     }
 
@@ -142,5 +163,23 @@ mod tests {
         for (uri, want) in cases {
             assert_eq!(&OpenUri::parse(uri), want, "parsing {uri:?}");
         }
+    }
+
+    /// `at` keeps a 64-hex note id beside `msg`, and drops anything else.
+    #[test]
+    fn parse_at() {
+        let id = NoteId::new([0xab; 32]);
+        let hex = id.hex();
+        let at = |uri: &str| OpenUri::parse(uri).expect("a reference").at;
+
+        assert_eq!(at(&format!("agentium:a-b-c?at={hex}")), Some(id));
+        assert_eq!(at(&format!("agentium:a-b-c?at=\"{hex}\"")), Some(id));
+        let both = OpenUri::parse(&format!("agentium:a-b-c?msg=hi&at={hex}")).unwrap();
+        let mut want = OpenUri::new("agentium:a-b-c").landing_at(id);
+        want.msg = Some("hi".to_owned());
+        assert_eq!(both, want, "with msg too");
+        assert_eq!(at("agentium:a-b-c?at=abcd"), None, "too short");
+        assert_eq!(at("agentium:a-b-c?at="), None);
+        assert_eq!(at("agentium:a-b-c"), None);
     }
 }

@@ -190,9 +190,10 @@ pub(super) fn resolve_reference(
 /// click on its inline widget does. Returns `false`, doing nothing, when no
 /// such app claims it, so the caller hands it to the Columns timeline.
 ///
-/// `msg` is an [`OpenUri`](notedeck::OpenUri) message: Dave sends it into the
-/// opened session ([`Dave::open_with_message`](notedeck_dave::Dave::open_with_message)).
-/// The other apps take no message, so it's logged and dropped there.
+/// `params` are the [`OpenUri`](notedeck::OpenUri)'s: Dave sends its message
+/// into the opened session and lands the chat on its `at` note
+/// ([`Dave::request_open`](notedeck_dave::Dave::request_open)). The other apps
+/// take neither, so a message is logged and dropped there.
 ///
 /// An open that lands in another app lands with nothing focused (see
 /// [`AppFocus::land_unfocused`](super::AppFocus::land_unfocused)).
@@ -200,10 +201,10 @@ fn open_note_in_owning_app(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     note_id: nostrdb_net::NoteId,
-    msg: Option<String>,
+    params: OpenParams,
 ) -> bool {
     let from = chrome.active;
-    let opened = switch_to_owning_app(chrome, ctx, note_id, msg);
+    let opened = switch_to_owning_app(chrome, ctx, note_id, params);
     if opened && chrome.active != from {
         chrome.app_focus.land_unfocused();
         chrome.remember_opener(from);
@@ -221,18 +222,22 @@ fn switch_to_owning_app(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     note_id: nostrdb_net::NoteId,
-    msg: Option<String>,
+    params: OpenParams,
 ) -> bool {
     #[cfg(feature = "dave")]
     if is_agentium_note(ctx, note_id) {
         chrome.switch_to_dave();
         if let Some(dave) = chrome.get_dave_app() {
-            dave.open_with_message(note_id, msg);
+            dave.request_open(notedeck_dave::PendingOpen {
+                note: note_id,
+                msg: params.msg,
+                at: params.at,
+            });
         }
         return true;
     }
 
-    if msg.is_some() {
+    if params.msg.is_some() {
         tracing::warn!(
             "open: {} isn't an agentium session; dropping its message",
             note_id.hex()
@@ -255,6 +260,27 @@ fn switch_to_owning_app(
     }
 
     false
+}
+
+/// What an open hands the app it lands in, beside the note it resolved to:
+/// the [`OpenUri`](notedeck::OpenUri)'s parameters. A click on an inline chip
+/// carries none.
+#[derive(Default)]
+struct OpenParams {
+    /// See [`OpenUri::msg`](notedeck::OpenUri::msg).
+    msg: Option<String>,
+    /// See [`OpenUri::at`](notedeck::OpenUri::at). Only Dave takes one.
+    #[cfg_attr(not(feature = "dave"), allow(dead_code))]
+    at: Option<nostrdb_net::NoteId>,
+}
+
+impl From<notedeck::OpenUri> for OpenParams {
+    fn from(open: notedeck::OpenUri) -> Self {
+        Self {
+            msg: open.msg,
+            at: open.at,
+        }
+    }
 }
 
 /// How long an unresolved [`AppAction::Open`] is retried before it's given up,
@@ -321,7 +347,7 @@ pub(super) fn retry_pending_open(chrome: &mut Chrome, ctx: &mut AppContext, ui: 
     pending.attempts += 1;
 
     if let Some(note_id) = resolve_reference(ctx, &pending.open.reference) {
-        route_open(chrome, ctx, note_id, pending.open.msg, ui);
+        route_open(chrome, ctx, note_id, pending.open.into(), ui);
         return;
     }
 
@@ -341,16 +367,16 @@ pub(super) fn retry_pending_open(chrome: &mut Chrome, ctx: &mut AppContext, ui: 
 
 /// Route an open whose reference resolved to `note_id` as the click on its
 /// inline chip would be, so an open by reference and an open by click can
-/// never land differently — except that the owning app also gets the message
-/// (Dave sends it).
+/// never land differently — except that the owning app also gets the open's
+/// parameters (Dave sends its message and lands on its `at` note).
 fn route_open(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     note_id: nostrdb_net::NoteId,
-    msg: Option<String>,
+    params: OpenParams,
     ui: &mut egui::Ui,
 ) {
-    if open_note_in_owning_app(chrome, ctx, note_id, msg) {
+    if open_note_in_owning_app(chrome, ctx, note_id, params) {
         return;
     }
     let click = notedeck::NoteAction::note(note_id);
@@ -481,7 +507,7 @@ pub(super) fn chrome_handle_app_action(
                 ui.ctx().request_repaint_after(OPEN_RETRY_INTERVAL);
                 return;
             };
-            route_open(chrome, ctx, note_id, open.msg, ui);
+            route_open(chrome, ctx, note_id, open.into(), ui);
         }
 
         AppAction::Note(note_action) => {
@@ -502,7 +528,7 @@ pub(super) fn chrome_handle_app_action(
             // A click on another app's inline widget opens in that app rather than
             // the timeline (see `open_note_in_owning_app`).
             if let notedeck::NoteAction::Note { note_id, .. } = &note_action {
-                if open_note_in_owning_app(chrome, ctx, *note_id, None) {
+                if open_note_in_owning_app(chrome, ctx, *note_id, OpenParams::default()) {
                     return;
                 }
             }
@@ -765,6 +791,7 @@ mod open_tests {
         let open = OpenUri {
             reference: agentium_core::wordid::session_ref(SESSION_ID),
             msg: Some(MSG.to_string()),
+            at: None,
         };
         frame_at(&egui_ctx, 0.0, |ui| {
             chrome_handle_app_action(&mut chrome, &mut ctx, AppAction::Open(open.clone()), ui);
@@ -919,6 +946,7 @@ mod open_tests {
         let open = OpenUri {
             reference: agentium_core::wordid::session_ref("no-such-session-anywhere"),
             msg: Some(MSG.to_string()),
+            at: None,
         };
         let raise_at = |chrome: &mut Chrome, ctx: &mut AppContext, t: f64| {
             frame_at(&egui_ctx, t, |ui| {

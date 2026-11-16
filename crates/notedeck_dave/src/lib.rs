@@ -276,6 +276,9 @@ pub struct Dave {
     /// switched to on the next [`update`](Self::update), then cleared. See
     /// [`Self::open_with_message`] / [`Self::process_pending_open`].
     pending_open: Option<restore::PendingOpen>,
+    /// The message an open asked to land on, waiting for its session's chat
+    /// to hold it. See [`restore::PendingSeek`].
+    pending_seek: Option<restore::PendingSeek>,
     /// Directory picker for selecting working directory when creating sessions
     directory_picker: DirectoryPicker,
     /// The slash commands and models each cwd's Claude CLI offers, for the
@@ -586,6 +589,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             home_session: None,
             normal_mode: ui::keybindings::NormalMode::default(),
             pending_open: None,
+            pending_seek: None,
             directory_picker,
             slash_catalogs: slash::SlashCatalogs::default(),
             session_picker: SessionPicker::new(),
@@ -699,7 +703,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// backend runs it) gets `msg` in its input draft instead; see
     /// [`deliver_open_message`](Self::deliver_open_message).
     pub fn open_with_message(&mut self, note: nostrdb_net::NoteId, msg: Option<String>) {
-        self.pending_open = Some(restore::PendingOpen { note, msg });
+        self.request_open(PendingOpen {
+            note,
+            msg,
+            at: None,
+        });
+    }
+
+    /// Focus `open.note`'s session on the next [`update`](Self::update), send
+    /// it `open.msg` as [`open_with_message`](Self::open_with_message) does,
+    /// and land its chat on the message `open.at` names, if any: how an
+    /// `OpenUri` like `agentium:<word-id>?at=<note id>` (a Cmd-K transcript
+    /// hit) lands. A later request replaces one still waiting.
+    pub fn request_open(&mut self, open: PendingOpen) {
+        self.pending_open = Some(open);
     }
 
     /// The open an [`open_with_message`](Self::open_with_message) left for the
@@ -1358,6 +1375,7 @@ impl notedeck::App for Dave {
         if let Some(opened) = self.process_pending_open(ctx.ndb) {
             self.deliver_open_message(opened, &host);
         }
+        self.process_pending_seek(ctx.ndb);
         self.ensure_pns_local_state(ctx);
         // The account's inbound PNS 1080 sync (and its settle signal, read via
         // `ctx.private_sync_settled`) is now owned by the notedeck host, running

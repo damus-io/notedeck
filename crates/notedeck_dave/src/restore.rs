@@ -16,6 +16,7 @@ use nostrdb::{NoteKey, Subscription, Transaction};
 use notedeck::AppContext;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// Per-frame time budget for draining background-restored sessions into the
 /// manager, so a large restore fills in over several frames without stalling any
@@ -43,6 +44,34 @@ pub struct PendingOpen {
     /// Text to send into the session once it's focused, as if typed and
     /// submitted (`OpenUri.msg`). `None` for a plain chip click.
     pub msg: Option<String>,
+    /// A kind-1988 message of the session to land the chat on once it's
+    /// focused (`OpenUri.at`), as a Cmd-K transcript hit asks. `None` for a
+    /// plain chip click. See [`PendingSeek`].
+    pub at: Option<nostrdb_net::NoteId>,
+}
+
+/// How long a [`PendingSeek`] waits for its session's chat to hold the row it
+/// seeks: long enough for a large session's history to load cold.
+const SEEK_WAIT: Duration = Duration::from_secs(30);
+
+/// An open's `at` message, waiting to be shown in the session the open
+/// focused: the chat tab, its block cursor on the message's row (see
+/// [`ChatSession::show_chat_row`](crate::session::ChatSession::show_chat_row)).
+///
+/// The row is resolved once, from the session's fold
+/// ([`message_row`](session_loader::message_row)). A session that was only
+/// just reopened has no history in its chat yet, so the seek waits, frame
+/// after frame, until the chat is long enough to hold that row, and is given
+/// up after [`SEEK_WAIT`].
+pub(crate) struct PendingSeek {
+    /// The session the open focused.
+    session: SessionId,
+    /// The message to show.
+    note: nostrdb_net::NoteId,
+    /// The chat row `note` shows in, once resolved.
+    row: Option<usize>,
+    /// When to stop waiting for the chat to hold `row`.
+    give_up_at: Instant,
 }
 
 /// The session a [`PendingOpen`] focused, handed back to
@@ -96,11 +125,19 @@ impl Dave {
     pub(crate) fn process_pending_open(&mut self, ndb: &nostrdb::Ndb) -> Option<OpenedSession> {
         let pending = self.pending_open.take()?;
         match self.focus_session_note(ndb, pending.note) {
-            FocusOutcome::Focused { session, was_live } => Some(OpenedSession {
-                session,
-                was_live,
-                msg: pending.msg,
-            }),
+            FocusOutcome::Focused { session, was_live } => {
+                self.pending_seek = pending.at.map(|note| PendingSeek {
+                    session,
+                    note,
+                    row: None,
+                    give_up_at: Instant::now() + SEEK_WAIT,
+                });
+                Some(OpenedSession {
+                    session,
+                    was_live,
+                    msg: pending.msg,
+                })
+            }
             FocusOutcome::Retry => {
                 self.pending_open = Some(pending);
                 None
@@ -115,6 +152,46 @@ impl Dave {
                 None
             }
         }
+    }
+
+    /// Act on a [`PendingSeek`] an open left: once its session's chat holds
+    /// the row its message shows in, show that row; until then keep it, up to
+    /// [`SEEK_WAIT`]. A message that resolves to no row drops it.
+    pub(crate) fn process_pending_seek(&mut self, ndb: &nostrdb::Ndb) {
+        let Some(mut seek) = self.pending_seek.take() else {
+            return;
+        };
+        if Instant::now() >= seek.give_up_at {
+            tracing::warn!(
+                "open: session {}'s chat never reached {}'s row; not seeking it",
+                seek.session,
+                seek.note.hex()
+            );
+            return;
+        }
+        let row = match seek.row {
+            Some(row) => row,
+            None => {
+                let Ok(txn) = Transaction::new(ndb) else {
+                    self.pending_seek = Some(seek);
+                    return;
+                };
+                let Some(row) = session_loader::message_row(ndb, &txn, seek.note.bytes()) else {
+                    tracing::warn!("open: {} is no message to land on", seek.note.hex());
+                    return;
+                };
+                seek.row = Some(row);
+                row
+            }
+        };
+        let Some(session) = self.session_manager.get_mut(seek.session) else {
+            return;
+        };
+        if session.chat.len() <= row {
+            self.pending_seek = Some(seek);
+            return;
+        }
+        session.show_chat_row(row);
     }
 
     /// Focus the session whose kind-31988 state note is `note_id`.
@@ -2291,6 +2368,92 @@ mod tests {
             "dispatched to the backend exactly once"
         );
         assert!(dave.session_manager.get(sid).unwrap().input.is_empty());
+    }
+
+    /// Opening a session at one of its messages lands its chat there: the
+    /// chat tab, the block cursor seeking that message's row. A session whose
+    /// history isn't in its chat yet gets the seek once it is.
+    #[tokio::test]
+    async fn open_at_a_message_seeks_its_row_once_the_chat_holds_it() {
+        let mut test = TestDave::new();
+        let TestDave {
+            dave,
+            ndb,
+            sk,
+            account,
+            ..
+        } = &mut test;
+        let sid = dave.session_manager.new_session(
+            PathBuf::from("/tmp/proj"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let event_sid = dave
+            .session_manager
+            .get(sid)
+            .unwrap()
+            .agentic
+            .as_ref()
+            .unwrap()
+            .event_session_id()
+            .to_owned();
+        let state = state_event(&event_sid, &dave.hostname.clone(), "idle", sk);
+        ingest(ndb, &state).await;
+        let mut threading = ThreadingState::new();
+        let messages = [
+            ("user", "first"),
+            ("assistant", "second"),
+            ("user", "third"),
+        ];
+        let mut notes = Vec::new();
+        for (role, text) in messages {
+            let note = build_live_event(
+                text,
+                role,
+                &event_sid,
+                None,
+                LiveEventTags::default(),
+                &mut threading,
+                sk,
+            )
+            .unwrap();
+            ingest(ndb, &note).await;
+            notes.push(note);
+        }
+        dave.session_manager
+            .get_mut(sid)
+            .unwrap()
+            .inspector_view
+            .show_details();
+
+        dave.request_open(PendingOpen {
+            note: nostrdb_net::NoteId::new(state.note_id),
+            msg: None,
+            at: Some(nostrdb_net::NoteId::new(notes[1].note_id)),
+        });
+        dave.process_pending_open(ndb);
+        dave.process_pending_seek(ndb);
+        assert_eq!(dave.session_manager.active_id(), Some(sid), "focused");
+        let session = dave.session_manager.get(sid).unwrap();
+        assert_eq!(session.block_nav.sought_row(), None, "no history yet");
+        assert!(dave.pending_seek.is_some(), "still waiting for it");
+
+        // Its history loads, as a restore installs it.
+        {
+            let txn = Transaction::new(ndb).unwrap();
+            let loaded =
+                session_loader::load_session_messages_for_author(ndb, &txn, account, &event_sid);
+            let session = dave.session_manager.get_mut(sid).unwrap();
+            conversation::apply_loaded_chat(session, loaded);
+        }
+        dave.process_pending_seek(ndb);
+        let session = dave.session_manager.get(sid).unwrap();
+        assert_eq!(session.block_nav.sought_row(), Some(1), "the second row");
+        assert_eq!(
+            session.inspector_view.tab,
+            crate::inspector::SessionTab::Chat
+        );
+        assert!(dave.pending_seek.is_none(), "done");
     }
 
     /// Opening a deleted (tombstoned) session with a message revives it but

@@ -409,7 +409,9 @@ pub(crate) fn answer(
         } else {
             found.line.clone()
         };
-        let uri = OpenUri::new(wordid::session_ref(&state.claude_session_id));
+        // Opened at the matching message rather than the session's top.
+        let uri =
+            OpenUri::new(wordid::session_ref(&state.claude_session_id)).landing_at(found.note_id);
         // Scored 0: the bar lists a session whose title also matches first,
         // then the rest in the order given, the newest match first.
         out.push(SearchHit::new(title, uri, 0).kind(kind).subtitled(subtitle));
@@ -696,6 +698,7 @@ mod tests {
             Some("Lavapipe passes now. · 2 messages")
         );
         assert_eq!(hit.uri.reference, wordid::session_ref("session-new"));
+        assert_eq!(hit.uri.at, Some(found[0].note_id), "opens at the match");
         assert_eq!(
             hits[1].subtitle.as_deref(),
             Some("why does lavapipe crash?")

@@ -190,6 +190,29 @@ mod tests {
         assert_eq!(loaded.messages.len(), loaded.orders.len());
     }
 
+    /// Every part of a split message shows in its first part's row.
+    #[tokio::test]
+    async fn every_part_of_a_split_message_has_the_heads_row() {
+        let db = TempNdb::new();
+        let ndb = db.ndb.clone();
+        let mut threading = ThreadingState::new();
+        let before = build("before", "user", &mut threading);
+        let split = build(&oversized(), "assistant", &mut threading);
+        let after = build("after", "user", &mut threading);
+        ingest(&ndb, &before).await;
+        ingest(&ndb, &split).await;
+        ingest(&ndb, &after).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let row =
+            |event: &BuiltEvent| crate::session_loader::message_row(&ndb, &txn, &event.note_id);
+        assert!(split.len() > 1);
+        for part in &split {
+            assert_eq!(row(part), Some(1));
+        }
+        assert_eq!(row(&after[0]), Some(2));
+    }
+
     /// A split message gathered from ndb is complete only once every part is
     /// there, from whichever part it's gathered, and always under its first
     /// part's id.

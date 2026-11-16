@@ -1070,6 +1070,13 @@ impl<'a> DaveUi<'a> {
                     // TodoUpdate is displayed in the task list sidebar, not in chat
                 }
             };
+            if self.nav.leave_row() {
+                // Sought, but no block to take the cursor: land on the
+                // message's top, as a block would on its header.
+                let drawn = ui.min_rect().x_range();
+                let rect = egui::Rect::from_x_y_ranges(drawn, row_top..=ui.cursor().top());
+                ui.scroll_to_rect(rect, Some(egui::Align::Min));
+            }
             let is_message = matches!(message, Message::User(_) | Message::Assistant(_));
             if let Some(click) = click.filter(|_| is_message && row_has_pointer(row_top, ui)) {
                 message_click = Some(MessageClick {

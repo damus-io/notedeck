@@ -606,6 +606,7 @@ fn open_record_session(fields: &ReviewFields, msg: Option<String>) -> Option<not
     Some(notedeck::OpenUri {
         reference: session.to_owned(),
         msg,
+        at: None,
     })
 }
 

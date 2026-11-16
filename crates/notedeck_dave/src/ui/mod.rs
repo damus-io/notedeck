@@ -1606,8 +1606,7 @@ pub fn handle_ui_action(
         }
         DaveAction::ShowChatRow(row) => {
             if let Some(session) = session_manager.get_active_mut() {
-                session.inspector_view.show_chat();
-                session.block_nav.seek_row(row);
+                session.show_chat_row(row);
             }
             UiActionResult::Handled
         }

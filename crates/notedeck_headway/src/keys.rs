@@ -3040,6 +3040,7 @@ diff --git a/b.txt b/b.txt
                          Reply with `nd headway comment {card_ref} --reply-to <word-id> <text>`; \
                          `nd headway show {card_ref}` lists each comment's word-id."
                     )),
+                    at: None,
                 }),
                 "{name}"
             );
@@ -3283,6 +3284,7 @@ diff --git a/b.txt b/b.txt
                      Reply with `nd headway comment {card_ref} --reply-to <word-id> <text>`; \
                      `nd headway show {card_ref}` lists each comment's word-id."
                 )),
+                at: None,
             }),
             "the reason goes to the record's session"
         );
@@ -3568,6 +3570,7 @@ diff --git a/b.txt b/b.txt
             Some(notedeck::OpenUri {
                 reference: SESSION.to_string(),
                 msg: Some(msg),
+                at: None,
             })
         );
         assert!(harness.state().state.queue_open());

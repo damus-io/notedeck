@@ -1137,6 +1137,14 @@ impl ChatSession {
         &self.turn_rows
     }
 
+    /// Show chat row `row`: switch to the chat tab and put the block cursor
+    /// on the row, scrolled into view, on the next render pass (see
+    /// [`BlockNav::seek_row`](crate::ui::BlockNav::seek_row)).
+    pub fn show_chat_row(&mut self, row: usize) {
+        self.inspector_view.show_chat();
+        self.block_nav.seek_row(row);
+    }
+
     /// Replace the whole chat, re-indexing the rows the turn tracks against
     /// the new one. The finished turns pointed into the old chat, so they are
     /// cleared: a fold installs its own after this

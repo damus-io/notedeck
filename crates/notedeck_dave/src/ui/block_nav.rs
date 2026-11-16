@@ -114,6 +114,20 @@ impl BlockNav {
         self.current_row = Some(row);
     }
 
+    /// Tell the registry the transcript has drawn the row it last
+    /// [entered](Self::enter_row), and return whether a
+    /// [`seek_row`](Self::seek_row) named it but it registered no block to
+    /// take the cursor (a user or assistant message has none). The seek is
+    /// spent either way; on `true` the caller scrolls the row into view
+    /// itself.
+    pub fn leave_row(&mut self) -> bool {
+        let unclaimed = std::mem::take(&mut self.row_armed);
+        if unclaimed {
+            self.seek_row_this_frame = None;
+        }
+        unclaimed
+    }
+
     /// Tell the registry the transcript is about to draw a fold standing for
     /// chat `rows`, and return whether a [`seek_row`](Self::seek_row) names
     /// one of them. The fold's own header never takes such a seek: the fold
@@ -176,6 +190,13 @@ impl BlockNav {
     /// transcript's `Ui`. Dropped if that pass doesn't draw such a block.
     pub fn seek_row(&mut self, row: usize) {
         self.seek_row = Some(row);
+    }
+
+    /// The row a [`seek_row`](Self::seek_row) asked for that no render pass
+    /// has taken yet.
+    #[cfg(test)]
+    pub(crate) fn sought_row(&self) -> Option<usize> {
+        self.seek_row
     }
 
     /// The cursor's position in registration order, if any.
@@ -524,6 +545,37 @@ mod tests {
         // Consumed: the next pass leaves the cursor where it landed.
         nav.begin_frame();
         assert_eq!(nav.seek_row_this_frame, None);
+    }
+
+    /// A row seek whose row registers no block (a user or assistant message)
+    /// is reported unclaimed when the row is left, once, and moves no cursor;
+    /// a row it doesn't name, or one whose block took it, isn't.
+    #[test]
+    fn a_row_seek_with_no_block_is_left_unclaimed() {
+        let ctx = egui::Context::default();
+        let mut nav = BlockNav::default();
+        nav.seek_row(1);
+        let mut unclaimed = Vec::new();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            nav.begin_frame();
+            // Row 0 has a block, rows 1 and 2 none.
+            for (row, id) in [Some("r0"), None, None].into_iter().enumerate() {
+                nav.enter_row(row);
+                if let Some(id) = id {
+                    nav.register(egui::Id::unique(id), false, ui);
+                }
+                if nav.leave_row() {
+                    unclaimed.push(row);
+                }
+            }
+        });
+        output.textures_delta.clear();
+        assert_eq!(unclaimed, [1]);
+        assert_eq!(nav.cursor(), None, "no block took the cursor");
+
+        nav.begin_frame();
+        nav.enter_row(1);
+        assert!(!nav.leave_row(), "spent with its pass");
     }
 
     #[test]

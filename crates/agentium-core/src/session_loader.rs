@@ -215,6 +215,43 @@ pub fn load_session_messages_for_author(
     load_session_messages_with_author(ndb, txn, session_id, Some(author), StoreBound::Everything)
 }
 
+/// The chat row kind-1988 note `note_id` shows in: its position in its
+/// session's fold, which is what that session's chat is at rest (see
+/// `rebuild_chat_from_fold` in notedeck_dave). `None` when the note isn't in
+/// ndb, isn't a conversation note, or its session folds to no rows at or
+/// before it.
+///
+/// A later part of a split message shows in its first part's row. A note
+/// that renders no row of its own (a tool result, folded into its call's
+/// row) shows in the last row at or before it.
+///
+/// It folds the whole session, so it costs what a restore of it does: call it
+/// once per open, not per frame.
+#[profiling::function]
+pub fn message_row(ndb: &Ndb, txn: &Transaction, note_id: &[u8; 32]) -> Option<usize> {
+    let note = ndb.get_note_by_id(txn, note_id).ok()?;
+    if note.kind() != AI_CONVERSATION_KIND {
+        return None;
+    }
+    let session_id = get_tag_value(&note, "d")?;
+    let author = nostrdb_net::Pubkey::new(*note.pubkey());
+    let head_id = split_head(&note).copied().unwrap_or(*note.id());
+    let order = match ndb.get_note_by_id(txn, &head_id) {
+        Ok(head) => EventOrder::from_note(&head),
+        Err(_) => EventOrder::from_note(&note),
+    };
+
+    let loaded = load_session_messages_for_author(ndb, txn, &author, session_id);
+    // By id first: a queued user note shows at the tail, not at its own order.
+    if let Some(row) = loaded.orders.iter().position(|o| o.id == head_id) {
+        return Some(row);
+    }
+    loaded
+        .orders
+        .partition_point(|o| *o <= order)
+        .checked_sub(1)
+}
+
 /// Load one author-scoped Dave session, folding only the notes nostrdb stored
 /// at or before `through`.
 ///
@@ -2997,6 +3034,63 @@ mod tests {
                 if r.tool_use_id == "t1" && r.tool_name == "Bash" && r.summary == "cargo test"),
             "a call without a result is still running: {messages:?}"
         );
+    }
+
+    /// [`message_row`] finds each note's row in its session's fold: its own
+    /// row, or for a tool result folded into its call, the call's row. A note
+    /// of another kind has none.
+    #[tokio::test]
+    async fn message_row_finds_each_notes_row() {
+        use crate::session_events::{LiveEventTags, ThreadingState};
+
+        let session_id = "message-row";
+        let mut threading = ThreadingState::new();
+        let call_tags = LiveEventTags {
+            tool_id: Some("t1"),
+            tool_name: Some("Bash"),
+            ..Default::default()
+        };
+        let note = |threading: &mut ThreadingState, role, content: &str, tags| {
+            crate::session_events::build_live_event(
+                content,
+                role,
+                session_id,
+                None,
+                tags,
+                threading,
+                &test_secret_key(),
+            )
+            .unwrap()
+        };
+        let events = [
+            note(&mut threading, "user", "run it", LiveEventTags::default()),
+            note(&mut threading, "tool_call", "cargo test", call_tags),
+            note(
+                &mut threading,
+                "tool_result",
+                &ToolResultContent::encode("exit 0", Some("ok"), None),
+                call_tags,
+            ),
+            note(
+                &mut threading,
+                "assistant",
+                "tests pass",
+                LiveEventTags::default(),
+            ),
+        ];
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+        let json: Vec<String> = events.iter().map(|e| e.to_event_json()).collect();
+        ingest_all(&ndb, &filter, &json).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let rows: Vec<Option<usize>> = events
+            .iter()
+            .map(|e| message_row(&ndb, &txn, &e.note_id))
+            .collect();
+        assert_eq!(rows, [Some(0), Some(1), Some(1), Some(2)]);
+        assert_eq!(message_row(&ndb, &txn, &[7; 32]), None, "not in ndb");
     }
 
     /// The rows of a fold, for asserting where user messages landed among
