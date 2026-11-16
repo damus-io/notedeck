@@ -29,12 +29,17 @@ impl MessageFilter {
     /// tails with `--last`) and a live follow (which filters each new message
     /// the same way but never tails it).
     pub fn keep(&self, m: &Message) -> bool {
-        let role_ok = self.roles.is_empty()
-            || self
-                .roles
-                .iter()
-                .any(|r| message_role(m).eq_ignore_ascii_case(r));
-        role_ok && (self.show_tools || !is_tool_message(m))
+        self.keeps_role(message_role(m))
+    }
+
+    /// Whether a message whose canonical role token (see [`message_role`]) is
+    /// `role` survives the role/tool filters: [`keep`](Self::keep) for when
+    /// only the role is known, as it is to `grep`'s prefilter, which reads a
+    /// note's `role` tag without rendering the note.
+    pub fn keeps_role(&self, role: &str) -> bool {
+        let role_ok =
+            self.roles.is_empty() || self.roles.iter().any(|r| role.eq_ignore_ascii_case(r));
+        role_ok && (self.show_tools || !TOOL_ROLES.contains(&role))
     }
 
     /// Apply the role/tool/last filters to an ordered message slice, returning
@@ -91,13 +96,14 @@ pub fn message_role(m: &Message) -> &'static str {
     }
 }
 
-/// Whether a message is tool-call/result noise that the default view folds
-/// away (and `--tools` keeps).
+/// The [`message_role`] tokens of tool-call/result noise, which the default
+/// view folds away (and `--tools` keeps).
+const TOOL_ROLES: [&str; 3] = ["tool_call", "tool_running", "tool_result"];
+
+/// Whether a message is tool-call/result noise (see [`TOOL_ROLES`]).
+#[cfg(test)]
 fn is_tool_message(m: &Message) -> bool {
-    matches!(
-        m,
-        Message::ToolCalls(_) | Message::ToolRunning(_) | Message::ToolResponse(_)
-    )
+    TOOL_ROLES.contains(&message_role(m))
 }
 
 /// How a message role is drawn in the terminal: see [`role_style`].

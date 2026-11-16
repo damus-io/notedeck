@@ -1711,7 +1711,7 @@ fn load_recent_paths_by_host_with_author(
 mod tests {
     use super::*;
     use crate::file_update::FileUpdateType;
-    use crate::test_support::test_config;
+    use crate::test_support::{pubkey_of, test_config};
     use nostrdb::{IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -3928,20 +3928,6 @@ mod tests {
         let note = &results.first().expect("the state landed").note;
         let parsed = SessionState::from_note(note, None).expect("parses");
         assert_eq!(parsed.profile, None);
-    }
-
-    /// The pubkey `sk` signs as, for the author-scoped loaders.
-    fn pubkey_of(sk: &[u8; 32]) -> nostrdb_net::Pubkey {
-        nostrdb_net::Pubkey::new(
-            *NoteBuilder::new()
-                .kind(1)
-                .content("")
-                .options(NoteBuildOptions::default())
-                .sign(sk)
-                .build()
-                .unwrap()
-                .pubkey(),
-        )
     }
 
     /// A kind-31991 upsert of `config` on `host`:`cwd` at `created_at`, as a

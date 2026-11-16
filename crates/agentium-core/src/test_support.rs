@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
+use nostrdb::{Filter, Ndb, NoteBuildOptions, NoteBuilder, SubscriptionStream, Transaction};
 use nostrdb_net::relay::server::{self, RelayHandle};
 
 pub(crate) use ndb_testing::{test_config, TempNdb};
@@ -18,6 +18,20 @@ pub(crate) use ndb_testing::{test_config, TempNdb};
 /// A fixed, deterministic secret key for signing test events. Doubles as the
 /// engine device key in tests, so signed events author-match the engine.
 pub(crate) const TEST_SECKEY: [u8; 32] = [7u8; 32];
+
+/// The pubkey `sk` signs as, for the author-scoped loaders.
+pub(crate) fn pubkey_of(sk: &[u8; 32]) -> nostrdb_net::Pubkey {
+    nostrdb_net::Pubkey::new(
+        *NoteBuilder::new()
+            .kind(1)
+            .content("")
+            .options(NoteBuildOptions::default())
+            .sign(sk)
+            .build()
+            .unwrap()
+            .pubkey(),
+    )
+}
 
 /// Spawn an in-process hermetic relay backed by `ndb` on an ephemeral port. Pass
 /// a clone if you also need to inspect the backing db (`Ndb` is a shared handle).
