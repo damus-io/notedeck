@@ -12,6 +12,12 @@
 
 use super::AgentSpec;
 
+/// The label the butler gives an idea card, and its due date is the card's next
+/// review: a Dave host re-runs the butler on every card carrying it when that
+/// date arrives (`notedeck_dave`'s `review_schedule`). The butler's prompt
+/// names it, so the two cannot drift apart unnoticed (a test checks).
+pub const REVIEW_LABEL: &str = "butler";
+
 /// Every built-in spec's slug, in the order `find` knows them.
 pub const SLUGS: [&str; 2] = ["butler", "researcher"];
 
@@ -92,5 +98,14 @@ mod tests {
         for grade in ["evidence moved", "no change", "killed"] {
             assert!(prompt.contains(grade), "review grade {grade}");
         }
+    }
+
+    /// The butler labels its idea cards with the label the review schedule
+    /// re-runs it on, and sets the due date that schedule reads.
+    #[test]
+    fn the_butler_labels_its_cards_for_scheduled_reviews() {
+        let prompt = find("butler").unwrap().prompt;
+        assert!(prompt.contains(&format!("label `{REVIEW_LABEL}`")));
+        assert!(prompt.contains("headway_set_due"));
     }
 }

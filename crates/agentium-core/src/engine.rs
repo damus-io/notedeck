@@ -592,6 +592,23 @@ impl Engine {
         Ok(built)
     }
 
+    /// Build a kind-31989 claim on the scheduled review `review_key` for
+    /// `host`, ingest it locally, and return it — the batching-host shape of
+    /// [`prepare_spawn_command`](Engine::prepare_spawn_command), whose host
+    /// fans the envelope out. See
+    /// [`build_review_claim_event`](crate::session_events::build_review_claim_event).
+    pub fn prepare_review_claim(
+        &self,
+        review_key: &str,
+        host: &str,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let built =
+            crate::session_events::build_review_claim_event(review_key, host, &self.seckey())
+                .map_err(|e| EngineError::Build(e.to_string()))?;
+        self.wrap_and_ingest(&built)?;
+        Ok(built)
+    }
+
     /// Build a kind-31989 resume command, ingest it locally, and return it for
     /// the caller to publish through its own transport — the batching-host
     /// counterpart to [`resume_session`](Engine::resume_session), exactly as

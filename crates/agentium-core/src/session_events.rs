@@ -2091,6 +2091,57 @@ pub fn build_spawn_command_event(
     finalize_built_event(builder, secret_key, AI_SESSION_COMMAND_KIND)
 }
 
+/// The `command` of a [`build_review_claim_event`] note.
+pub const REVIEW_CLAIM_COMMAND: &str = "review_claim";
+
+/// The tag naming the scheduled review a claim is for: the same key the
+/// review's spawn command carries as its `idempotency_key`.
+pub const REVIEW_KEY_TAG: &str = "review_key";
+
+/// The tag naming the host that made a claim.
+pub const REVIEW_CLAIMANT_TAG: &str = "claimant";
+
+/// Build a kind-31989 claim on a scheduled review: `host` says it means to
+/// spawn the review named `review_key`.
+///
+/// A scheduled review is due on every host that runs Dave at once, so each
+/// one claims it first and spawns only if its claim wins (the earliest, then
+/// the lowest host name, once a settle window has let every claim arrive).
+/// The claim rides the command kind so it syncs to the account's other hosts
+/// the way spawn commands do. Its `target_host` is empty, so no host's
+/// command decoder takes it for a command addressed to it, and an older
+/// host ignores the unknown `command` anyway.
+pub fn build_review_claim_event(
+    review_key: &str,
+    host: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let command_id = uuid::Uuid::new_v4().to_string();
+    let builder = init_note_builder(AI_SESSION_COMMAND_KIND, "", Some(now_secs()))
+        .start_tag()
+        .tag_str("d")
+        .tag_str(&command_id)
+        .start_tag()
+        .tag_str("command")
+        .tag_str(REVIEW_CLAIM_COMMAND)
+        .start_tag()
+        .tag_str("target_host")
+        .tag_str("")
+        .start_tag()
+        .tag_str(REVIEW_KEY_TAG)
+        .tag_str(review_key)
+        .start_tag()
+        .tag_str(REVIEW_CLAIMANT_TAG)
+        .tag_str(host)
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-session-command")
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+    finalize_built_event(builder, secret_key, AI_SESSION_COMMAND_KIND)
+}
+
 /// Build a kind-31991 run-config event (parameterized replaceable, NIP-33).
 ///
 /// One event per individual config. The d-tag is the config's stable UUID,

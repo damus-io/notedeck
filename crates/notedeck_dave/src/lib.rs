@@ -33,6 +33,7 @@ mod reconcile;
 pub mod reference;
 pub mod render;
 mod restore;
+mod review_schedule;
 mod run_configs;
 pub mod scene_edges;
 pub mod scene_layout;
@@ -407,6 +408,10 @@ pub struct Dave {
     /// account (whose sessions are preserved in `pns_local_runtimes`) doesn't
     /// re-restore. Guards one dispatch per account per process.
     restored_accounts: HashSet<nostrdb_net::Pubkey>,
+    /// The worker that finds butler-labelled cards whose review date arrived,
+    /// started on a host's first update with a signing account. See
+    /// [`review_schedule`].
+    review_scheduler: Option<review_schedule::ReviewScheduler>,
 }
 
 use update::PermissionPublish;
@@ -647,6 +652,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             snapshot_wake_at: None,
             session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
             restored_accounts: HashSet::new(),
+            review_scheduler: None,
         }
     }
 
@@ -1486,6 +1492,10 @@ impl notedeck::App for Dave {
 
         // Advance the shared inline-session cache backing `agentium:` chips.
         self.pump_session_cache(ctx);
+
+        // Claim or spawn the butler reviews whose date arrived. A spawn lands as
+        // a command to this host, which the poll below materializes.
+        self.poll_review_schedule(ctx);
 
         // Poll for spawn commands targeting this host. A spawn carrying a `prompt`
         // tag returns its new session with the first message already in chat;

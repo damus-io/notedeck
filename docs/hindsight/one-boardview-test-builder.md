@@ -8,3 +8,4 @@ breaks every one of them and each has to be patched by hand or by script.
 - headway:cashflow/right-gain-gym — ~2 min: a 21-field `CardView` literal in `cashflow::board_progress` tests just to hand `completed_at` an activity list
 - headway:personal/narrow-bargain-rapid — wrote `ReviewView` and `ReviewSourceView` literals in two test modules (review.rs, review_walk.rs) to hand a walk test a record with and without sources; a review-record builder beside the CardView one would have been a line each
 - headway:notedeck/year-circle-release — wrote a fifth 21-field `CardView` literal plus a `BoardView`/`ColumnView` and a `ReviewView` in `headway::render` tests to pin the text `headway show` and `nd headway show` share
+- headway:dave/bar-inject-train — ~2 min: a sixth 21-field `CardView` literal plus a two-column `BoardView` in `notedeck_dave::review_schedule` tests, just to hand `due_reviews` labels and due dates
