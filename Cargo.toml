@@ -70,6 +70,7 @@ egui_virtual_list = "0.12.0"
 ehttp = "0.5.0"
 hyper = { version = "1.7.0", features = ["full"] }
 hyper-util = {version = "0.1" , features = ["tokio"]}
+tower-service = "0.3"
 # hyper-rustls with NO default crypto provider (aws-lc-rs is default and requires cmake on Windows)
 # Crates add platform-specific features: ring on Windows, aws-lc-rs elsewhere
 hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "webpki-roots"] }

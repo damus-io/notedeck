@@ -1,4 +1,12 @@
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    future::Future,
+    io,
+    net::{IpAddr, SocketAddr},
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use http_body_util::{BodyExt, Empty};
 use hyper::{
@@ -8,13 +16,58 @@ use hyper::{
 };
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
-    client::legacy::connect::HttpConnector, client::legacy::Client, rt::TokioExecutor,
+    client::legacy::connect::dns::{GaiResolver, Name},
+    client::legacy::connect::HttpConnector,
+    client::legacy::Client,
+    rt::TokioExecutor,
 };
 use url::Url;
 
 const MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 
-type HyperClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
+type HyperClient = Client<HttpsConnector<HttpConnector<CheckedResolver>>, Empty<Bytes>>;
+
+/// A check of each address a client is about to connect to: `false` refuses
+/// it (see [`HyperHttpClient::with_addr_check`]).
+pub type AddrCheck = fn(IpAddr) -> bool;
+
+/// The system resolver (getaddrinfo), keeping only the addresses an
+/// [`AddrCheck`] allows. The connector dials only what a resolver answers,
+/// so a refused address is never connected to, whatever name led to it.
+#[derive(Clone)]
+struct CheckedResolver {
+    gai: GaiResolver,
+    /// `None` keeps every address.
+    allow: Option<AddrCheck>,
+}
+
+impl tower_service::Service<Name> for CheckedResolver {
+    type Response = std::vec::IntoIter<SocketAddr>;
+    type Error = io::Error;
+    type Future = Pin<Box<dyn Future<Output = io::Result<Self::Response>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.gai.poll_ready(cx)
+    }
+
+    fn call(&mut self, name: Name) -> Self::Future {
+        let resolving = self.gai.call(name.clone());
+        let allow = self.allow;
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = resolving
+                .await?
+                .filter(|addr| allow.is_none_or(|allow| allow(addr.ip())))
+                .collect();
+            if addrs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{} resolves only to refused addresses", name.as_str()),
+                ));
+            }
+            Ok(addrs.into_iter())
+        })
+    }
+}
 
 /// A guarded request's check of each URL it is about to request: `Err`
 /// with the reason refuses it (see [`HyperHttpClient::req_guarded`]).
@@ -30,6 +83,27 @@ impl HyperHttpClient {
     /// Build a client once so repeated relay metadata fetches do not reload
     /// TLS roots and rebuild connector state per request.
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// A client that connects only to the addresses `allow` accepts, as the
+    /// name it was asked for *resolves*: a name pointing at a refused
+    /// address fails to connect, and the connection goes to the very
+    /// address that was checked, so a name can't be re-pointed between the
+    /// check and the connect (DNS rebinding). An IP literal in strict
+    /// dotted or IPv6 form skips resolution and isn't checked here; check
+    /// those per URL with [`HyperHttpClient::req_guarded`].
+    pub fn with_addr_check(allow: AddrCheck) -> Self {
+        Self::build(Some(allow))
+    }
+
+    fn build(allow: Option<AddrCheck>) -> Self {
+        let mut http = HttpConnector::new_with_resolver(CheckedResolver {
+            gai: GaiResolver::new(),
+            allow,
+        });
+        // https URLs pass through this connector to the TLS layer.
+        http.enforce_http(false);
         let https = {
             let builder = match HttpsConnectorBuilder::new().with_native_roots() {
                 Ok(builder) => builder,
@@ -41,7 +115,7 @@ impl HyperHttpClient {
                 }
             };
 
-            builder.https_or_http().enable_http1().build()
+            builder.https_or_http().enable_http1().wrap_connector(http)
         };
 
         Self {
@@ -229,6 +303,22 @@ pub struct HyperHttpResponse {
     pub bytes: Vec<u8>,
 }
 
+impl HyperHttpError {
+    /// This error and every cause under it, joined by `: `. hyper's own
+    /// message for a failed connect is only "client error (Connect)"; the
+    /// reason (a refused address, a DNS failure) is a cause further down.
+    pub fn with_causes(&self) -> String {
+        let mut message = self.to_string();
+        let mut cause = self.source();
+        while let Some(err) = cause {
+            message.push_str(": ");
+            message.push_str(&err.to_string());
+            cause = err.source();
+        }
+        message
+    }
+}
+
 impl Error for HyperHttpError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -269,4 +359,50 @@ fn resolve_redirect(current: &Uri, location: &str) -> Result<Uri, HyperHttpError
         .as_str()
         .parse::<Uri>()
         .map_err(|_| HyperHttpError::InvalidRedirectLocation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// A server on 127.0.0.1 answering every request `200 ok`; its port.
+    async fn local_server() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .await;
+            }
+        });
+        port
+    }
+
+    /// A name is checked as it resolves, not as it is written: `127.1` and
+    /// `localhost` both reach the local server through the system resolver,
+    /// and a client refusing loopback refuses both.
+    #[tokio::test]
+    async fn an_address_check_refuses_names_that_resolve_to_refused_addresses() {
+        enostr::install_crypto();
+        let port = local_server().await;
+        let open = HyperHttpClient::new();
+        let checked = HyperHttpClient::with_addr_check(|ip| !ip.is_loopback());
+        for host in ["127.1", "localhost"] {
+            let url = format!("http://{host}:{port}/");
+            let reached = open.req_accept(&url, "*/*").await.expect(&url);
+            assert_eq!(reached.bytes, b"ok", "{url}");
+
+            let refused = checked.req_accept(&url, "*/*").await;
+            let err = refused.expect_err(&url);
+            let chain = err.with_causes();
+            assert!(chain.contains("refused addresses"), "{url}: {chain}");
+        }
+    }
 }

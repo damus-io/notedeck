@@ -7,7 +7,11 @@
 //! can reach: a page that tells the agent to fetch `http://127.0.0.1:…`
 //! would read the user's local services. So a fetch goes only to a public
 //! http(s) URL, checked on every redirect hop too
-//! ([`HyperHttpClient::req_guarded`]).
+//! ([`HyperHttpClient::req_guarded`]), and connects only to public
+//! addresses as the name *resolves* ([`HyperHttpClient::with_addr_check`]):
+//! the URL check reads the host as written, which a name pointing at
+//! `127.0.0.1`, or an address in a form only the system resolver reads
+//! (`127.1`, `0x7f.0.0.1`), would get past.
 //!
 //! ## Search is a SearXNG instance
 //!
@@ -46,7 +50,10 @@ const MAX_RESULTS: usize = 10;
 /// Runs web tool calls. Build one per job: its HTTP client's connections
 /// belong to the runtime the job runs on.
 pub(crate) struct WebClient {
+    /// Asks the search instance, which may be local.
     http: HyperHttpClient,
+    /// Fetches pages: connects only to public addresses.
+    public_http: HyperHttpClient,
     /// The SearXNG instance, from [`SEARCH_URL_VAR`].
     search_url: Option<String>,
 }
@@ -56,6 +63,7 @@ impl WebClient {
     pub(crate) fn new(search_url: Option<String>) -> Self {
         Self {
             http: HyperHttpClient::new(),
+            public_http: HyperHttpClient::with_addr_check(is_public),
             search_url: search_url.filter(|url| !url.trim().is_empty()),
         }
     }
@@ -93,7 +101,7 @@ impl WebClient {
             .http
             .req_guarded(&url, "application/json", &|_| Ok(()))
             .await
-            .map_err(|err| format!("search failed: {err}"))?;
+            .map_err(|err| format!("search failed: {}", err.with_causes()))?;
         if response.status_code >= 400 {
             return Err(format!("search failed: HTTP {}", response.status_code));
         }
@@ -107,14 +115,14 @@ impl WebClient {
         let uri: Uri = url.parse().map_err(|_| format!("not a URL: {url}"))?;
         public_url(&uri)?;
         let response = self
-            .http
+            .public_http
             .req_guarded(
                 url,
                 "text/html,text/plain,application/json;q=0.9,*/*;q=0.5",
                 &|uri| public_url(uri),
             )
             .await
-            .map_err(|err| format!("fetch failed: {err}"))?;
+            .map_err(|err| format!("fetch failed: {}", err.with_causes()))?;
         if response.status_code >= 400 {
             return Err(format!("fetch failed: HTTP {}", response.status_code));
         }
@@ -202,11 +210,13 @@ fn search_results(body: &Value, count: usize) -> Vec<Value> {
 }
 
 /// Refuse a URL that isn't public http(s): another scheme, a loopback,
-/// private, link-local or otherwise local address, or a name that only
-/// means something on this machine or network.
+/// private, link-local or otherwise local address, an IPv4 address written
+/// in any form but `a.b.c.d`, or a name that only means something on this
+/// machine or network.
 ///
-/// Names are checked as written, not resolved, so a public name that
-/// resolves to a private address still passes; see the card's notes.
+/// Names are checked as written, not resolved: a public name that resolves
+/// to a private address passes here, and is refused by the fetch client's
+/// address check when it connects ([`HyperHttpClient::with_addr_check`]).
 fn public_url(uri: &Uri) -> Result<(), String> {
     match uri.scheme_str() {
         Some("http" | "https") => {}
@@ -223,6 +233,14 @@ fn public_url(uri: &Uri) -> Result<(), String> {
         .trim_end_matches(']')
         .to_ascii_lowercase();
     let host = host.trim_end_matches('.');
+    if host.parse::<IpAddr>().is_err() && numeric_label(host.rsplit('.').next().unwrap_or("")) {
+        // The system resolver reads `127.1`, `0x7f.0.0.1` or `2130706433`
+        // as an address, so it can't be checked as a name. No public name
+        // ends in a numeric label.
+        return Err(format!(
+            "{host} is an IPv4 address in a non-standard form; write it as a.b.c.d"
+        ));
+    }
     let local_name = host == "localhost"
         || [".localhost", ".local", ".internal", ".lan", ".home.arpa"]
             .iter()
@@ -237,6 +255,18 @@ fn public_url(uri: &Uri) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether `label` is a number as `inet_aton` reads one: decimal, octal
+/// or `0x` hex digits.
+fn numeric_label(label: &str) -> bool {
+    match label
+        .strip_prefix("0x")
+        .or_else(|| label.strip_prefix("0X"))
+    {
+        Some(hex) => hex.chars().all(|c| c.is_ascii_hexdigit()),
+        None => !label.is_empty() && label.chars().all(|c| c.is_ascii_digit()),
+    }
 }
 
 /// Whether `ip` is reachable on the public internet, as opposed to this
@@ -508,12 +538,38 @@ mod tests {
             "http://[fd00::1]/",
             "http://[::ffff:127.0.0.1]/",
             "http://0.0.0.0/",
+            // IPv4 forms only the system resolver reads as addresses.
+            "http://127.1:6677/",
+            "http://0x7f.0.0.1/",
+            "http://0177.0.0.1/",
+            "http://2130706433/",
+            "http://0x7f000001/",
+            "http://10.1/",
+            "http://169.254.43518/",
             "http://printer.local/",
             "http://nas/",
             "ftp://example.com/file",
             "file:///etc/passwd",
         ] {
             assert!(!fetchable(refused), "{refused}");
+        }
+    }
+
+    /// The fetch client checks where a name resolves, not how it is
+    /// written: with the URL check off, a name that resolves locally still
+    /// never reaches a local address. Nothing listens on the port; the
+    /// refusal comes before any connect.
+    #[tokio::test]
+    async fn the_fetch_client_refuses_names_that_resolve_locally() {
+        let web = WebClient::new(None);
+        for url in ["http://localhost:9/", "http://127.1:9/", "http://0x7f.1:9/"] {
+            let err = web
+                .public_http
+                .req_guarded(url, "*/*", &|_| Ok(()))
+                .await
+                .expect_err(url)
+                .with_causes();
+            assert!(err.contains("refused addresses"), "{url}: {err}");
         }
     }
 

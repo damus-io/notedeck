@@ -5989,6 +5989,7 @@ dependencies = [
  "tokenator",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "tower-service",
  "tracing",
  "unic-langid",
  "url",

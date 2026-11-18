@@ -64,6 +64,7 @@ crossbeam-channel = { workspace = true }
 crossbeam = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+tower-service = { workspace = true }
 http-body-util = { workspace = true }
 # rustls and hyper-rustls are specified in platform-specific sections below
 # (Windows uses ring, others use aws-lc-rs)
