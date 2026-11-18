@@ -1,0 +1,210 @@
+//! The Coding toolset's tools, run on the host: what
+//! [`Runner::LocalExecutor`](super::Runner::LocalExecutor) means.
+//!
+//! ```text
+//! model ─ tool_use{name, input} ─▶ CodingCall::parse ─▶ LocalExecutor::run ─▶ text for the model
+//!                                                            │
+//!                    Read · Write · Edit ── std::fs, in this process
+//!                    Grep · Glob ────────── ripgrep's walker: skips what .gitignore skips
+//!                    Bash ──────────────── `bash -c` in its own process group;
+//!                                          a timeout or cancel kills the group
+//! ```
+//!
+//! A runner gets a [`CodingCall`] (already parsed, so already one of the six
+//! tools with arguments it knows) and answers the text the model reads, or
+//! an [`ExecError`] it reads instead. What the user sees of a call (the tool
+//! row, the diff) comes from the call itself
+//! ([`CodingCall::input`], [`CodingCall::file_update`]), not from here.
+//!
+//! ## In this process, not a subprocess
+//!
+//! The runner was first planned as a separate executor binary speaking a
+//! stdio protocol, the same binary a microVM guest would run. On the host
+//! that buys nothing: the binary would have the user's privileges either
+//! way, and it would be one more thing to ship per platform and find at
+//! run time. So the host does what Claude Code does: file tools run here,
+//! and only Bash is a child process.
+//!
+//! A protocol pays once a guest (the Microsandbox runner) needs these tools
+//! across a VM boundary. Then this module is the guest binary's body, and
+//! its ends already serialize: a [`CodingCall`] is a tool_use block's name
+//! and input, and the answer is text.
+//!
+//! ## Not a boundary
+//!
+//! Nothing here confines a call. A path may be absolute and anywhere, Bash
+//! can do what the user can, and [`LocalExecutor::root`] is only where a
+//! relative path and a command start. On the host the session's permission
+//! mode is the only guard (its [`Containment::Host`](super::Containment)
+//! column of the approval table), so a session using this runner must never
+//! be presented as sandboxed.
+//!
+//! ## What we don't have
+//!
+//! Claude Code's tools carry years of ergonomics these don't: no fuzzy edit
+//! matching, no image or notebook reading, no persistent shell (each Bash
+//! call starts afresh in the root, so a `cd` doesn't carry to the next
+//! call), no background commands. Read numbers its lines as `cat -n` does,
+//! which is the shape models are tuned to quote from.
+
+mod bash;
+mod files;
+mod search;
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+
+use super::coding::CodingCall;
+
+/// Runs coding tool calls on the host, against one working tree.
+#[derive(Debug, Clone)]
+pub struct LocalExecutor {
+    root: PathBuf,
+}
+
+/// Why a coding call didn't do what it asked. Its text is what the model
+/// reads instead of an answer.
+#[derive(Debug, thiserror::Error)]
+pub enum ExecError {
+    /// Reading or writing a file failed.
+    #[error("{}: {source}", path.display())]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// The file isn't UTF-8 text.
+    #[error("{} isn't a text file", .0.display())]
+    NotText(PathBuf),
+    /// A file tool was pointed at a directory.
+    #[error("{} is a directory: use Glob, or ls through Bash, to see what's in it", .0.display())]
+    IsDirectory(PathBuf),
+    /// Edit's `old_string` isn't in the file.
+    #[error("old_string isn't in {}: it must match the file exactly, whitespace included", .0.display())]
+    NoMatch(PathBuf),
+    /// Edit's `old_string` is in the file more than once and `replace_all`
+    /// isn't set.
+    #[error(
+        "old_string occurs {count} times in {}: add surrounding lines to make it unique, \
+         or set replace_all",
+        path.display()
+    )]
+    Ambiguous { path: PathBuf, count: usize },
+    /// Edit's `old_string` is empty.
+    #[error("old_string is empty: use Write to create a file")]
+    EmptyOldString,
+    /// Edit's `old_string` and `new_string` are the same.
+    #[error("old_string and new_string are the same, so the edit would change nothing")]
+    NoChange,
+    /// Grep's pattern isn't a regular expression.
+    #[error("bad regular expression: {0}")]
+    Pattern(#[from] regex::Error),
+    /// Grep's or Glob's glob isn't a glob.
+    #[error("bad glob {pattern:?}: {reason}")]
+    Glob { pattern: String, reason: String },
+    /// Bash couldn't be started.
+    #[error("couldn't start bash: {0}")]
+    Spawn(std::io::Error),
+    /// A command ran past its timeout, and it and its children were killed.
+    #[error("the command ran past {ms} ms and was killed. Its output so far:\n{output}")]
+    TimedOut { ms: u64, output: String },
+    /// The call was cancelled before it finished.
+    #[error("cancelled")]
+    Cancelled,
+}
+
+impl LocalExecutor {
+    /// An executor whose relative paths and commands start in `root`, the
+    /// session's working tree.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Where a relative path and a Bash command start.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Run `call` and answer what the model reads. A Bash call stops, its
+    /// whole process group killed, when `cancelled` resolves; the file and
+    /// search tools finish on their own.
+    pub async fn run(
+        &self,
+        call: &CodingCall,
+        cancelled: impl Future<Output = ()>,
+    ) -> Result<String, ExecError> {
+        match call {
+            CodingCall::Read(r) => files::read(&self.resolve(&r.file_path), r.offset, r.limit),
+            CodingCall::Write(w) => files::write(&self.resolve(&w.file_path), &w.content),
+            CodingCall::Edit(e) => files::edit(
+                &self.resolve(&e.file_path),
+                &e.old_string,
+                &e.new_string,
+                e.replace_all,
+            ),
+            CodingCall::Grep(g) => search::grep(g, &self.resolve_dir(g.path.as_deref())),
+            CodingCall::Glob(g) => search::glob(&g.pattern, &self.resolve_dir(g.path.as_deref())),
+            CodingCall::Bash(b) => bash::bash(&self.root, b, cancelled).await,
+        }
+    }
+
+    /// `path` as the call means it: absolute as given, relative from the
+    /// root.
+    fn resolve(&self, path: &str) -> PathBuf {
+        self.root.join(path)
+    }
+
+    /// A search's optional `path`: the root when left out.
+    fn resolve_dir(&self, path: Option<&str>) -> PathBuf {
+        path.map_or_else(|| self.root.clone(), |p| self.resolve(p))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_spec::coding::{ReadInput, WriteInput};
+    use std::future::pending;
+
+    /// A relative path starts at the root and an absolute one is taken as
+    /// given, so a model that drops the root still lands in the tree.
+    #[tokio::test]
+    async fn a_relative_path_starts_at_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let exec = LocalExecutor::new(dir.path());
+        let write = CodingCall::Write(WriteInput {
+            file_path: "src/new.rs".into(),
+            content: "fn main() {}\n".into(),
+        });
+        exec.run(&write, pending()).await.unwrap();
+        assert!(dir.path().join("src/new.rs").is_file());
+
+        let read = CodingCall::Read(ReadInput {
+            file_path: dir.path().join("src/new.rs").display().to_string(),
+            offset: None,
+            limit: None,
+        });
+        let text = exec.run(&read, pending()).await.unwrap();
+        assert_eq!(text, "     1\tfn main() {}\n");
+    }
+
+    /// A call the model sends, as Claude Code's tool_use block, runs
+    /// through parse and run with nothing in between.
+    #[tokio::test]
+    async fn a_tool_use_block_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let exec = LocalExecutor::new(dir.path());
+        let call = CodingCall::parse(
+            "Edit",
+            &serde_json::json!({
+                "file_path": "a.txt", "old_string": "hello", "new_string": "goodbye"
+            }),
+        )
+        .unwrap();
+        exec.run(&call, pending()).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "goodbye\n"
+        );
+    }
+}

@@ -39,10 +39,11 @@
 //! ## What we don't have
 //!
 //! Our executor is not Claude Code's. These are the contracts, not years of
-//! tool ergonomics: no line-numbered Read, no fuzzy edit matching, no image
-//! or notebook handling, no smart truncation. Each argument here is one a
-//! runner must honour; a gap is closed by adding an argument deliberately,
-//! not discovered in the field.
+//! tool ergonomics: no fuzzy edit matching, no image or notebook handling,
+//! no persistent shell. Each argument here is one a runner must honour
+//! ([`local_executor`](super::local_executor) runs them on the host); a gap
+//! is closed by adding an argument deliberately, not discovered in the
+//! field.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -67,8 +68,8 @@ pub const BASH: &str = "Bash";
 pub fn read() -> ToolSpec {
     ToolSpec::new(
         READ,
-        "Read a file from the working tree and return its text. For a long file, pass \
-         offset and limit to read part of it.",
+        "Read a file and return its lines, numbered as cat -n numbers them. For a long \
+         file, pass offset and limit to read part of it.",
         vec![
             ToolArg::new(
                 "file_path",

@@ -47,6 +47,7 @@
 pub mod builtin;
 pub mod catalog;
 pub mod coding;
+pub mod local_executor;
 pub mod policy;
 pub mod pricing;
 pub mod provider;
@@ -146,7 +147,8 @@ pub enum ToolsetKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Runner {
-    /// The tool executor as a host subprocess: no VM.
+    /// The tools run on the host, in notedeck's own process with Bash as
+    /// a child ([`local_executor`]): no VM, and the user's full privilege.
     LocalExecutor,
     /// The tool executor in a microVM guest.
     Microsandbox {

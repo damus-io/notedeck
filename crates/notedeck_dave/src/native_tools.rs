@@ -25,11 +25,13 @@
 //! ([`crate::web_tools::job`], [`SubAgent::job`]), after the user allows it
 //! when its approval is gated, as the butler's `ask_researcher` is.
 //!
-//! ## No coding runner yet
+//! ## No coding runner wired yet
 //!
 //! A Coding toolset's tools are declared
-//! ([`coding`](agentium_core::agent_spec::coding)) but nothing here runs
-//! them, so a spec with one is refused when its session starts
+//! ([`coding`](agentium_core::agent_spec::coding)) and the host can run them
+//! ([`LocalExecutor`](agentium_core::agent_spec::local_executor::LocalExecutor)),
+//! but the native loop doesn't call it yet, so a spec with one is refused
+//! when its session starts
 //! ([`SpecToolsError::NoCodingRunner`]) rather than offering tools whose
 //! every call fails.
 
