@@ -670,6 +670,11 @@ pub struct ChatSession {
     /// Handle to the background task processing this session's AI requests.
     /// Aborted on drop to clean up the subprocess.
     pub task_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The round of tool calls Dave is running for this turn, off the frame
+    /// thread; `None` when none is outstanding. While it is, the turn isn't
+    /// over even if the backend's stream has ended (see
+    /// [`ToolRound`](crate::tool_round::ToolRound)).
+    pub(crate) tool_round: Option<crate::tool_round::ToolRound>,
     /// A wake-up turn (one the backend began on its own, when a background
     /// task, wake-up or cron resumed the session) is underway. Set by
     /// [`DaveApiResponse::WakeupTurnStarted`], cleared at its `QueryComplete`.
@@ -818,6 +823,7 @@ impl ChatSession {
             slash_catalog: None,
             incoming_tokens: None,
             task_handle: None,
+            tool_round: None,
             wakeup_turn: false,
             turn_started_at: None,
             turns: Turns::default(),
@@ -906,6 +912,7 @@ impl ChatSession {
             input: String::new(),
             incoming_tokens: None,
             task_handle: None,
+            tool_round: None,
             wakeup_turn: false,
             turn_started_at: None,
             turns: Turns::default(),
@@ -1434,6 +1441,12 @@ impl ChatSession {
 
         // Check if actively working (has task handle and receiving tokens)
         if self.task_handle.is_some() && self.incoming_tokens.is_some() {
+            return AgentStatus::Working;
+        }
+
+        // Dave is running the turn's tool calls; the backend's stream may
+        // have ended already, but the turn goes on with their answers.
+        if self.tool_round.is_some() {
             return AgentStatus::Working;
         }
 
@@ -2224,6 +2237,15 @@ impl ChatSession {
     /// because it covers the window between dispatch and first token arrival.
     pub fn is_dispatched(&self) -> bool {
         !matches!(self.dispatch_state, DispatchState::Idle)
+    }
+
+    /// Stop the round of tool calls this turn is running, if any: its jobs
+    /// are told to stop, and the next drain answers each call still running
+    /// as cancelled and ends the turn without asking the model to go on.
+    pub fn cancel_tool_round(&self) {
+        if let Some(round) = &self.tool_round {
+            round.cancel();
+        }
     }
 
     /// Whether this is a local agentic session with nothing in flight, so its

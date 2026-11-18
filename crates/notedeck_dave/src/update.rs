@@ -103,6 +103,9 @@ pub fn execute_interrupt(
         tracing::debug!("Interrupting remote session {}", session.id);
         return Some(publish);
     }
+    // Stop the tool calls Dave is running for the turn as well as the
+    // backend's stream: a slow tool can outlast the stream by minutes.
+    session.cancel_tool_round();
     let session_id = format!("dave-session-{}", session.id);
     backend.interrupt_session(session_id, notedeck::Waker::egui(ctx));
     tracing::debug!("Interrupted session {}", session.id);

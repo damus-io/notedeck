@@ -46,6 +46,7 @@ mod stream_events;
 mod test_refs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+mod tool_round;
 mod transcript_search;
 mod turn_rows;
 mod ui_tools;

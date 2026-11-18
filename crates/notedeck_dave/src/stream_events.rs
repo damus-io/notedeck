@@ -12,11 +12,12 @@ use crate::publish::{
     Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
+use crate::tool_round::{AnsweredRound, RoundCall, StartedCall, ToolRound};
 use crate::tools::Tool;
 use crate::{
     backend, get_backend, messages, reconcile, secret_key_bytes, session, session_events,
     session_loader, Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId,
-    SessionInfo, SubagentInfo, ToolCall, ToolCalls, ToolResponse, ToolResponses,
+    SessionInfo, SubagentInfo, ToolCall, ToolCalls, ToolResponses,
 };
 use nostrdb::Transaction;
 use nostrdb_net::KeypairUnowned;
@@ -159,9 +160,6 @@ impl Dave {
                     self.rate_limit = Some(info.merged_onto(self.rate_limit.as_ref()));
                 }
                 let outcome = apply_response(session, session_id, res, &ctx);
-                if outcome.needs_send {
-                    needs_send.insert(session_id);
-                }
                 turn_ended |= outcome.turn_ended;
             }
 
@@ -171,20 +169,21 @@ impl Dave {
             // persistent channel that stays open for the next turn / wake-up.
             match recvr.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    ended.push(session_id);
                     if let Some(session) = self.session_manager.get_mut(session_id) {
                         // The backend is gone, and nothing it held will
                         // resume the session now.
                         session.wakeup_turn = false;
                         session.waiting_on = Default::default();
                         session.inspector.background.set(Vec::new());
-                        handle_stream_end(
+                        if end_turn_unless_tools_run(
                             session,
                             session_id,
                             host,
                             &mut needs_send,
                             &mut needs_compact,
-                        );
+                        ) {
+                            ended.push(session_id);
+                        }
                     }
                     // Receiver intentionally dropped — the stream is over.
                 }
@@ -193,15 +192,16 @@ impl Dave {
                     // that just completed, but keep the receiver installed so the
                     // next turn (including a spontaneous wake-up) still flows.
                     if turn_ended {
-                        ended.push(session_id);
                         if let Some(session) = self.session_manager.get_mut(session_id) {
-                            handle_stream_end(
+                            if end_turn_unless_tools_run(
                                 session,
                                 session_id,
                                 host,
                                 &mut needs_send,
                                 &mut needs_compact,
-                            );
+                            ) {
+                                ended.push(session_id);
+                            }
                         }
                     }
 
@@ -215,6 +215,22 @@ impl Dave {
                         session.incoming_tokens = Some(recvr);
                     }
                 }
+            }
+        }
+
+        // A turn held open by its tool calls ends on the drain where the
+        // round's last answer lands, which is this one for a round of fast
+        // calls whose stream just ended.
+        for session in self.session_manager.iter_mut() {
+            let session_id = session.id;
+            if finish_tool_round(
+                session,
+                session_id,
+                host,
+                &mut needs_send,
+                &mut needs_compact,
+            ) {
+                ended.push(session_id);
             }
         }
 
@@ -318,8 +334,6 @@ pub(crate) struct ApplyCtx<'a> {
 /// What applying one backend response asks the caller to do next.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ApplyOutcome {
-    /// A tool produced a response that has to be sent back to the backend.
-    pub(crate) needs_send: bool,
     /// The response closed the turn on a persistent stream; the caller runs
     /// [`handle_stream_end`] after the drain.
     pub(crate) turn_ended: bool,
@@ -390,7 +404,7 @@ pub(crate) fn apply_response(
             session.append_token(&token);
         }
         DaveApiResponse::ToolCalls(toolcalls) => {
-            outcome.needs_send = handle_tool_calls(session, &toolcalls, ctx.host.ndb);
+            handle_tool_calls(session, &toolcalls, ctx.host.ndb, ctx.host.waker);
         }
         DaveApiResponse::ToolRunning(running) => {
             session.push_running_tool(running);
@@ -658,52 +672,116 @@ fn flush_open_assistant(
     );
 }
 
-/// Handle tool calls from the AI backend.
+/// Handle a round of tool calls from the AI backend: show the calls, then
+/// start each one as a [`ToolRound`] the session holds until every call is
+/// answered.
 ///
-/// Pushes the tool calls to chat, executes each one, and pushes the
-/// responses. Returns `true` if any tool produced a response that
-/// needs to be sent back to the backend.
+/// Nothing here waits on a tool. A fast call answers on the spot and a slow
+/// one runs on a thread of its own; [`finish_tool_round`] puts the answers in
+/// the chat and asks the model to go on once the round is answered and the
+/// backend's stream has ended.
 fn handle_tool_calls(
     session: &mut session::ChatSession,
     toolcalls: &[ToolCall],
     ndb: &nostrdb::Ndb,
-) -> bool {
+    waker: &Waker,
+) {
     tracing::info!("got tool calls: {:?}", toolcalls);
+    // A backend asks for its next round only with this one's answers, so a
+    // round still here is a stale one: answer it (cancelled) before the new
+    // calls, so each round's answers stay under its own calls.
+    if let Some(stale) = session.tool_round.take() {
+        tracing::warn!(
+            "session {}: new tool calls while a round was outstanding",
+            session.id
+        );
+        stale.cancel();
+        for response in stale.into_answers().responses {
+            session.insert_turn_content(response);
+        }
+    }
     // Route through `insert_turn_content` so a message queued during this turn
     // stays the trailing run and is redispatched afterwards.
     session.insert_turn_content(Message::ToolCalls(toolcalls.to_vec()));
 
-    let txn = Transaction::new(ndb).unwrap();
-    let mut needs_send = false;
+    let calls = toolcalls
+        .iter()
+        .map(|call| RoundCall {
+            id: call.id().to_owned(),
+            started: start_call(call, ndb),
+        })
+        .collect();
+    session.tool_round = Some(ToolRound::start(calls, waker));
+}
 
-    for call in toolcalls {
-        match call.calls() {
-            ToolCalls::PresentNotes(present) => {
-                session.insert_turn_content(Message::ToolResponse(ToolResponse::new(
-                    call.id().to_owned(),
-                    ToolResponses::PresentNotes(present.note_ids.len() as i32),
-                )));
-                needs_send = true;
-            }
-            ToolCalls::Invalid(invalid) => {
-                session.insert_turn_content(Message::tool_error(
-                    call.id().to_string(),
-                    invalid.error.clone(),
-                ));
-                needs_send = true;
-            }
-            ToolCalls::Query(search_call) => {
-                let resp = search_call.execute(&txn, ndb);
-                session.insert_turn_content(Message::ToolResponse(ToolResponse::new(
-                    call.id().to_owned(),
-                    ToolResponses::Query(resp),
-                )));
-                needs_send = true;
-            }
+/// Start one tool call. Every tool Dave runs itself today is a fast host
+/// tool, so each answers on the spot; a slow tool would hand back a
+/// [`StartedCall::Pending`] job instead.
+fn start_call(call: &ToolCall, ndb: &nostrdb::Ndb) -> StartedCall {
+    let response = match call.calls() {
+        ToolCalls::PresentNotes(present) => {
+            ToolResponses::PresentNotes(present.note_ids.len() as i32)
         }
-    }
+        ToolCalls::Invalid(invalid) => ToolResponses::Error(invalid.error.clone()),
+        ToolCalls::Query(search_call) => match Transaction::new(ndb) {
+            Ok(txn) => ToolResponses::Query(search_call.execute(&txn, ndb)),
+            Err(err) => ToolResponses::Error(format!("failed to open db: {err}")),
+        },
+    };
+    StartedCall::Done(Box::new(response))
+}
 
-    needs_send
+/// Finish the session's round of tool calls if it is done: every call is
+/// answered (or the round was cancelled) and the backend has ended its
+/// turn. The answers go into the chat in call order, the model is asked to
+/// go on unless the round was cancelled, and the turn the round held open
+/// ends. Returns whether it did, so the caller counts the turn as ended.
+pub(crate) fn finish_tool_round(
+    session: &mut session::ChatSession,
+    session_id: SessionId,
+    host: &HostCtx<'_>,
+    needs_send: &mut HashSet<SessionId>,
+    needs_compact: &mut HashSet<SessionId>,
+) -> bool {
+    let Some(round) = session.tool_round.as_mut() else {
+        return false;
+    };
+    if !round.turn_over() || !round.poll() {
+        return false;
+    }
+    let Some(round) = session.tool_round.take() else {
+        return false;
+    };
+    let AnsweredRound {
+        responses,
+        cancelled,
+    } = round.into_answers();
+    for response in responses {
+        session.insert_turn_content(response);
+    }
+    if !cancelled {
+        needs_send.insert(session_id);
+    }
+    handle_stream_end(session, session_id, host, needs_send, needs_compact);
+    true
+}
+
+/// End the turn the backend just finished, unless Dave is still running its
+/// tool calls: then the round holds the turn open, and
+/// [`finish_tool_round`] ends it. Returns whether the turn ended here.
+fn end_turn_unless_tools_run(
+    session: &mut session::ChatSession,
+    session_id: SessionId,
+    host: &HostCtx<'_>,
+    needs_send: &mut HashSet<SessionId>,
+    needs_compact: &mut HashSet<SessionId>,
+) -> bool {
+    if let Some(round) = session.tool_round.as_mut() {
+        round.end_turn();
+        return false;
+    }
+    handle_stream_end(session, session_id, host, needs_send, needs_compact);
+    true
 }
 
 /// Handle a permission request from the AI backend.
@@ -2024,5 +2102,305 @@ mod tests {
         assert_eq!(turn.env["ANTHROPIC_BASE_URL"], "https://llm.hydra.host");
         assert!(turn.env.contains_key("AGENTIUM_SESSION"));
         assert!(!run.chat.iter().any(|m| matches!(m, Message::Error(_))));
+    }
+
+    /// Tool rounds run through [`Dave::process_events`]: the turn a round
+    /// holds open, its answers' order, and Stop.
+    mod tool_rounds {
+        use super::*;
+        use crate::agent_status::AgentStatus;
+        use crate::tool_round::{ToolJob, CANCELLED};
+        use std::sync::mpsc;
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+
+        /// A backend whose next turn streams what the test sends, ending
+        /// when the test drops its sender.
+        struct HandedStream {
+            next: Mutex<Option<mpsc::Receiver<DaveApiResponse>>>,
+        }
+
+        impl AiBackend for HandedStream {
+            fn stream_request(
+                &self,
+                _messages: Vec<Message>,
+                _tools: Arc<HashMap<String, Tool>>,
+                _model: Option<String>,
+                _user_id: String,
+                _session_id: String,
+                _session_env: BTreeMap<String, String>,
+                _cwd: Option<std::path::PathBuf>,
+                _resume_session_id: Option<String>,
+                _permission_mode: claude_agent_sdk_rs::PermissionMode,
+                _waker: Waker,
+            ) -> crate::backend::ResponseStream {
+                crate::backend::ResponseStream {
+                    rx: self.next.lock().unwrap().take(),
+                    task: None,
+                }
+            }
+
+            fn cleanup_session(&self, _session_id: String) {}
+
+            fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
+
+            fn set_permission_mode(
+                &self,
+                _session_id: String,
+                _mode: claude_agent_sdk_rs::PermissionMode,
+                _waker: Waker,
+            ) {
+            }
+        }
+
+        /// A Dave whose one OpenAI session `sid` has sent "go" and is
+        /// streaming the turn `stream` feeds.
+        struct MidTurn {
+            test: crate::tests::TestDave,
+            sid: SessionId,
+            stream: mpsc::Sender<DaveApiResponse>,
+        }
+
+        fn mid_turn() -> MidTurn {
+            let mut test = crate::tests::TestDave::new();
+            let [sid] = test.add_sessions(["/tmp/tools"], BackendType::OpenAI);
+            let (stream, rx) = mpsc::channel();
+            test.dave.backends.insert(
+                BackendType::OpenAI,
+                Box::new(HandedStream {
+                    next: Mutex::new(Some(rx)),
+                }),
+            );
+            let parts = test.parts();
+            assert!(parts.dave.add_user_message_for_session(
+                sid,
+                &parts.host,
+                "go".into(),
+                Vec::new()
+            ));
+            parts.dave.send_user_message_for(sid, &parts.host);
+            MidTurn { test, sid, stream }
+        }
+
+        fn invalid(id: &str) -> ToolCall {
+            ToolCall::invalid(id.into(), Some("nope".into()), None, format!("bad {id}"))
+        }
+
+        /// Show the round's calls and hand the session a round of `calls`
+        /// started by hand, as `handle_tool_calls` would with a slow tool.
+        fn hand_round(test: &mut crate::tests::TestDave, sid: SessionId, calls: Vec<RoundCall>) {
+            let session = test.dave.session_manager.get_mut(sid).unwrap();
+            let shown = calls.iter().map(|c| invalid(&c.id)).collect();
+            session.insert_turn_content(Message::ToolCalls(shown));
+            session.tool_round = Some(ToolRound::start(calls, &Waker::noop()));
+        }
+
+        /// The chat's rows past the user's "go", named.
+        fn rows(test: &mut crate::tests::TestDave, sid: SessionId) -> Vec<String> {
+            let session = test.dave.session_manager.get(sid).unwrap();
+            session
+                .chat
+                .iter()
+                .skip(1)
+                .map(|m| match m {
+                    Message::ToolCalls(calls) => format!(
+                        "calls[{}]",
+                        calls.iter().map(|c| c.id()).collect::<Vec<_>>().join(",")
+                    ),
+                    Message::ToolResponse(r) => match r.responses() {
+                        ToolResponses::Error(e) => format!("{}: {e}", r.id()),
+                        other => format!("{}: {other:?}", r.id()),
+                    },
+                    Message::User(u) => format!("user: {}", u.text),
+                    other => format!("{other:?}"),
+                })
+                .collect()
+        }
+
+        fn status(test: &mut crate::tests::TestDave, sid: SessionId) -> AgentStatus {
+            let session = test.dave.session_manager.get_mut(sid).unwrap();
+            session.update_status();
+            session.status()
+        }
+
+        /// A call whose job waits until the test sends on `go`.
+        struct Gated {
+            call: RoundCall,
+            go: mpsc::Sender<()>,
+        }
+
+        fn gated(id: &str) -> Gated {
+            let (go, wait) = mpsc::channel::<()>();
+            let job: ToolJob = Box::new(move |_| {
+                wait.recv().map_err(|e| e.to_string())?;
+                Ok(ToolResponses::PresentNotes(7))
+            });
+            let call = RoundCall {
+                id: id.into(),
+                started: StartedCall::Pending(job),
+            };
+            Gated { call, go }
+        }
+
+        /// Drain until `sid` asks to send, failing after a few seconds.
+        fn drain_until_send(test: &mut crate::tests::TestDave, sid: SessionId) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let parts = test.parts();
+                if parts
+                    .dave
+                    .process_events(&parts.host)
+                    .needs_send
+                    .contains(&sid)
+                {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "the round never finished");
+                std::thread::yield_now();
+            }
+        }
+
+        /// A round of fast calls is answered, and the model asked to go on,
+        /// on the drain its stream ends in: no frame of latency.
+        #[test]
+        fn a_fast_round_is_answered_on_the_drain_its_stream_ends() {
+            let MidTurn {
+                mut test,
+                sid,
+                stream,
+            } = mid_turn();
+            stream
+                .send(DaveApiResponse::ToolCalls(vec![invalid("a"), invalid("b")]))
+                .unwrap();
+            drop(stream);
+
+            let parts = test.parts();
+            let result = parts.dave.process_events(&parts.host);
+            assert!(
+                result.needs_send.contains(&sid),
+                "the model is asked to go on"
+            );
+            assert_eq!(rows(&mut test, sid), ["calls[a,b]", "a: bad a", "b: bad b"]);
+            let session = test.dave.session_manager.get(sid).unwrap();
+            assert!(session.tool_round.is_none());
+            assert!(!session.is_dispatched(), "the turn ended");
+        }
+
+        /// A slow call holds the turn open past its stream's end: the
+        /// session stays Working, a message sent meanwhile queues, and the
+        /// answers land, in call order and ahead of that message, on the
+        /// drain the slow call finishes in.
+        #[test]
+        fn a_slow_round_holds_the_turn_open_until_its_answers_land() {
+            let MidTurn {
+                mut test,
+                sid,
+                stream,
+            } = mid_turn();
+            stream
+                .send(DaveApiResponse::Token("looking".into()))
+                .unwrap();
+            {
+                let parts = test.parts();
+                parts.dave.process_events(&parts.host);
+            }
+            let Gated { call: slow, go } = gated("slow");
+            let fast = RoundCall {
+                id: "fast".into(),
+                started: StartedCall::Done(Box::new(ToolResponses::PresentNotes(1))),
+            };
+            hand_round(&mut test, sid, vec![slow, fast]);
+            drop(stream);
+
+            let parts = test.parts();
+            let result = parts.dave.process_events(&parts.host);
+            assert!(!result.needs_send.contains(&sid), "nothing to send yet");
+            assert_eq!(status(&mut test, sid), AgentStatus::Working);
+            let parts = test.parts();
+            assert!(
+                !parts.dave.add_user_message_for_session(
+                    sid,
+                    &parts.host,
+                    "meanwhile".into(),
+                    Vec::new()
+                ),
+                "a message sent while the tools run queues"
+            );
+
+            go.send(()).unwrap();
+            drain_until_send(&mut test, sid);
+            let rows = rows(&mut test, sid);
+            assert_eq!(
+                rows[rows.len() - 4..],
+                [
+                    "calls[slow,fast]",
+                    "slow: PresentNotes(7)",
+                    "fast: PresentNotes(1)",
+                    "user: meanwhile"
+                ]
+            );
+            assert!(test
+                .dave
+                .session_manager
+                .get(sid)
+                .unwrap()
+                .tool_round
+                .is_none());
+        }
+
+        /// Stop reaches a running tool: the round answers it cancelled, the
+        /// turn ends, and the model isn't asked to go on.
+        #[test]
+        fn stop_cancels_a_running_round_and_ends_the_turn() {
+            let MidTurn {
+                mut test,
+                sid,
+                stream,
+            } = mid_turn();
+            let (saw_tx, saw_cancel) = mpsc::channel();
+            // Held until the test is done, so the job's own answer can't
+            // land before the drain and be kept.
+            let (_hold, held) = mpsc::channel::<()>();
+            let job: ToolJob = Box::new(move |cancel| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !cancel.is_cancelled() && Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                let _ = saw_tx.send(cancel.is_cancelled());
+                let _ = held.recv();
+                Err("stopped".into())
+            });
+            let call = RoundCall {
+                id: "build".into(),
+                started: StartedCall::Pending(job),
+            };
+            hand_round(&mut test, sid, vec![call]);
+            drop(stream);
+            {
+                let parts = test.parts();
+                parts.dave.process_events(&parts.host);
+            }
+            assert_eq!(status(&mut test, sid), AgentStatus::Working);
+
+            let backend = get_backend(&test.dave.backends, BackendType::OpenAI);
+            crate::update::execute_interrupt(
+                &test.dave.session_manager,
+                backend,
+                &egui::Context::default(),
+            );
+            let parts = test.parts();
+            let result = parts.dave.process_events(&parts.host);
+            assert!(
+                !result.needs_send.contains(&sid),
+                "a stopped round goes no further"
+            );
+            assert_eq!(
+                rows(&mut test, sid),
+                ["calls[build]".to_owned(), format!("build: {CANCELLED}")]
+            );
+            assert!(!test.dave.session_manager.get(sid).unwrap().is_dispatched());
+            assert_ne!(status(&mut test, sid), AgentStatus::Working);
+            assert_eq!(saw_cancel.recv_timeout(Duration::from_secs(5)), Ok(true));
+        }
     }
 }

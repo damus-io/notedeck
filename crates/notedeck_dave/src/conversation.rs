@@ -128,6 +128,9 @@ impl Dave {
                     );
                 }
                 Some("interrupt") => {
+                    // The backend's stream is interrupted below; the tool
+                    // calls Dave runs for the turn are stopped here.
+                    session.cancel_tool_round();
                     applies.interrupts.push(InterruptApply {
                         backend_sid: format!("dave-session-{}", session_id),
                         backend_type: session.backend_type,
