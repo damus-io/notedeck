@@ -91,6 +91,17 @@ impl JobCtx {
     #[cfg(test)]
     pub(crate) fn detached(call_id: &str, cancel: ToolCancel) -> Self {
         let (progress, _) = mpsc::channel();
+        Self::reporting(call_id, cancel, progress)
+    }
+
+    /// A context for a job run outside any round, call `call_id`, stopped by
+    /// `cancel`, whose reports go to `progress` for a test to read.
+    #[cfg(test)]
+    pub(crate) fn reporting(
+        call_id: &str,
+        cancel: ToolCancel,
+        progress: mpsc::Sender<DaveApiResponse>,
+    ) -> Self {
         Self {
             cancel,
             call_id: call_id.to_owned(),

@@ -609,7 +609,13 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
 
         ToolResponses::ExecutedTool(r) => format!("{}: {}", r.tool_name, r.summary),
 
-        ToolResponses::App(r) => r.value.to_string(),
+        // A string answer (a coding tool's file text or command output) is
+        // the text itself: JSON-quoting it would escape every newline and
+        // quote the model has to read through.
+        ToolResponses::App(r) => match &r.value {
+            Value::String(text) => text.clone(),
+            value => value.to_string(),
+        },
     }
 }
 

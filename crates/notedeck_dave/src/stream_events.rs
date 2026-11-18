@@ -773,9 +773,9 @@ fn start_call(
 /// refused with the reason.
 ///
 /// Who runs it follows the tool's [`ToolSource`]: an app tool waits for the
-/// frame, which alone reaches the registry; a web tool or a sub-agent's
-/// question is a job of Dave's own, run off the frame at once when it is
-/// auto and after the user's answer when it is gated.
+/// frame, which alone reaches the registry; a web tool, a sub-agent's
+/// question or a coding tool is a job of Dave's own, run off the frame at
+/// once when it is auto and after the user's answer when it is gated.
 fn start_app_call(
     session: &mut session::ChatSession,
     call: &AppToolCall,
@@ -801,14 +801,19 @@ fn start_app_call(
             Ok(job) => CallRunner::Job(job),
             Err(err) => return StartedCall::Done(Box::new(ToolResponses::Error(err))),
         },
-        // SpecTools refuses a spec with a coding toolset until a runner
-        // exists, so no session offers one; answer honestly if one slips by.
-        ToolSource::Coding => {
-            return StartedCall::Done(Box::new(ToolResponses::Error(format!(
-                "'{}' is a coding tool, and this build has no runner for it",
-                call.name
-            ))))
-        }
+        // On the host, in the session's working tree (SpecTools refuses a
+        // spec whose coding tools would run anywhere else).
+        ToolSource::Coding => match session.agentic.as_ref() {
+            Some(agentic) => {
+                CallRunner::Job(crate::coding_tools::job(call.clone(), agentic.cwd.clone()))
+            }
+            None => {
+                return StartedCall::Done(Box::new(ToolResponses::Error(format!(
+                    "'{}' needs a working tree, and this session has none",
+                    call.name
+                ))))
+            }
+        },
     };
     let gate = match approval {
         Approval::Auto => Gate::Open,
@@ -3576,6 +3581,88 @@ mod tests {
                     call_in_mode(PermissionMode::Plan, "headway_move_card"),
                     Outcome::Refused(_)
                 ));
+            }
+
+            /// A coder's Write under Accept Edits runs unasked on the host,
+            /// in the session's working tree, off the frame: the file is
+            /// written, the call's row shows with its diff, and the model
+            /// gets the executor's text as is.
+            #[test]
+            fn a_coders_write_runs_on_the_host_in_the_sessions_tree() {
+                let spec = AgentSpec::from_json(
+                    r#"{
+                      "slug": "coder",
+                      "model": { "provider": "anthropic", "model": "claude-opus-5-5" },
+                      "prompt": "Implement the card.",
+                      "toolsets": [{ "kind": "coding", "runner": { "kind": "local_executor" } }],
+                      "budget": { "max_steps": 10 }
+                    }"#,
+                )
+                .unwrap();
+                let tools = SpecTools::for_spec(&spec, &[], |_| unreachable!("no sub-agent"), None)
+                    .unwrap();
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    offered,
+                } = mid_turn_under(Some(tools));
+                assert!(offered.lock().unwrap().iter().any(|n| n == "Write"));
+                let tree = tempfile::tempdir().unwrap();
+                let agentic = test
+                    .dave
+                    .session_manager
+                    .get_mut(sid)
+                    .unwrap()
+                    .agentic
+                    .as_mut()
+                    .unwrap();
+                agentic.permission_mode = PermissionMode::AcceptEdits;
+                agentic.cwd = tree.path().to_owned();
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![ToolCall::new(
+                        "w".into(),
+                        ToolCalls::App(AppToolCall {
+                            name: "Write".into(),
+                            args: json!({ "file_path": "notes.md", "content": "hi\n" }),
+                        }),
+                    )]))
+                    .unwrap();
+                drop(stream);
+                test.dave
+                    .start_app_tool_calls(|_| panic!("a coding tool never reaches the registry"));
+                drain_until_send(&mut test, sid);
+
+                assert_eq!(
+                    std::fs::read_to_string(tree.path().join("notes.md")).unwrap(),
+                    "hi\n"
+                );
+                let session = test.dave.session_manager.get(sid).unwrap();
+                let row = session
+                    .chat
+                    .iter()
+                    .find_map(|m| match m {
+                        Message::ToolResponse(r) => match r.responses() {
+                            ToolResponses::ExecutedTool(row) => Some(row),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .expect("the call's row shows");
+                assert_eq!(row.tool_name, "Write");
+                assert!(row.file_update.is_some(), "a write shows its diff");
+                let answer = session
+                    .chat
+                    .iter()
+                    .find_map(|m| match m {
+                        Message::ToolResponse(r) if r.id() == "w" => Some(r.responses()),
+                        _ => None,
+                    })
+                    .expect("the call is answered");
+                let ToolResponses::App(answer) = answer else {
+                    panic!("the write answers: {answer:?}");
+                };
+                assert!(answer.value.is_string(), "{:?}", answer.value);
             }
 
             /// A session under no spec runs no app tool, whatever the model

@@ -25,20 +25,20 @@
 //! ([`crate::web_tools::job`], [`SubAgent::job`]), after the user allows it
 //! when its approval is gated, as the butler's `ask_researcher` is.
 //!
-//! ## No coding runner wired yet
+//! ## Coding tools run on the host
 //!
-//! A Coding toolset's tools are declared
-//! ([`coding`](agentium_core::agent_spec::coding)) and the host can run them
-//! ([`LocalExecutor`](agentium_core::agent_spec::local_executor::LocalExecutor)),
-//! but the native loop doesn't call it yet, so a spec with one is refused
-//! when its session starts
-//! ([`SpecToolsError::NoCodingRunner`]) rather than offering tools whose
-//! every call fails.
+//! A Coding toolset's tools ([`coding`](agentium_core::agent_spec::coding))
+//! run as jobs too ([`crate::coding_tools::job`]), through
+//! [`LocalExecutor`](agentium_core::agent_spec::local_executor::LocalExecutor)
+//! in the session's working tree. Only that runner exists: a spec naming the
+//! Microsandbox runner is refused when its session starts
+//! ([`SpecToolsError::NoSandboxRunner`]), since running its calls on the
+//! host would present an unconfined session as sandboxed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, ToolSource, Toolset};
+use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, Runner, Toolset};
 use notedeck::{AppContext, Started, ToolOutcome};
 
 use crate::sub_agent::{SubAgent, SubAgentError};
@@ -67,10 +67,10 @@ pub(crate) enum SpecToolsError {
     Catalog(#[from] CatalogError),
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
-    /// The spec has a Coding toolset, and this build has no runner for its
-    /// tools yet.
-    #[error("agent spec {0}: this build can't run a coding toolset yet")]
-    NoCodingRunner(String),
+    /// The spec's Coding toolset runs in a Microsandbox guest, and this
+    /// build has no such runner yet.
+    #[error("agent spec {0}: this build can't run coding tools in a microsandbox yet")]
+    NoSandboxRunner(String),
 }
 
 impl SpecTools {
@@ -84,12 +84,16 @@ impl SpecTools {
         search_url: Option<String>,
     ) -> Result<Self, SpecToolsError> {
         let catalog = Catalog::build(spec, available)?;
-        if catalog
-            .tools()
-            .iter()
-            .any(|t| t.source == ToolSource::Coding)
-        {
-            return Err(SpecToolsError::NoCodingRunner(spec.slug.clone()));
+        let sandboxed = spec.toolsets.iter().any(|t| {
+            matches!(
+                t,
+                Toolset::Coding {
+                    runner: Runner::Microsandbox { .. }
+                }
+            )
+        });
+        if sandboxed {
+            return Err(SpecToolsError::NoSandboxRunner(spec.slug.clone()));
         }
         let child = spec.toolsets.iter().find_map(|t| match t {
             Toolset::SubAgent { spec } => Some(spec.as_str()),
@@ -143,25 +147,33 @@ pub(crate) fn started_call(name: &str, started: Started) -> StartedCall {
 mod tests {
     use super::*;
 
-    /// A coder's catalog builds, its six tools declared, but Dave has no
-    /// runner for them yet, so its session is refused at the start rather
-    /// than offered tools whose every call fails.
+    /// A coder on the host runner builds, offering its six tools to the
+    /// model; one on the Microsandbox runner is refused at the start, since
+    /// there is no guest to run its calls in.
     #[test]
-    fn a_coding_spec_is_refused_until_a_runner_exists() {
-        let coder = AgentSpec::from_json(
-            r#"{
-              "slug": "coder",
-              "model": { "provider": "anthropic", "model": "claude-opus-5-5" },
-              "prompt": "Implement the card.",
-              "toolsets": [{ "kind": "coding", "runner": { "kind": "local_executor" } }],
-              "budget": { "max_steps": 10 }
-            }"#,
-        )
-        .unwrap();
-        assert_eq!(Catalog::build(&coder, &[]).unwrap().tools().len(), 6);
-        let err = SpecTools::for_spec(&coder, &[], |_| unreachable!("no sub-agent"), None)
+    fn a_coder_runs_on_the_host_and_a_sandboxed_one_is_refused() {
+        let coder = |runner: &str| {
+            AgentSpec::from_json(&format!(
+                r#"{{
+                  "slug": "coder",
+                  "model": {{ "provider": "anthropic", "model": "claude-opus-5-5" }},
+                  "prompt": "Implement the card.",
+                  "toolsets": [{{ "kind": "coding", "runner": {runner} }}],
+                  "budget": {{ "max_steps": 10 }}
+                }}"#
+            ))
+            .unwrap()
+        };
+        let host = coder(r#"{ "kind": "local_executor" }"#);
+        let tools = SpecTools::for_spec(&host, &[], |_| unreachable!("no sub-agent"), None)
+            .expect("a host coder builds");
+        assert_eq!(tools.model_tools.len(), 6);
+        assert!(tools.model_tools.contains_key("Bash"));
+
+        let sandboxed = coder(r#"{ "kind": "microsandbox", "git": "read_only" }"#);
+        let err = SpecTools::for_spec(&sandboxed, &[], |_| unreachable!("no sub-agent"), None)
             .err()
-            .expect("a coding spec has no runner");
-        assert!(matches!(err, SpecToolsError::NoCodingRunner(slug) if slug == "coder"));
+            .expect("no sandbox runner");
+        assert!(matches!(err, SpecToolsError::NoSandboxRunner(slug) if slug == "coder"));
     }
 }

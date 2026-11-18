@@ -203,36 +203,72 @@ pub fn send_tool_result(
     response_tx: &mpsc::Sender<DaveApiResponse>,
     waker: &Waker,
 ) {
-    let summary = format_tool_summary(tool_name, tool_input, result_value);
-    // Some tools' result content *is* the payload worth reading inline, not just
-    // a confirmation captured by the summary: Bash's stdout/stderr, and
-    // WebSearch's returned results. Keep those around to render in the
-    // collapsible body. Other tools are covered by their summary (or a file
-    // diff); broadening this set further is a follow-up. Kept in full here:
-    // clamping is a display concern the UI applies (see `tool_command_output_ui`),
-    // and the wire keeps only a safety-capped copy (see `ToolResultContent::encode`).
-    let output = matches!(tool_name, "Bash" | "WebSearch")
-        .then(|| extract_response_content(result_value))
-        .flatten()
-        .filter(|s| !s.is_empty())
-        .map(ToolOutput::new);
     // An explicit `parent_tool_use_id` (a subagent-internal result) wins over
     // the foreground nesting stack.
     let parent_task_id = parent_override
         .map(str::to_string)
         .or_else(|| subagent_stack.last().cloned());
-    let tool_result = ExecutedTool {
-        tool_name: tool_name.to_string(),
-        summary,
-        output,
-        parent_task_id,
+    let tool_result = FinishedCall {
+        tool_name,
+        tool_input,
+        result_value,
         file_update,
-        tool_use_id: tool_use_id.map(str::to_string),
-        description: tool_description(tool_name, tool_input),
+        parent_task_id,
+        tool_use_id,
         is_error,
-    };
+    }
+    .executed_tool();
     let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
     waker.wake();
+}
+
+/// One finished tool call, as whoever ran it saw it: what [`ExecutedTool`]
+/// rows are built from, whether a backend ran the call
+/// ([`send_tool_result`]) or Dave did (the native loop's coding tools).
+pub(crate) struct FinishedCall<'a> {
+    /// The tool's name, e.g. `Bash`.
+    pub(crate) tool_name: &'a str,
+    /// The call's input, as the model sent it.
+    pub(crate) tool_input: &'a serde_json::Value,
+    /// What the call answered.
+    pub(crate) result_value: &'a serde_json::Value,
+    /// The file change it made, for the diff renderer.
+    pub(crate) file_update: Option<FileUpdate>,
+    /// The subagent (Task tool_use_id) it ran under, if any.
+    pub(crate) parent_task_id: Option<String>,
+    /// The model's id for the call.
+    pub(crate) tool_use_id: Option<&'a str>,
+    /// Whether it failed.
+    pub(crate) is_error: bool,
+}
+
+impl FinishedCall<'_> {
+    /// The call's chat row.
+    pub(crate) fn executed_tool(self) -> ExecutedTool {
+        let summary = format_tool_summary(self.tool_name, self.tool_input, self.result_value);
+        // Some tools' result content *is* the payload worth reading inline, not just
+        // a confirmation captured by the summary: Bash's stdout/stderr, and
+        // WebSearch's returned results. Keep those around to render in the
+        // collapsible body. Other tools are covered by their summary (or a file
+        // diff); broadening this set further is a follow-up. Kept in full here:
+        // clamping is a display concern the UI applies (see `tool_command_output_ui`),
+        // and the wire keeps only a safety-capped copy (see `ToolResultContent::encode`).
+        let output = matches!(self.tool_name, "Bash" | "WebSearch")
+            .then(|| extract_response_content(self.result_value))
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .map(ToolOutput::new);
+        ExecutedTool {
+            tool_name: self.tool_name.to_string(),
+            summary,
+            output,
+            parent_task_id: self.parent_task_id,
+            file_update: self.file_update,
+            tool_use_id: self.tool_use_id.map(str::to_string),
+            description: tool_description(self.tool_name, self.tool_input),
+            is_error: self.is_error,
+        }
+    }
 }
 
 /// Check auto-accept rules for a tool invocation.

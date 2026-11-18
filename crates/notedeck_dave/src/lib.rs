@@ -6,6 +6,7 @@ pub mod backend;
 mod backend_profiles;
 pub mod card_titles;
 mod child_report;
+mod coding_tools;
 pub(crate) mod collapse_state;
 pub mod config;
 #[cfg(test)]
