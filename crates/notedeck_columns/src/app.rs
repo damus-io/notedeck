@@ -1135,6 +1135,12 @@ impl notedeck::App for Damus {
         update_damus(self, ctx);
     }
 
+    /// The read-only nostr data tools (`nd nostr profile|thread|timeline`),
+    /// which an agent spec's `Notedeck { apps: ["nostr"] }` toolset offers.
+    fn tools(&self) -> Vec<notedeck::RegisteredTool> {
+        crate::nostr_tools::tools()
+    }
+
     #[profiling::function]
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         render_damus(self, ctx, ui)

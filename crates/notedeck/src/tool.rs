@@ -61,6 +61,11 @@ pub use agentium_core::tool::{Capability, StreamMode, ToolArg, ToolArgType, Tool
 /// note-key execution rather than each maintaining a copy.
 pub use agentium_core::tools::QueryCall;
 
+/// The note shape the engine hands a model ([`SimpleNote`]), and the
+/// conversion into it, re-exported so an app's nostr tools answer notes the
+/// way Dave's `query` tool and thread summaries do.
+pub use agentium_core::tools::{note_to_simple, SimpleNote};
+
 /// The browser state a tool executes against, reborrowed from an
 /// [`AppContext`](crate::AppContext) via
 /// [`tool_context`](crate::AppContext::tool_context) — the tool analogue of
