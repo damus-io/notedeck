@@ -6208,6 +6208,7 @@ dependencies = [
  "gethostname",
  "headway",
  "hex",
+ "hyper",
  "image",
  "libc",
  "md-stream",
@@ -6235,8 +6236,10 @@ dependencies = [
  "sha2 0.10.9",
  "similar",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

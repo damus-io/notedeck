@@ -67,6 +67,19 @@ pub(crate) struct WaitingCall {
     pub(crate) call: AppToolCall,
     /// What it waits on before it can start.
     pub(crate) gate: Gate,
+    /// What runs it once it may start.
+    pub(crate) runner: CallRunner,
+}
+
+/// What runs a [`WaitingCall`] once it may start.
+pub(crate) enum CallRunner {
+    /// The host's tool registry, which only the frame can reach: the
+    /// frame's start pass runs it.
+    Registry,
+    /// Work of Dave's own that needs no frame (a web fetch, a sub-agent's
+    /// question), held only for the user's answer: it runs as a job off the
+    /// frame.
+    Job(ToolJob),
 }
 
 /// What a [`WaitingCall`] waits on.
@@ -117,6 +130,28 @@ impl ToolCancel {
     pub(crate) fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+
+    /// Resolves once the round is cancelled, for a job that awaits network
+    /// work and races it against the stop. The flag has no waker, so it is
+    /// polled every 100ms.
+    pub(crate) async fn cancelled(&self) {
+        while !self.is_cancelled() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// Run `work` to the end on a runtime of its own, for a job that awaits
+/// network work on its thread. The job's clients are built inside `work`,
+/// since their connections belong to the runtime they run on.
+pub(crate) fn block_on_own_runtime<T>(
+    work: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("no runtime for the tool: {err}"))?
+        .block_on(work)
 }
 
 /// A job's answer, sent back from its thread.
@@ -243,7 +278,13 @@ impl ToolRound {
             let Parked { index, waiting } = self.waiting.swap_remove(i);
             match verdict {
                 Verdict::Wait => unreachable!("handled above"),
-                Verdict::Start => self.start_late(index, start(&waiting.call)),
+                Verdict::Start => {
+                    let started = match waiting.runner {
+                        CallRunner::Registry => start(&waiting.call),
+                        CallRunner::Job(job) => StartedCall::Pending(job),
+                    };
+                    self.start_late(index, started)
+                }
                 Verdict::Answer(response) => self.answer(index, *response),
                 Verdict::StopTurn => self.cancel(),
             }
@@ -576,6 +617,7 @@ mod tests {
                     args: serde_json::json!({}),
                 },
                 gate,
+                runner: CallRunner::Registry,
             }),
         }
     }
@@ -626,6 +668,37 @@ mod tests {
                 "asked=PresentNotes(1)"
             ]
         );
+    }
+
+    /// A gated call Dave runs itself (a web fetch, a sub-agent's question)
+    /// waits for the user like an app tool, then runs as a job: the frame's
+    /// start pass never sees it.
+    #[test]
+    fn a_gated_job_runs_off_the_frame_once_allowed() {
+        let (allow, asked) = oneshot::channel();
+        let mut round = ToolRound::start(
+            vec![RoundCall {
+                id: "ask".to_owned(),
+                started: StartedCall::Waiting(WaitingCall {
+                    call: AppToolCall {
+                        name: "ask_researcher".to_owned(),
+                        args: serde_json::json!({ "question": "who?" }),
+                    },
+                    gate: Gate::Asked(asked),
+                    runner: CallRunner::Job(Box::new(|_| Ok(ToolResponses::PresentNotes(7)))),
+                }),
+            }],
+            &Waker::noop(),
+        );
+        round.start_waiting(&mut |_| panic!("a job never goes through the registry"));
+        assert!(!round.poll(), "it waits for the user");
+
+        allow
+            .send(PermissionResponse::Allow { message: None })
+            .unwrap();
+        round.start_waiting(&mut |_| panic!("a job never goes through the registry"));
+        wait_answered(&mut round);
+        assert_eq!(rows(&round.into_answers()), ["ask=PresentNotes(7)"]);
     }
 
     /// "Stop" on a call's permission request stops the round, and a

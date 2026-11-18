@@ -18,9 +18,17 @@
 //! one (nothing waits on a stream). An argument the command bar fills from
 //! the current view ([`ToolArg::from_current`](crate::tool::ToolArg::from_current))
 //! is one the model passes itself.
+//!
+//! ## Web and sub-agent tools are declared here
+//!
+//! The `Web` and `SubAgent` toolsets have no app behind them, so their tools
+//! come from [`web`](super::web), not the registry. Each [`CatalogTool`]
+//! says where its call goes ([`ToolSource`]), so the host runs an app tool
+//! through its registry and the rest itself.
 
 use std::collections::HashMap;
 
+use super::web;
 use super::{AgentSpec, Approval, Toolset, ToolsetKind};
 use crate::tool::{ToolKind, ToolSpec};
 use crate::tools::Tool;
@@ -33,6 +41,23 @@ pub struct CatalogTool {
     /// What a call needs: [`Approval::Auto`] or [`Approval::Gated`]. An
     /// impossible tool is never offered.
     pub approval: Approval,
+    /// Who runs a call of it.
+    pub source: ToolSource,
+}
+
+/// Who runs a [`CatalogTool`]'s calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolSource {
+    /// The host's tool registry: an app's tool, run as `nd <app> …` runs it.
+    App,
+    /// The host's web client: [`web::web_search`] or [`web::web_fetch`].
+    Web,
+    /// A child loop under the spec named `spec`, asked through
+    /// [`web::ask_researcher`].
+    SubAgent {
+        /// The child spec's slug.
+        spec: String,
+    },
 }
 
 /// Every tool a spec's agent is offered (see the module docs).
@@ -57,46 +82,56 @@ pub enum CatalogError {
 
 impl Catalog {
     /// The tools `spec`'s agent is offered, from `available`: every tool
-    /// the host has (the registry's specs). Each toolset is resolved, every
-    /// tool gets its [`approval`](AgentSpec::approval), and the impossible
-    /// ones are dropped. Fails on a toolset this build can't run, an app
-    /// that offers nothing, and a policy rule naming a tool that isn't
-    /// offered.
+    /// the host has (the registry's specs), for its Notedeck toolset, and
+    /// the [`web`] tools for its Web and SubAgent toolsets. Every tool gets
+    /// its [`approval`](AgentSpec::approval), and the impossible ones are
+    /// dropped. Fails on a toolset this build can't run, an app that offers
+    /// nothing, and a policy rule naming a tool that isn't offered.
     pub fn build<'a>(
         spec: &AgentSpec,
         available: impl IntoIterator<Item = &'a ToolSpec> + Clone,
     ) -> Result<Self, CatalogError> {
-        let mut tools = Vec::new();
-        // Every tool a toolset offers, impossible ones too: a policy naming
-        // one of those is a real rule, not a typo.
-        let mut offered: Vec<&'static str> = Vec::new();
+        let mut catalog = Offering {
+            spec,
+            tools: Vec::new(),
+            offered: Vec::new(),
+        };
         for toolset in &spec.toolsets {
-            let Toolset::Notedeck { apps } = toolset else {
-                return Err(CatalogError::Unsupported {
-                    spec: spec.slug.clone(),
-                    kind: toolset.kind(),
-                });
-            };
-            for app in apps {
-                let before = offered.len();
-                for tool in available.clone().into_iter().filter(|t| offers(app, t)) {
-                    offered.push(tool.name());
-                    let approval = spec.approval(toolset, tool);
-                    if approval != Approval::Impossible {
-                        tools.push(CatalogTool {
-                            spec: tool.clone(),
-                            approval,
-                        });
+            match toolset {
+                Toolset::Notedeck { apps } => {
+                    for app in apps {
+                        let before = catalog.offered.len();
+                        for tool in available.clone().into_iter().filter(|t| offers(app, t)) {
+                            catalog.offer(toolset, tool.clone(), ToolSource::App);
+                        }
+                        if catalog.offered.len() == before {
+                            return Err(CatalogError::UnknownApp {
+                                spec: spec.slug.clone(),
+                                app: app.clone(),
+                            });
+                        }
                     }
                 }
-                if offered.len() == before {
-                    return Err(CatalogError::UnknownApp {
+                Toolset::Web => {
+                    for tool in web::web_tools() {
+                        catalog.offer(toolset, tool, ToolSource::Web);
+                    }
+                }
+                Toolset::SubAgent { spec: child } => {
+                    let source = ToolSource::SubAgent {
+                        spec: child.clone(),
+                    };
+                    catalog.offer(toolset, web::ask_researcher(), source);
+                }
+                Toolset::Coding { .. } => {
+                    return Err(CatalogError::Unsupported {
                         spec: spec.slug.clone(),
-                        app: app.clone(),
-                    });
+                        kind: toolset.kind(),
+                    })
                 }
             }
         }
+        let Offering { tools, offered, .. } = catalog;
         if let Some(tool) = policy_tools(spec).find(|name| !offered.contains(name)) {
             return Err(CatalogError::UnknownPolicyTool {
                 spec: spec.slug.clone(),
@@ -124,6 +159,32 @@ impl Catalog {
             .iter()
             .map(|t| (t.spec.name().to_owned(), Tool::app(t.spec.clone())))
             .collect()
+    }
+}
+
+/// A catalog being built: what it offers so far.
+struct Offering<'a> {
+    spec: &'a AgentSpec,
+    /// The tools the model gets.
+    tools: Vec<CatalogTool>,
+    /// Every tool a toolset offers, impossible ones too: a policy naming
+    /// one of those is a real rule, not a typo.
+    offered: Vec<&'static str>,
+}
+
+impl Offering<'_> {
+    /// Offer `tool` from `toolset`, run by `source`, unless the spec makes
+    /// it impossible.
+    fn offer(&mut self, toolset: &Toolset, tool: ToolSpec, source: ToolSource) {
+        self.offered.push(tool.name());
+        let approval = self.spec.approval(toolset, &tool);
+        if approval != Approval::Impossible {
+            self.tools.push(CatalogTool {
+                spec: tool,
+                approval,
+                source,
+            });
+        }
     }
 }
 
@@ -337,17 +398,65 @@ mod tests {
     #[test]
     fn an_unsupported_toolset_is_an_error() {
         let host = host_tools();
+        let mut reviewer = spec(&["headway"], Policy::default());
+        reviewer.toolsets.push(Toolset::Coding {
+            runner: crate::agent_spec::Runner::LocalExecutor,
+        });
+        assert_eq!(
+            Catalog::build(&reviewer, &host).unwrap_err(),
+            CatalogError::Unsupported {
+                spec: "butler".into(),
+                kind: ToolsetKind::Coding
+            }
+        );
+    }
+
+    /// The butler's sub-agent toolset offers one tool, gated: the question
+    /// leaves the private context. It is run by a child loop, not the
+    /// registry.
+    #[test]
+    fn a_sub_agent_toolset_offers_one_gated_question() {
+        let host = host_tools();
         let mut butler = spec(&["headway"], Policy::default());
         butler.toolsets.push(Toolset::SubAgent {
             spec: "researcher".into(),
         });
+        let catalog = Catalog::build(&butler, &host).unwrap();
+        let ask = catalog.get(web::ASK_RESEARCHER).unwrap();
+        assert_eq!(ask.approval, Approval::Gated);
         assert_eq!(
-            Catalog::build(&butler, &host).unwrap_err(),
-            CatalogError::Unsupported {
-                spec: "butler".into(),
-                kind: ToolsetKind::SubAgent
+            ask.source,
+            ToolSource::SubAgent {
+                spec: "researcher".into()
             }
         );
+        assert_eq!(
+            catalog.get("headway_show_board").unwrap().source,
+            ToolSource::App
+        );
+        assert!(catalog.get(web::WEB_FETCH).is_none(), "no web of its own");
+    }
+
+    /// The researcher's web tools are gated by the table and run unasked
+    /// only because its spec widens them by name, which the catalog accepts
+    /// since it offers them.
+    #[test]
+    fn the_researcher_is_offered_web_tools_it_widened() {
+        let researcher = AgentSpec::from_json(include_str!("examples/researcher.json")).unwrap();
+        let catalog = Catalog::build(&researcher, &host_tools()).unwrap();
+        assert_eq!(names(&catalog), [web::WEB_SEARCH, web::WEB_FETCH]);
+        for tool in catalog.tools() {
+            assert_eq!(tool.approval, Approval::Auto, "{}", tool.spec.name());
+            assert_eq!(tool.source, ToolSource::Web);
+        }
+
+        let mut unwidened = researcher.clone();
+        unwidened.policy = Policy::default();
+        let catalog = Catalog::build(&unwidened, &host_tools()).unwrap();
+        assert!(catalog
+            .tools()
+            .iter()
+            .all(|t| t.approval == Approval::Gated));
     }
 
     /// Positional and flag metadata reaches the model's schema unchanged:

@@ -79,7 +79,11 @@ fn butler_reads_and_comments_unasked_and_asks_for_every_other_write() {
 fn butler_asks_before_each_research_question() {
     let butler = spec(BUTLER);
     assert_eq!(
-        butler.approval_for("ask_researcher", Capability::Egress, Containment::InProcess),
+        butler.approval_for(
+            super::web::ASK_RESEARCHER,
+            Capability::Egress,
+            Containment::InProcess
+        ),
         Gated
     );
 }
@@ -91,6 +95,28 @@ fn researcher_searches_and_fetches_unasked_but_has_nothing_private() {
     assert_eq!(researcher.approval(web, &web_search()), Auto);
     assert_eq!(researcher.approval(web, &web_fetch()), Auto);
     assert!(!researcher.toolsets.iter().any(Toolset::holds_private_data));
+}
+
+/// Only a spec with nothing private may be a sub-agent: the researcher
+/// may, the butler and the reviewer may not, and neither may a spec that
+/// calls a sub-agent of its own.
+#[test]
+fn only_a_spec_with_nothing_private_is_a_sub_agent() {
+    spec(RESEARCHER).check_sub_agent().unwrap();
+    for json in [BUTLER, REVIEWER, CODER] {
+        assert!(matches!(
+            spec(json).check_sub_agent(),
+            Err(SpecError::SubAgentHoldsPrivateData(_))
+        ));
+    }
+    let mut nests = spec(RESEARCHER);
+    nests.toolsets.push(Toolset::SubAgent {
+        spec: "other".into(),
+    });
+    assert!(matches!(
+        nests.check_sub_agent(),
+        Err(SpecError::NestedSubAgent(_))
+    ));
 }
 
 #[test]

@@ -16,13 +16,22 @@
 //! The tools themselves are the apps' own: the model sees each tool's
 //! [`ToolSpec`](notedeck::ToolSpec), and the call runs the same registry
 //! entry `nd headway …` runs. Nothing here wraps a tool.
+//!
+//! ## Web and sub-agent tools run as jobs
+//!
+//! A spec's Web and SubAgent toolsets have no app behind them
+//! ([`ToolSource`](agentium_core::agent_spec::ToolSource)), so their calls
+//! never reach the registry or the frame: each runs as a job off the frame
+//! ([`crate::web_tools::job`], [`SubAgent::job`]), after the user allows it
+//! when its approval is gated, as the butler's `ask_researcher` is.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError};
+use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, Toolset};
 use notedeck::{AppContext, Started, ToolOutcome};
 
+use crate::sub_agent::{SubAgent, SubAgentError};
 use crate::tool_round::StartedCall;
 use crate::tools::{AppToolCall, AppToolResponse, Tool};
 use crate::ToolResponses;
@@ -35,29 +44,47 @@ pub(crate) struct SpecTools {
     pub(crate) catalog: Arc<Catalog>,
     /// The catalog as the backend advertises it, built once.
     pub(crate) model_tools: Arc<HashMap<String, Tool>>,
+    /// The spec's sub-agent, resolved, when it has a SubAgent toolset.
+    pub(crate) sub_agent: Option<Arc<SubAgent>>,
+    /// The SearXNG instance a Web toolset's searches go to.
+    pub(crate) search_url: Option<String>,
+}
+
+/// Why a spec's tools can't be built.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SpecToolsError {
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
+    #[error(transparent)]
+    SubAgent(#[from] SubAgentError),
 }
 
 impl SpecTools {
     /// The tools `spec` offers, from `available`: what the host has
-    /// ([`AppContext::tool_specs`]).
+    /// ([`AppContext::tool_specs`]). A SubAgent toolset's spec is set up by
+    /// `sub_agent`, from its slug; web searches go to `search_url`.
     // The butler's spec (headway:dave/picnic-diagram-dizzy) is the first
     // session to run under one.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn for_spec(
         spec: &AgentSpec,
         available: &[notedeck::ToolSpec],
-    ) -> Result<Self, CatalogError> {
-        Ok(Self::from_catalog(Catalog::build(spec, available)?))
-    }
-
-    /// Wrap a built `catalog`.
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn from_catalog(catalog: Catalog) -> Self {
+        sub_agent: impl FnOnce(&str) -> Result<SubAgent, SubAgentError>,
+        search_url: Option<String>,
+    ) -> Result<Self, SpecToolsError> {
+        let catalog = Catalog::build(spec, available)?;
+        let child = spec.toolsets.iter().find_map(|t| match t {
+            Toolset::SubAgent { spec } => Some(spec.as_str()),
+            _ => None,
+        });
+        let sub_agent = child.map(sub_agent).transpose()?.map(Arc::new);
         let model_tools = Arc::new(catalog.model_tools());
-        Self {
+        Ok(Self {
             catalog: Arc::new(catalog),
             model_tools,
-        }
+            sub_agent,
+            search_url,
+        })
     }
 }
 

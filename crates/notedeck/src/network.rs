@@ -16,6 +16,10 @@ const MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 
 type HyperClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
 
+/// A guarded request's check of each URL it is about to request: `Err`
+/// with the reason refuses it (see [`HyperHttpClient::req_guarded`]).
+pub type UrlCheck = dyn Fn(&Uri) -> Result<(), String> + Sync;
+
 /// Reusable HTTP client for background network jobs.
 #[derive(Clone)]
 pub struct HyperHttpClient {
@@ -54,12 +58,26 @@ impl HyperHttpClient {
         self.req_with_accept(url, Some(accept)).await
     }
 
+    /// Perform an HTTP GET for an agent, checking every hop: `allow` is
+    /// asked about the URL and about each redirect's target before it is
+    /// requested, and a refusal ends the request with
+    /// [`HyperHttpError::Refused`]. A redirect is where a public URL turns
+    /// into a private one, so checking only the first URL checks nothing.
+    pub async fn req_guarded(
+        &self,
+        url: &str,
+        accept: &str,
+        allow: &UrlCheck,
+    ) -> Result<HyperHttpResponse, HyperHttpError> {
+        http_req_with_client(&self.client, url, Some(accept), Some(allow)).await
+    }
+
     async fn req_with_accept(
         &self,
         url: &str,
         accept: Option<&str>,
     ) -> Result<HyperHttpResponse, HyperHttpError> {
-        http_req_with_client(&self.client, url, accept).await
+        http_req_with_client(&self.client, url, accept, None).await
     }
 }
 
@@ -90,6 +108,7 @@ async fn http_req_with_client(
     client: &HyperClient,
     url: &str,
     accept: Option<&str>,
+    allow: Option<&UrlCheck>,
 ) -> Result<HyperHttpResponse, HyperHttpError> {
     let mut current_uri: Uri = url.parse().map_err(|_| HyperHttpError::Uri)?;
 
@@ -97,6 +116,9 @@ async fn http_req_with_client(
     let mut redirects = 0;
 
     let res = loop {
+        if let Some(allow) = allow {
+            allow(&current_uri).map_err(HyperHttpError::Refused)?;
+        }
         let authority = current_uri.authority().ok_or(HyperHttpError::Host)?.clone();
 
         // Fetch the url...
@@ -195,6 +217,9 @@ pub enum HyperHttpError {
     TooManyRedirects,
     MissingRedirectLocation,
     InvalidRedirectLocation,
+    /// A guarded request's check refused a URL it would have requested
+    /// (see [`HyperHttpClient::req_guarded`]), with the reason.
+    Refused(String),
 }
 
 #[derive(Debug)]
@@ -223,6 +248,7 @@ impl fmt::Display for HyperHttpError {
             Self::TooManyRedirects => write!(f, "Too many redirect responses"),
             Self::MissingRedirectLocation => write!(f, "Redirect response missing Location header"),
             Self::InvalidRedirectLocation => write!(f, "Invalid redirect Location header"),
+            Self::Refused(why) => write!(f, "Refused: {why}"),
         }
     }
 }

@@ -39,6 +39,11 @@ bytemuck = {workspace = true }
 futures = "0.3.31"
 dashmap = "6"
 #reqwest = "0.12.15"
+# The web toolset's fetch: a URI to check on every redirect hop, and the
+# search instance's request URL.
+hyper = { workspace = true }
+url = { workspace = true }
+thiserror = { workspace = true }
 egui_extras = { workspace = true }
 md-stream = { workspace = true }
 similar = "2"

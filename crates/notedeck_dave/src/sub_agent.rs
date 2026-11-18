@@ -1,0 +1,705 @@
+//! A research sub-agent: a spec's `SubAgent` toolset, run as a child loop.
+//!
+//! An agent that reads private boards must not also fetch arbitrary pages:
+//! an injected page tells it to put board contents into the next URL. So
+//! the parent never fetches. It asks its sub-agent a question
+//! ([`ASK_RESEARCHER`]), and the sub-agent answers it in a context of its
+//! own: its own spec (no private data, checked by
+//! [`AgentSpec::check_sub_agent`]), its own model and provider, its own
+//! budget, and only the web tools. The parent gets back the summary and
+//! nothing else: no transcript, no pages.
+//!
+//! ```text
+//! parent (butler)                     child (researcher)
+//!  ask_researcher{question} ─ gated ─▶ [system: its prompt, user: question]
+//!                                       model ⇄ web_search / web_fetch
+//!                                       … up to budget.max_steps rounds
+//!  ◀──────────── summary ───────────── final answer
+//! ```
+//!
+//! The child runs as one [`ToolJob`] of the parent's round, on its own
+//! thread with its own runtime: it never touches the frame, and the
+//! parent's stop reaches it through the round's [`ToolCancel`].
+
+use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+
+use agentium_core::agent_spec::provider::{self, Endpoint};
+use agentium_core::agent_spec::web::ASK_RESEARCHER;
+use agentium_core::agent_spec::{AgentSpec, Approval, Catalog, ToolSource};
+use agentium_core::config::BackendProfile;
+use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequest};
+use async_openai::Client;
+use nostrdb::{Ndb, Transaction};
+use serde_json::{json, Value};
+
+use crate::backend::{finish_tool_call, message_to_api, openai_config, tool_to_api};
+use crate::tool_round::{block_on_own_runtime, ToolCancel, ToolJob};
+use crate::tools::{AppToolCall, AppToolResponse, PartialToolCall, Tool, ToolCall, ToolCalls};
+use crate::web_tools::WebClient;
+use crate::{Message, ToolResponse, ToolResponses};
+
+/// What the child is told when its step budget is spent: answer from what
+/// it has. It gets one more request, with no tools.
+const OUT_OF_STEPS: &str = "You have used your step budget. Answer the question now with \
+                            what you found, and say what you could not establish.";
+
+/// A spec's sub-agent, resolved: everything a question needs to be
+/// answered, checked once when the parent's tools are built.
+pub(crate) struct SubAgent {
+    /// The child spec: its prompt and budget.
+    spec: AgentSpec,
+    /// Where its model requests go.
+    endpoint: Endpoint,
+    /// Its tools and their approvals: the web tools.
+    catalog: Catalog,
+    /// The catalog as the model sees it.
+    model_tools: HashMap<String, Tool>,
+    /// The SearXNG instance its searches go to.
+    search_url: Option<String>,
+}
+
+/// Why a spec's sub-agent can't be set up.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SubAgentError {
+    /// No spec has the slug.
+    #[error("no agent spec {0:?} to call as a sub-agent")]
+    UnknownSpec(String),
+    /// The child spec isn't fit to be one.
+    #[error(transparent)]
+    Spec(#[from] agentium_core::agent_spec::SpecError),
+    /// The child's tools can't be built.
+    #[error(transparent)]
+    Catalog(#[from] agentium_core::agent_spec::CatalogError),
+    /// The child's model has no endpoint.
+    #[error(transparent)]
+    Provider(#[from] agentium_core::agent_spec::provider::ProviderError),
+}
+
+impl SubAgent {
+    /// The sub-agent a parent's `SubAgent { spec: slug }` toolset names:
+    /// the spec `find` has for `slug`, its model resolved against the
+    /// account's `profiles` and the process `env` as any spec's is
+    /// ([`provider::resolve`](agentium_core::agent_spec::provider::resolve)).
+    // The butler's spec (headway:dave/picnic-diagram-dizzy) is the first to
+    // call one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn resolve(
+        slug: &str,
+        find: impl FnOnce(&str) -> Option<AgentSpec>,
+        profiles: &BTreeMap<String, BackendProfile>,
+        env: impl Fn(&str) -> Option<String>,
+        search_url: Option<String>,
+    ) -> Result<Self, SubAgentError> {
+        let spec = find(slug).ok_or_else(|| SubAgentError::UnknownSpec(slug.to_owned()))?;
+        let endpoint = provider::resolve(&spec.model, profiles, env)?;
+        Self::new(spec, endpoint, search_url)
+    }
+
+    /// The sub-agent `spec`, answering on `endpoint` (its model, resolved),
+    /// searching `search_url`. Fails if the spec holds private data or calls
+    /// a sub-agent of its own.
+    pub(crate) fn new(
+        spec: AgentSpec,
+        endpoint: Endpoint,
+        search_url: Option<String>,
+    ) -> Result<Self, SubAgentError> {
+        spec.check_sub_agent()?;
+        // A sub-agent's tools never come from the registry: it holds no app
+        // toolset, so it is offered nothing of the host's.
+        let catalog = Catalog::build(&spec, &[])?;
+        let model_tools = catalog.model_tools();
+        Ok(Self {
+            spec,
+            endpoint,
+            catalog,
+            model_tools,
+            search_url,
+        })
+    }
+
+    /// The child spec's slug.
+    pub(crate) fn slug(&self) -> &str {
+        &self.spec.slug
+    }
+
+    /// The job that answers `question`: the child loop, on the round's
+    /// thread. `ndb` renders the child's tool answers for its model.
+    pub(crate) fn job(self: &Arc<Self>, question: String, ndb: Ndb) -> ToolJob {
+        let agent = Arc::clone(self);
+        Box::new(move |cancel| {
+            let summary = agent.answer(&question, &ndb, cancel)?;
+            Ok(ToolResponses::App(AppToolResponse {
+                tool: ASK_RESEARCHER.to_owned(),
+                value: json!({ "researcher": agent.slug(), "summary": summary }),
+            }))
+        })
+    }
+
+    /// Run the child loop on a runtime of its own until it answers.
+    fn answer(&self, question: &str, ndb: &Ndb, cancel: &ToolCancel) -> Result<String, String> {
+        block_on_own_runtime(async {
+            let mut model = OpenAiChild {
+                client: Client::with_config(openai_config(&self.endpoint)),
+                model: self.endpoint.model.clone(),
+                api_tools: self.model_tools.values().map(tool_to_api).collect(),
+                tools: &self.model_tools,
+                ndb,
+            };
+            let web = WebClient::new(self.search_url.clone());
+            let mut tools = |call: AppToolCall| {
+                let web = &web;
+                async move { web.call(&call).await }
+            };
+            let run = run_child(&self.spec, &self.catalog, question, &mut model, &mut tools);
+            bounded(run, self.spec.budget.timeout_secs, cancel).await
+        })
+    }
+}
+
+/// `run`, stopped by `cancel` or after `timeout_secs`.
+async fn bounded(
+    run: impl Future<Output = Result<String, String>>,
+    timeout_secs: Option<u64>,
+    cancel: &ToolCancel,
+) -> Result<String, String> {
+    let timeout = async {
+        match timeout_secs {
+            Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        result = run => result,
+        () = cancel.cancelled() => Err("the research was stopped".to_owned()),
+        () = timeout => Err(format!(
+            "the researcher ran past its {}s budget without answering",
+            timeout_secs.unwrap_or_default()
+        )),
+    }
+}
+
+/// One reply of the child's model.
+#[derive(Debug)]
+pub(crate) enum ChildReply {
+    /// It answered: the summary.
+    Answer(String),
+    /// It called tools.
+    Calls(Vec<ToolCall>),
+}
+
+/// The child's model: its chat so far in, one reply out.
+pub(crate) trait ChildModel {
+    /// The reply to `chat`, offered the child's tools when `with_tools`.
+    fn reply(
+        &mut self,
+        chat: &[Message],
+        with_tools: bool,
+    ) -> impl Future<Output = Result<ChildReply, String>>;
+}
+
+/// Runs a web tool call: its answer, or an error for the model.
+pub(crate) trait ChildTools {
+    fn run(&mut self, call: AppToolCall) -> impl Future<Output = Result<Value, String>>;
+}
+
+impl<F, Fut> ChildTools for F
+where
+    F: FnMut(AppToolCall) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    fn run(&mut self, call: AppToolCall) -> impl Future<Output = Result<Value, String>> {
+        self(call)
+    }
+}
+
+/// The child loop: ask `model` the `question` under `spec`'s prompt, run the
+/// tools it calls as `catalog` allows, and answer what it finally says.
+///
+/// After `spec.budget.max_steps` rounds of tool calls the model is told to
+/// answer from what it has and asked once more with no tools. A call of a
+/// gated tool answers an error: there is nobody in a sub-agent to ask.
+pub(crate) async fn run_child(
+    spec: &AgentSpec,
+    catalog: &Catalog,
+    question: &str,
+    model: &mut impl ChildModel,
+    tools: &mut impl ChildTools,
+) -> Result<String, String> {
+    let mut chat = vec![
+        Message::System(spec.prompt.as_str().into()),
+        Message::User(question.into()),
+    ];
+    for _ in 0..spec.budget.max_steps {
+        let calls = match model.reply(&chat, true).await? {
+            ChildReply::Answer(answer) => return answered(answer),
+            ChildReply::Calls(calls) => calls,
+        };
+        chat.push(Message::ToolCalls(calls.clone()));
+        for call in calls {
+            let response = run_call(catalog, call.calls(), tools).await;
+            chat.push(Message::ToolResponse(ToolResponse::new(
+                call.id().to_owned(),
+                response,
+            )));
+        }
+    }
+    chat.push(Message::User(OUT_OF_STEPS.into()));
+    match model.reply(&chat, false).await? {
+        ChildReply::Answer(answer) => answered(answer),
+        ChildReply::Calls(_) => Err(format!(
+            "the researcher used its {} steps without answering",
+            spec.budget.max_steps
+        )),
+    }
+}
+
+/// The child's final text, which must say something.
+fn answered(answer: String) -> Result<String, String> {
+    if answer.trim().is_empty() {
+        return Err("the researcher answered nothing".to_owned());
+    }
+    Ok(answer)
+}
+
+/// Answer one of the child's calls: a web tool its catalog runs unasked
+/// goes to `tools`; anything else answers an error.
+async fn run_call(
+    catalog: &Catalog,
+    call: &ToolCalls,
+    tools: &mut impl ChildTools,
+) -> ToolResponses {
+    let app = match call {
+        ToolCalls::App(app) => app,
+        ToolCalls::Invalid(invalid) => return ToolResponses::Error(invalid.error.clone()),
+        other => {
+            return ToolResponses::Error(format!("'{}' isn't one of your tools", other.tool_name()))
+        }
+    };
+    match catalog.get(&app.name) {
+        Some(tool) if tool.source == ToolSource::Web && tool.approval == Approval::Auto => {
+            match tools.run(app.clone()).await {
+                Ok(value) => ToolResponses::App(AppToolResponse {
+                    tool: app.name.clone(),
+                    value,
+                }),
+                Err(err) => ToolResponses::Error(err),
+            }
+        }
+        Some(_) => ToolResponses::Error(format!(
+            "'{}' needs the user's approval, which a sub-agent can't ask for",
+            app.name
+        )),
+        None => ToolResponses::Error(format!("'{}' isn't one of your tools", app.name)),
+    }
+}
+
+/// The child's model over an OpenAI-compatible endpoint, one non-streaming
+/// request per reply: nobody watches the child's tokens.
+struct OpenAiChild<'a> {
+    client: Client<async_openai::config::OpenAIConfig>,
+    model: String,
+    /// The tools as the request carries them.
+    api_tools: Vec<async_openai::types::ChatCompletionTool>,
+    /// The tools a reply's calls are parsed against.
+    tools: &'a HashMap<String, Tool>,
+    ndb: &'a Ndb,
+}
+
+impl ChildModel for OpenAiChild<'_> {
+    async fn reply(&mut self, chat: &[Message], with_tools: bool) -> Result<ChildReply, String> {
+        let messages: Vec<ChatCompletionRequestMessage> = {
+            let txn = Transaction::new(self.ndb).map_err(|err| format!("db: {err}"))?;
+            chat.iter()
+                .filter_map(|m| message_to_api(m, &txn, self.ndb))
+                .collect()
+        };
+        let request = CreateChatCompletionRequest {
+            model: self.model.clone(),
+            messages,
+            tools: with_tools.then(|| self.api_tools.clone()),
+            ..Default::default()
+        };
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
+            .map_err(|err| format!("the researcher's model failed: {err}"))?;
+        let message = response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or("the researcher's model sent no reply")?
+            .message;
+        let calls: Vec<ToolCall> = message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|call| {
+                let partial = PartialToolCall {
+                    id: Some(call.id),
+                    name: Some(call.function.name),
+                    arguments: Some(call.function.arguments),
+                };
+                finish_tool_call(partial, self.tools)
+            })
+            .collect();
+        if calls.is_empty() {
+            return Ok(ChildReply::Answer(message.content.unwrap_or_default()));
+        }
+        Ok(ChildReply::Calls(calls))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentium_core::agent_spec::web::{WEB_FETCH, WEB_SEARCH};
+    use std::collections::VecDeque;
+
+    const RESEARCHER: &str =
+        include_str!("../../agentium-core/src/agent_spec/examples/researcher.json");
+
+    fn researcher() -> AgentSpec {
+        AgentSpec::from_json(RESEARCHER).unwrap()
+    }
+
+    /// A model that replies from a script and records what it was sent.
+    struct Scripted {
+        replies: VecDeque<ChildReply>,
+        tools: HashMap<String, Tool>,
+        /// Each request's chat length and whether tools were offered.
+        requests: Vec<(usize, bool)>,
+        /// The last chat it saw, as text rows.
+        last_chat: Vec<String>,
+    }
+
+    impl Scripted {
+        fn new(catalog: &Catalog, replies: Vec<ChildReply>) -> Self {
+            Self {
+                replies: replies.into(),
+                tools: catalog.model_tools(),
+                requests: Vec::new(),
+                last_chat: Vec::new(),
+            }
+        }
+
+        /// A call of `name` with `args`, parsed as the real model's would be.
+        fn call(&self, id: &str, name: &str, args: Value) -> ToolCall {
+            finish_tool_call(
+                PartialToolCall {
+                    id: Some(id.into()),
+                    name: Some(name.into()),
+                    arguments: Some(args.to_string()),
+                },
+                &self.tools,
+            )
+            .unwrap()
+        }
+    }
+
+    impl ChildModel for Scripted {
+        async fn reply(
+            &mut self,
+            chat: &[Message],
+            with_tools: bool,
+        ) -> Result<ChildReply, String> {
+            self.requests.push((chat.len(), with_tools));
+            self.last_chat = chat.iter().map(row).collect();
+            self.replies.pop_front().ok_or("script ran out".to_owned())
+        }
+    }
+
+    fn row(message: &Message) -> String {
+        match message {
+            Message::System(m) => format!("system: {}", m.text()),
+            Message::User(m) => format!("user: {}", m.text),
+            Message::ToolCalls(calls) => format!("calls: {}", calls.len()),
+            Message::ToolResponse(r) => match r.responses() {
+                ToolResponses::App(app) => format!("{}: {}", app.tool, app.value),
+                ToolResponses::Error(err) => format!("error: {err}"),
+                other => format!("{other:?}"),
+            },
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Web tools that answer from a fixed table and record each call.
+    fn web(
+        calls: &mut Vec<String>,
+    ) -> impl FnMut(AppToolCall) -> std::future::Ready<Result<Value, String>> + '_ {
+        move |call| {
+            calls.push(format!("{} {}", call.name, call.args));
+            std::future::ready(match call.name.as_str() {
+                WEB_SEARCH => Ok(json!({ "results": [{ "url": "https://acme.example" }] })),
+                WEB_FETCH => Ok(json!({ "text": "Acme: $9/mo" })),
+                _ => Err("no".to_owned()),
+            })
+        }
+    }
+
+    /// The child is asked the question under its own prompt, runs the web
+    /// tools it calls, and its last message is the summary.
+    #[tokio::test]
+    async fn the_child_searches_fetches_and_answers() {
+        let spec = researcher();
+        let catalog = Catalog::build(&spec, &[]).unwrap();
+        let mut model = Scripted::new(&catalog, vec![]);
+        let search = model.call("1", WEB_SEARCH, json!({ "query": "idea journal apps" }));
+        let fetch = model.call("2", WEB_FETCH, json!({ "url": "https://acme.example" }));
+        model.replies = vec![
+            ChildReply::Calls(vec![search]),
+            ChildReply::Calls(vec![fetch]),
+            ChildReply::Answer("Acme — pricing: $9/mo".into()),
+        ]
+        .into();
+        let mut calls = Vec::new();
+        let summary = run_child(
+            &spec,
+            &catalog,
+            "Who sells idea journals?",
+            &mut model,
+            &mut web(&mut calls),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary, "Acme — pricing: $9/mo");
+        assert_eq!(
+            calls,
+            [
+                r#"web_search {"query":"idea journal apps"}"#,
+                r#"web_fetch {"url":"https://acme.example"}"#
+            ]
+        );
+        assert_eq!(model.last_chat[0], format!("system: {}", spec.prompt));
+        assert_eq!(model.last_chat[1], "user: Who sells idea journals?");
+        assert_eq!(model.last_chat[5], r#"web_fetch: {"text":"Acme: $9/mo"}"#);
+        assert!(model.requests.iter().all(|(_, tools)| *tools));
+    }
+
+    /// Out of steps, the child is told to answer, offered no tools, and
+    /// what it says then is the summary. Still calling tools is an error.
+    #[tokio::test]
+    async fn out_of_steps_the_child_answers_with_what_it_has() {
+        let mut spec = researcher();
+        spec.budget.max_steps = 2;
+        let catalog = Catalog::build(&spec, &[]).unwrap();
+        let mut model = Scripted::new(&catalog, vec![]);
+        let search = |id| model.call(id, WEB_SEARCH, json!({ "query": "q" }));
+        let replies = vec![
+            ChildReply::Calls(vec![search("1")]),
+            ChildReply::Calls(vec![search("2")]),
+            ChildReply::Answer("partial: Acme".into()),
+        ];
+        model.replies = replies.into();
+        let mut calls = Vec::new();
+        let summary = run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
+            .await
+            .unwrap();
+        assert_eq!(summary, "partial: Acme");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(model.requests.last(), Some(&(7, false)));
+        assert_eq!(model.last_chat[6], format!("user: {OUT_OF_STEPS}"));
+
+        let still_calling = model.call("3", WEB_SEARCH, json!({ "query": "q" }));
+        model.replies = vec![
+            ChildReply::Calls(vec![still_calling.clone()]),
+            ChildReply::Calls(vec![still_calling.clone()]),
+            ChildReply::Calls(vec![still_calling]),
+        ]
+        .into();
+        let err = run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
+            .await
+            .unwrap_err();
+        assert!(err.contains("2 steps"), "{err}");
+    }
+
+    /// A child whose spec doesn't widen its web tools can't run them: there
+    /// is nobody to ask. A tool it wasn't offered doesn't run either.
+    #[tokio::test]
+    async fn a_gated_or_unknown_tool_answers_an_error_and_runs_nothing() {
+        let mut spec = researcher();
+        spec.policy = Default::default();
+        let catalog = Catalog::build(&spec, &[]).unwrap();
+        let mut model = Scripted::new(&catalog, vec![]);
+        let fetch = model.call("1", WEB_FETCH, json!({ "url": "https://a.example" }));
+        let board = model.call("2", "headway_show_board", json!({}));
+        model.replies = vec![
+            ChildReply::Calls(vec![fetch, board]),
+            ChildReply::Answer("nothing found".into()),
+        ]
+        .into();
+        let mut calls = Vec::new();
+        run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
+            .await
+            .unwrap();
+        assert!(calls.is_empty(), "nothing ran: {calls:?}");
+        assert!(
+            model.last_chat[3].contains("can't ask"),
+            "{}",
+            model.last_chat[3]
+        );
+        assert!(
+            model.last_chat[4].starts_with("error:"),
+            "{}",
+            model.last_chat[4]
+        );
+    }
+
+    /// An empty answer is an error, not a blank summary for the parent.
+    #[tokio::test]
+    async fn an_empty_answer_is_an_error() {
+        let spec = researcher();
+        let catalog = Catalog::build(&spec, &[]).unwrap();
+        let mut model = Scripted::new(&catalog, vec![ChildReply::Answer("  ".into())]);
+        let mut calls = Vec::new();
+        assert!(
+            run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
+                .await
+                .is_err()
+        );
+    }
+
+    /// A spec with private data can't be a sub-agent, whatever names it.
+    #[test]
+    fn a_spec_with_private_data_is_no_sub_agent() {
+        let butler = AgentSpec::from_json(include_str!(
+            "../../agentium-core/src/agent_spec/examples/butler.json"
+        ))
+        .unwrap();
+        let endpoint = Endpoint {
+            provider: "anthropic".into(),
+            base_url: "https://api.anthropic.com/v1".into(),
+            api_key: None,
+            model: "m".into(),
+        };
+        assert!(matches!(
+            SubAgent::new(butler, endpoint, None),
+            Err(SubAgentError::Spec(_))
+        ));
+    }
+
+    /// A parent's sub-agent slug resolves to its spec and its model's
+    /// endpoint; an unknown slug and a provider without its key are errors.
+    #[test]
+    fn a_sub_agent_resolves_by_slug() {
+        let find = |slug: &str| (slug == "researcher").then(researcher);
+        let key = |var: &str| (var == "ANTHROPIC_API_KEY").then(|| "sk-ant".to_owned());
+        let agent = SubAgent::resolve("researcher", find, &BTreeMap::new(), key, None).unwrap();
+        assert_eq!(agent.slug(), "researcher");
+        assert_eq!(agent.endpoint.base_url, "https://api.anthropic.com/v1");
+
+        assert!(matches!(
+            SubAgent::resolve("scout", find, &BTreeMap::new(), key, None),
+            Err(SubAgentError::UnknownSpec(_))
+        ));
+        assert!(matches!(
+            SubAgent::resolve("researcher", find, &BTreeMap::new(), |_| None, None),
+            Err(SubAgentError::Provider(_))
+        ));
+    }
+
+    /// A local OpenAI-compatible endpoint that answers one request.
+    struct FakeProvider {
+        endpoint: Endpoint,
+        /// Joins to the request it got.
+        server: std::thread::JoinHandle<String>,
+    }
+
+    /// An OpenAI-compatible endpoint on a local port that answers one chat
+    /// completion with `answer` and hands back the request it got.
+    fn one_completion(answer: &str) -> FakeProvider {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = Endpoint {
+            provider: "local".into(),
+            base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+            api_key: None,
+            model: "tiny".into(),
+        };
+        let body = json!({
+            "id": "c1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "tiny",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": { "role": "assistant", "content": answer }
+            }]
+        })
+        .to_string();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            conn.set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !String::from_utf8_lossy(&seen).trim_end().ends_with('}') {
+                let n = conn.read(&mut buf).unwrap();
+                assert!(n > 0, "the connection closed before the body arrived");
+                seen.extend_from_slice(&buf[..n]);
+            }
+            write!(
+                conn,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+        FakeProvider { endpoint, server }
+    }
+
+    /// The job a parent's round runs: one real request to the child's own
+    /// endpoint, carrying its prompt, the question and its web tools and
+    /// nothing of the parent's, and the summary comes back as the call's
+    /// answer.
+    #[test]
+    fn the_job_asks_the_childs_endpoint_and_answers_its_summary() {
+        notedeck::enostr::install_crypto();
+        let FakeProvider { endpoint, server } =
+            one_completion("Acme: $9/mo, 4 people, seed-funded.");
+        let agent = Arc::new(SubAgent::new(researcher(), endpoint, None).unwrap());
+        let ndb_testing::TempNdb { dir: _dir, ndb } = ndb_testing::TempNdb::new();
+        let job = agent.job("Who sells idea journals?".into(), ndb);
+        let answer = job(&ToolCancel::default()).unwrap();
+
+        let ToolResponses::App(app) = answer else {
+            panic!("an app answer: {answer:?}");
+        };
+        assert_eq!(app.tool, ASK_RESEARCHER);
+        assert_eq!(
+            app.value,
+            json!({ "researcher": "researcher", "summary": "Acme: $9/mo, 4 people, seed-funded." })
+        );
+        let request = server.join().unwrap();
+        assert!(request.contains("Who sells idea journals?"), "{request}");
+        assert!(request.contains("fixed competitor") || request.contains("team size"));
+        assert!(request.contains("\"web_search\"") && request.contains("\"web_fetch\""));
+        assert!(
+            !request.contains("headway"),
+            "nothing of the parent's: {request}"
+        );
+    }
+
+    /// A stop from the parent ends a child that is still running.
+    #[tokio::test]
+    async fn a_stop_ends_the_child() {
+        let cancel = ToolCancel::default();
+        cancel.cancel();
+        let err = bounded(std::future::pending(), None, &cancel)
+            .await
+            .unwrap_err();
+        assert!(err.contains("stopped"), "{err}");
+
+        let err = bounded(std::future::pending(), Some(0), &ToolCancel::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("budget"), "{err}");
+    }
+}

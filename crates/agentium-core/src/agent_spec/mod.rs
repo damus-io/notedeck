@@ -42,12 +42,13 @@ pub mod policy;
 pub mod provider;
 #[cfg(test)]
 mod tests;
+pub mod web;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::validate_slug;
 use crate::tool::{Capability, ToolSpec};
-pub use catalog::{Catalog, CatalogError, CatalogTool};
+pub use catalog::{Catalog, CatalogError, CatalogTool, ToolSource};
 pub use policy::{base_approval, Approval, Containment, Policy, PolicyError, Tighten, Widen};
 
 /// The kind-31988 tag naming the spec a session runs under: `["agent-spec",
@@ -257,6 +258,13 @@ pub enum SpecError {
     /// `budget.max_steps` is zero.
     #[error("agent spec {0} has a zero step budget")]
     ZeroSteps(String),
+    /// A spec called as a sub-agent holds private data, so the question's
+    /// answer could carry it out (see [`AgentSpec::check_sub_agent`]).
+    #[error("agent spec {0} can't be a sub-agent: it reads private data")]
+    SubAgentHoldsPrivateData(String),
+    /// A spec called as a sub-agent calls one of its own.
+    #[error("agent spec {0} can't be a sub-agent: it calls a sub-agent of its own")]
+    NestedSubAgent(String),
     /// The policy is malformed.
     #[error("agent spec {spec}: {source}")]
     Policy {
@@ -315,6 +323,25 @@ impl AgentSpec {
             spec: name(),
             source,
         })
+    }
+
+    /// Check this spec can be called as another's sub-agent: it holds no
+    /// private data, since whatever it reads goes back to the parent and
+    /// whatever its context holds an injected page could send out, and it
+    /// calls no sub-agent itself, so isolation is one level deep and easy
+    /// to see.
+    pub fn check_sub_agent(&self) -> Result<(), SpecError> {
+        if self.toolsets.iter().any(Toolset::holds_private_data) {
+            return Err(SpecError::SubAgentHoldsPrivateData(self.slug.clone()));
+        }
+        if self
+            .toolsets
+            .iter()
+            .any(|t| t.kind() == ToolsetKind::SubAgent)
+        {
+            return Err(SpecError::NestedSubAgent(self.slug.clone()));
+        }
+        Ok(())
     }
 
     /// What happens when this spec's agent calls `tool` from `toolset`: the

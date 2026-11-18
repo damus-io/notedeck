@@ -12,14 +12,16 @@ use crate::publish::{
     Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
-use crate::tool_round::{AnsweredRound, Gate, RoundCall, StartedCall, ToolRound, WaitingCall};
+use crate::tool_round::{
+    AnsweredRound, CallRunner, Gate, RoundCall, StartedCall, ToolRound, WaitingCall,
+};
 use crate::tools::{AppToolCall, Tool};
 use crate::{
     backend, get_backend, messages, reconcile, secret_key_bytes, session, session_events,
     session_loader, Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId,
     SessionInfo, SubagentInfo, ToolCall, ToolCalls, ToolResponses,
 };
-use agentium_core::agent_spec::Approval;
+use agentium_core::agent_spec::{Approval, ToolSource};
 use nostrdb::Transaction;
 use nostrdb_net::KeypairUnowned;
 use notedeck::{AppContext, Waker};
@@ -757,19 +759,37 @@ fn start_call(
 /// says: an auto call waits only for the frame, a gated one shows a
 /// permission request and waits for the answer too. A tool the session's
 /// spec doesn't offer never runs, whatever the model asked.
+///
+/// Who runs it follows the tool's [`ToolSource`]: an app tool waits for the
+/// frame, which alone reaches the registry; a web tool or a sub-agent's
+/// question is a job of Dave's own, run off the frame at once when it is
+/// auto and after the user's answer when it is gated.
 fn start_app_call(
     session: &mut session::ChatSession,
     call: &AppToolCall,
     host: &HostCtx<'_>,
 ) -> StartedCall {
-    let approval = session
-        .spec_tools
-        .as_ref()
-        .and_then(|tools| tools.catalog.get(&call.name))
-        .map(|tool| tool.approval);
+    let Some(tools) = session.spec_tools.as_ref() else {
+        return not_offered(call);
+    };
+    let Some(tool) = tools.catalog.get(&call.name) else {
+        return not_offered(call);
+    };
+    let approval = tool.approval;
+    let runner = match &tool.source {
+        ToolSource::App => CallRunner::Registry,
+        ToolSource::Web => CallRunner::Job(crate::web_tools::job(
+            call.clone(),
+            tools.search_url.clone(),
+        )),
+        ToolSource::SubAgent { .. } => match sub_agent_job(tools, call, host) {
+            Ok(job) => CallRunner::Job(job),
+            Err(err) => return StartedCall::Done(Box::new(ToolResponses::Error(err))),
+        },
+    };
     let gate = match approval {
-        Some(Approval::Auto) => Gate::Open,
-        Some(Approval::Gated) => match ask_permission(session, call, host) {
+        Approval::Auto => Gate::Open,
+        Approval::Gated => match ask_permission(session, call, host) {
             Some(answer) => Gate::Asked(answer),
             None => {
                 return StartedCall::Done(Box::new(ToolResponses::Error(format!(
@@ -778,17 +798,45 @@ fn start_app_call(
                 ))))
             }
         },
-        Some(Approval::Impossible) | None => {
-            return StartedCall::Done(Box::new(ToolResponses::Error(format!(
-                "'{}' isn't one of this session's tools",
-                call.name
-            ))))
-        }
+        Approval::Impossible => return not_offered(call),
     };
-    StartedCall::Waiting(WaitingCall {
-        call: call.clone(),
-        gate,
-    })
+    match (gate, runner) {
+        // Nothing to wait for and no frame needed: run it now.
+        (Gate::Open, CallRunner::Job(job)) => StartedCall::Pending(job),
+        (gate, runner) => StartedCall::Waiting(WaitingCall {
+            call: call.clone(),
+            gate,
+            runner,
+        }),
+    }
+}
+
+/// What a call of a tool the session's spec doesn't offer answers.
+fn not_offered(call: &AppToolCall) -> StartedCall {
+    StartedCall::Done(Box::new(ToolResponses::Error(format!(
+        "'{}' isn't one of this session's tools",
+        call.name
+    ))))
+}
+
+/// The job that puts `call`'s question to the session's sub-agent, or why
+/// it can't.
+fn sub_agent_job(
+    tools: &crate::native_tools::SpecTools,
+    call: &AppToolCall,
+    host: &HostCtx<'_>,
+) -> Result<crate::tool_round::ToolJob, String> {
+    let agent = tools
+        .sub_agent
+        .as_ref()
+        .ok_or("this session's sub-agent isn't set up")?;
+    let question = call
+        .args
+        .get("question")
+        .and_then(serde_json::Value::as_str)
+        .filter(|q| !q.trim().is_empty())
+        .ok_or("ask_researcher needs a question")?;
+    Ok(agent.job(question.to_owned(), host.ndb.clone()))
 }
 
 /// Show a permission request for the app tool call `call`, as a backend's
@@ -2551,7 +2599,7 @@ mod tests {
                     ToolSpec::new("headway_move_card", "Move a card.", vec![])
                         .command(&["headway", "move"]),
                 ];
-                SpecTools::for_spec(&spec, &host).unwrap()
+                SpecTools::for_spec(&spec, &host, |_| unreachable!("no sub-agent"), None).unwrap()
             }
 
             fn app_call(id: &str, name: &str) -> ToolCall {
@@ -2731,6 +2779,131 @@ mod tests {
                         "user: not that column",
                         "m: The user denied this call: not that column"
                     ]
+                );
+            }
+
+            /// The butler's tools: headway, and a researcher sub-agent whose
+            /// model is at `base_url`.
+            fn butler_with_researcher(base_url: String) -> SpecTools {
+                use agentium_core::agent_spec::provider::Endpoint;
+                let spec = AgentSpec::from_json(include_str!(
+                    "../../agentium-core/src/agent_spec/examples/butler.json"
+                ))
+                .unwrap();
+                let host = [
+                    ToolSpec::new("headway_show_board", "Show a board.", vec![])
+                        .read_only()
+                        .command(&["headway", "show"]),
+                    ToolSpec::new("headway_comment_card", "Comment.", vec![])
+                        .command(&["headway", "comment"]),
+                    ToolSpec::new("notebook_show", "Show.", vec![])
+                        .read_only()
+                        .command(&["notebook", "show"]),
+                ];
+                let child = |slug: &str| {
+                    let researcher = AgentSpec::from_json(include_str!(
+                        "../../agentium-core/src/agent_spec/examples/researcher.json"
+                    ))
+                    .unwrap();
+                    assert_eq!(slug, researcher.slug);
+                    let endpoint = Endpoint {
+                        provider: "local".into(),
+                        base_url,
+                        api_key: None,
+                        model: "tiny".into(),
+                    };
+                    crate::sub_agent::SubAgent::new(researcher, endpoint, None)
+                };
+                SpecTools::for_spec(&spec, &host, child, None).unwrap()
+            }
+
+            /// The butler's question to its researcher is gated: the user
+            /// sees it before it leaves. Once allowed it runs off the frame,
+            /// as a job: the registry never sees it. (The researcher's
+            /// endpoint here refuses connections, so its answer is the
+            /// error.)
+            #[test]
+            fn a_research_question_asks_then_runs_off_the_frame() {
+                notedeck::enostr::install_crypto();
+                // A port nothing listens on: bound, then dropped.
+                let base_url = {
+                    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    format!("http://{}/v1", listener.local_addr().unwrap())
+                };
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    offered,
+                } = mid_turn_under(Some(butler_with_researcher(base_url)));
+                assert!(offered
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t == "ask_researcher"));
+                assert!(!offered.lock().unwrap().iter().any(|t| t == "web_fetch"));
+                let question = ToolCall::new(
+                    "q".into(),
+                    ToolCalls::App(AppToolCall {
+                        name: "ask_researcher".into(),
+                        args: json!({ "question": "Who sells idea journals?" }),
+                    }),
+                );
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![question]))
+                    .unwrap();
+                drop(stream);
+                {
+                    let parts = test.parts();
+                    parts.dave.process_events(&parts.host);
+                }
+                let session = test.dave.session_manager.get(sid).unwrap();
+                let request = session
+                    .chat
+                    .iter()
+                    .find_map(|m| match m {
+                        Message::PermissionRequest(r) => Some(r),
+                        _ => None,
+                    })
+                    .expect("the question is shown before it leaves");
+                assert_eq!(request.tool_name, "ask_researcher");
+                assert_eq!(
+                    request.tool_input,
+                    json!({ "question": "Who sells idea journals?" })
+                );
+                let id = request.id;
+                assert_eq!(status(&mut test, sid), AgentStatus::NeedsInput);
+
+                crate::update::handle_permission_response(
+                    &mut test.dave.session_manager,
+                    id,
+                    PermissionResponse::Allow { message: None },
+                );
+                test.dave.start_app_tool_calls(|_| {
+                    panic!("a research question never goes through the registry")
+                });
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                loop {
+                    let parts = test.parts();
+                    if parts
+                        .dave
+                        .process_events(&parts.host)
+                        .needs_send
+                        .contains(&sid)
+                    {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the researcher never answered"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let answers = answers(&mut test, sid);
+                assert_eq!(answers.len(), 1, "{answers:?}");
+                assert!(
+                    answers[0].starts_with("q: the researcher's model failed"),
+                    "{answers:?}"
                 );
             }
 

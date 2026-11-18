@@ -17,6 +17,7 @@ pub use choice::BackendChoice;
 pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;
 pub use openai::OpenAiBackend;
+pub(crate) use openai::{finish_tool_call, message_to_api, openai_config, tool_to_api};
 pub use remote::RemoteOnlyBackend;
 pub use traits::{AiBackend, BackendType, Model, ResponseStream};
 

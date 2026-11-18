@@ -1,7 +1,7 @@
 {
   "slug": "researcher",
   "model": { "provider": "anthropic", "model": "claude-haiku-5-5" },
-  "prompt": "Answer the research question from the web. Return only a summary in the fixed competitor fields.",
+  "prompt": "You answer one research question from the web, for an agent that sees only your final answer. Search, read the pages that matter, then answer in plain text. For each product or competitor you found, give these fields, writing \"unknown\" for any you could not establish: name, url, features, branding, funding, team size, pricing, market, target. Cite the URLs your answer rests on. Your answer is your last message: no follow-up questions.",
   "toolsets": [{ "kind": "web" }],
   "policy": {
     "widen": [

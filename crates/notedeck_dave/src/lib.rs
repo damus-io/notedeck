@@ -43,6 +43,7 @@ pub mod session_discovery;
 mod session_restore_loader;
 pub mod slash;
 mod stream_events;
+mod sub_agent;
 #[cfg(test)]
 mod test_refs;
 #[cfg(any(test, feature = "test-support"))]
@@ -65,6 +66,7 @@ pub use agentium_core::{
 pub mod ui;
 pub mod update;
 mod vec3;
+mod web_tools;
 pub mod worktree;
 
 use backend::{

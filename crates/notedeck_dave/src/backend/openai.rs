@@ -334,31 +334,10 @@ async fn stream_turn(
         }
     }
 
-    let mut parsed_tool_calls = vec![];
-    for (_index, partial) in all_tool_calls {
-        let Some(unknown_tool_call) = partial.complete() else {
-            tracing::error!("could not complete partial tool call: {:?}", partial);
-            continue;
-        };
-
-        match unknown_tool_call.parse(&tools) {
-            Ok(tool_call) => {
-                parsed_tool_calls.push(tool_call);
-            }
-            Err(err) => {
-                tracing::error!("failed to parse tool call {:?}: {}", unknown_tool_call, err,);
-
-                if let Some(id) = partial.id() {
-                    parsed_tool_calls.push(ToolCall::invalid(
-                        id.to_string(),
-                        partial.name,
-                        partial.arguments,
-                        err.to_string(),
-                    ));
-                }
-            }
-        };
-    }
+    let parsed_tool_calls: Vec<ToolCall> = all_tool_calls
+        .into_values()
+        .filter_map(|partial| finish_tool_call(partial, &tools))
+        .collect();
 
     if !parsed_tool_calls.is_empty()
         && tx
@@ -371,6 +350,33 @@ async fn stream_turn(
     tracing::debug!("stream closed");
 }
 
+/// The tool call `partial` collected, parsed against `tools`: a call the
+/// model got wrong (an unknown tool, bad arguments) is an
+/// [invalid](ToolCall::invalid) one, so its error goes back to the model.
+/// `None` for one with no id or name, which nothing can answer.
+pub(crate) fn finish_tool_call(
+    partial: PartialToolCall,
+    tools: &HashMap<String, Tool>,
+) -> Option<ToolCall> {
+    let Some(unknown_tool_call) = partial.complete() else {
+        tracing::error!("could not complete partial tool call: {:?}", partial);
+        return None;
+    };
+    match unknown_tool_call.parse(tools) {
+        Ok(tool_call) => Some(tool_call),
+        Err(err) => {
+            tracing::error!("failed to parse tool call {:?}: {}", unknown_tool_call, err);
+            let id = partial.id()?.to_string();
+            Some(ToolCall::invalid(
+                id,
+                partial.name,
+                partial.arguments,
+                err.to_string(),
+            ))
+        }
+    }
+}
+
 // --- async_openai request mapping -------------------------------------------
 //
 // `Message`/`ToolCall`/`Tool` live in the egui- and async_openai-free
@@ -381,7 +387,7 @@ async fn stream_turn(
 /// Map a dave `Message` to an async_openai chat message. UI-only messages
 /// (errors, permission requests, executed-tool results, compaction, subagents,
 /// todo updates) are not sent to the API and map to `None`.
-fn message_to_api(
+pub(crate) fn message_to_api(
     msg: &Message,
     txn: &Transaction,
     ndb: &Ndb,
@@ -470,7 +476,7 @@ fn toolcalls_to_function(calls: &ToolCalls) -> FunctionCall {
 /// Map a dave `Tool` definition to an async_openai tool (function) definition.
 /// The JSON-Schema `parameters` come from the engine's backend-agnostic
 /// [`ToolSpec::json_schema`]; this wraps them in async_openai's envelope.
-fn tool_to_api(tool: &Tool) -> ChatCompletionTool {
+pub(crate) fn tool_to_api(tool: &Tool) -> ChatCompletionTool {
     ChatCompletionTool {
         r#type: ChatCompletionToolType::Function,
         function: FunctionObject {
