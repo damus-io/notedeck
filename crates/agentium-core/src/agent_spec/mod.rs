@@ -37,6 +37,7 @@
 //! [`Toolset::SubAgent`]: another spec, with no private data, that returns a
 //! summary.
 
+pub mod catalog;
 pub mod policy;
 pub mod provider;
 #[cfg(test)]
@@ -46,6 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::validate_slug;
 use crate::tool::{Capability, ToolSpec};
+pub use catalog::{Catalog, CatalogError, CatalogTool};
 pub use policy::{base_approval, Approval, Containment, Policy, PolicyError, Tighten, Widen};
 
 /// The kind-31988 tag naming the spec a session runs under: `["agent-spec",

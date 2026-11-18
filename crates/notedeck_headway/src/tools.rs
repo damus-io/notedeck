@@ -2697,6 +2697,7 @@ fn due_arg(description: &'static str) -> ToolArg {
 
 #[cfg(test)]
 mod tests {
+    mod agent_toolset;
     mod board;
     mod edits;
     mod live;

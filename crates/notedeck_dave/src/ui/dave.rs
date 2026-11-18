@@ -2463,6 +2463,11 @@ impl<'a> DaveUi<'a> {
                     ToolCalls::Invalid(err) => {
                         ui.label(format!("invalid tool call: {err:?}"));
                     }
+                    // An app tool (the Notedeck toolset) shows by name; a
+                    // gated one's arguments are on its permission row.
+                    ToolCalls::App(app) => {
+                        ui.label(egui::RichText::new(app.name.as_str()).monospace().weak());
+                    }
                     ToolCalls::Query(search_call) => {
                         ui.allocate_ui_with_layout(
                             egui::vec2(ui.available_size().x, 32.0),

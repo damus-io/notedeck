@@ -1790,6 +1790,9 @@ impl Message {
                 ToolResponses::PresentNotes(n) => {
                     json!({ "role": "tool_result", "summary": format!("present: {n} notes") })
                 }
+                ToolResponses::App(r) => {
+                    json!({ "role": "tool_result", "tool": r.tool, "value": r.value })
+                }
             },
             Message::PermissionRequest(p) => json!({
                 "role": "permission_request",

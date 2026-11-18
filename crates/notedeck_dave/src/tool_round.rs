@@ -24,12 +24,24 @@
 //!   one is handed. A job that checks it stops early. One that doesn't runs
 //!   to the end, and its answer is dropped. An answer that landed before the
 //!   round noticed the cancel is kept, since that tool did run.
+//!
+//! ## App tools start on the frame
+//!
+//! An app tool (the Notedeck toolset's headway and notebook tools) runs
+//! through the host's tool registry, which needs the app context only the
+//! frame has, and a gated one runs only once the user allows it. So it
+//! starts [waiting](StartedCall::Waiting): the round holds it until the
+//! frame's [`start_waiting`](ToolRound::start_waiting) pass finds it allowed
+//! and starts it there, as a fast answer or a job like any other.
 
+use crate::messages::PermissionResponse;
+use crate::tools::AppToolCall;
 use crate::{Message, ToolResponse, ToolResponses};
 use notedeck::Waker;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
+use tokio::sync::oneshot;
 
 /// The slow work of one call, run on a thread of its own. It is handed the
 /// round's [`ToolCancel`] and returns the call's answer, or an error for the
@@ -42,10 +54,45 @@ pub(crate) enum StartedCall {
     /// inline, so a round of only these is answered on the frame it arrives.
     Done(Box<ToolResponses>),
     /// Work too slow for the frame, such as a build or a network round trip.
-    // Every tool Dave runs today answers on the spot. The first slow ones are
-    // the Notedeck toolset's app tools (headway:dave/evoke-blanket-little).
-    #[cfg_attr(not(test), allow(dead_code))]
     Pending(ToolJob),
+    /// An app tool, started later by the frame's
+    /// [`start_waiting`](ToolRound::start_waiting) pass (see the module
+    /// docs).
+    Waiting(WaitingCall),
+}
+
+/// An app tool call the round holds until the frame starts it.
+pub(crate) struct WaitingCall {
+    /// The call, as the model made it.
+    pub(crate) call: AppToolCall,
+    /// What it waits on before it can start.
+    pub(crate) gate: Gate,
+}
+
+/// What a [`WaitingCall`] waits on.
+pub(crate) enum Gate {
+    /// Nothing: its approval is auto, so the next frame starts it.
+    Open,
+    /// The user's answer to the permission request shown for it.
+    Asked(oneshot::Receiver<PermissionResponse>),
+}
+
+/// What the round does with a waiting call this pass.
+enum Verdict {
+    /// Leave it: its permission request is unanswered.
+    Wait,
+    /// Start it.
+    Start,
+    /// Answer it without running it.
+    Answer(Box<ToolResponses>),
+    /// The user stopped the turn from its permission request.
+    StopTurn,
+}
+
+/// A [`WaitingCall`] and its place in the round.
+struct Parked {
+    index: usize,
+    waiting: WaitingCall,
 }
 
 /// One call of a round: the id the model gave it and how it started.
@@ -107,6 +154,11 @@ pub(crate) struct ToolRound {
     /// The backend ended its turn while calls were still running, so the
     /// turn's end waits for the round.
     turn_over: bool,
+    /// The app tool calls not started yet, for the frame to start.
+    waiting: Vec<Parked>,
+    /// Where a started job's answer goes; kept for the jobs the frame starts
+    /// later.
+    tx: mpsc::Sender<Landed>,
 }
 
 impl ToolRound {
@@ -119,12 +171,22 @@ impl ToolRound {
         let mut ids = Vec::with_capacity(calls.len());
         let mut answers = Vec::with_capacity(calls.len());
         let mut outstanding = 0;
+        let mut waiting = Vec::new();
 
         for (index, call) in calls.into_iter().enumerate() {
             ids.push(call.id);
             let job = match call.started {
                 StartedCall::Done(response) => {
                     answers.push(Some(*response));
+                    continue;
+                }
+                StartedCall::Waiting(call) => {
+                    answers.push(None);
+                    outstanding += 1;
+                    waiting.push(Parked {
+                        index,
+                        waiting: call,
+                    });
                     continue;
                 }
                 StartedCall::Pending(job) => job,
@@ -140,6 +202,13 @@ impl ToolRound {
             }
         }
 
+        // A waiting call starts on a frame, which may not be coming: ask
+        // for one. (An answer to its permission request comes from a click
+        // or an ingested note, and either brings a frame of its own.)
+        if !waiting.is_empty() {
+            waker.wake();
+        }
+
         Self {
             ids,
             answers,
@@ -148,6 +217,64 @@ impl ToolRound {
             cancel,
             waker: waker.clone(),
             turn_over: false,
+            waiting,
+            tx,
+        }
+    }
+
+    /// Start every waiting app call that may start now, with `start`, which
+    /// runs one through the host's tool registry; the frame calls this each
+    /// pass. A call whose permission was denied answers so without running,
+    /// and one whose request was answered "stop" stops the turn. A cancelled
+    /// round starts nothing: its waiting calls answer cancelled.
+    pub(crate) fn start_waiting(&mut self, start: &mut dyn FnMut(&AppToolCall) -> StartedCall) {
+        let mut i = 0;
+        while i < self.waiting.len() && !self.cancel.is_cancelled() {
+            let verdict = match &mut self.waiting[i].waiting.gate {
+                Gate::Open => Verdict::Start,
+                Gate::Asked(answer) => verdict(answer.try_recv()),
+            };
+            if matches!(verdict, Verdict::Wait) {
+                i += 1;
+                continue;
+            }
+            // The answers are kept by index, so the parked calls' order
+            // doesn't matter.
+            let Parked { index, waiting } = self.waiting.swap_remove(i);
+            match verdict {
+                Verdict::Wait => unreachable!("handled above"),
+                Verdict::Start => self.start_late(index, start(&waiting.call)),
+                Verdict::Answer(response) => self.answer(index, *response),
+                Verdict::StopTurn => self.cancel(),
+            }
+        }
+    }
+
+    /// Start call `index` the frame has just started late (see
+    /// [`start_waiting`](Self::start_waiting)).
+    fn start_late(&mut self, index: usize, started: StartedCall) {
+        match started {
+            StartedCall::Done(response) => self.answer(index, *response),
+            StartedCall::Pending(job) => {
+                if let Err(err) = spawn_job(index, job, &self.cancel, &self.tx, &self.waker) {
+                    self.answer(
+                        index,
+                        ToolResponses::Error(format!("no thread to run the tool on: {err}")),
+                    );
+                }
+            }
+            StartedCall::Waiting(_) => self.answer(
+                index,
+                ToolResponses::Error("the tool asked to wait a second time".to_owned()),
+            ),
+        }
+    }
+
+    /// Record call `index`'s answer, if it has none yet.
+    fn answer(&mut self, index: usize, response: ToolResponses) {
+        if let Some(slot @ None) = self.answers.get_mut(index) {
+            *slot = Some(response);
+            self.outstanding -= 1;
         }
     }
 
@@ -173,10 +300,7 @@ impl ToolRound {
     /// answered: every call has an answer, or the round was cancelled.
     pub(crate) fn poll(&mut self) -> bool {
         while let Ok(Landed { index, response }) = self.landed.try_recv() {
-            if let Some(slot @ None) = self.answers.get_mut(index) {
-                *slot = Some(response);
-                self.outstanding -= 1;
-            }
+            self.answer(index, response);
         }
         self.outstanding == 0 || self.cancel.is_cancelled()
     }
@@ -206,6 +330,24 @@ impl Drop for ToolRound {
     /// A round dropped unanswered (its session closed) tells its jobs to stop.
     fn drop(&mut self) {
         self.cancel.cancel();
+    }
+}
+
+/// What the user's `answer` to a waiting call's permission request means
+/// for the call.
+fn verdict(answer: Result<PermissionResponse, oneshot::error::TryRecvError>) -> Verdict {
+    match answer {
+        Err(oneshot::error::TryRecvError::Empty) => Verdict::Wait,
+        Ok(PermissionResponse::Allow { .. }) => Verdict::Start,
+        Ok(PermissionResponse::Deny { reason }) => Verdict::Answer(Box::new(ToolResponses::Error(
+            format!("The user denied this call: {reason}"),
+        ))),
+        Ok(PermissionResponse::Cancel { .. }) => Verdict::StopTurn,
+        Err(oneshot::error::TryRecvError::Closed) => {
+            Verdict::Answer(Box::new(ToolResponses::Error(
+                "The permission request was dropped before anyone answered it.".to_owned(),
+            )))
+        }
     }
 }
 
@@ -422,5 +564,95 @@ mod tests {
         );
         drop(round);
         assert_eq!(saw_cancel.recv_timeout(Duration::from_secs(5)), Ok(true));
+    }
+
+    /// An app tool call waiting on `gate`.
+    fn waiting(id: &str, gate: Gate) -> RoundCall {
+        RoundCall {
+            id: id.to_owned(),
+            started: StartedCall::Waiting(WaitingCall {
+                call: AppToolCall {
+                    name: format!("tool_{id}"),
+                    args: serde_json::json!({}),
+                },
+                gate,
+            }),
+        }
+    }
+
+    /// What the frame's start pass runs here: a job off the frame for
+    /// `tool_slow`, an answer on the spot for anything else.
+    fn start(call: &AppToolCall) -> StartedCall {
+        if call.name == "tool_slow" {
+            return StartedCall::Pending(Box::new(|_| Ok(ToolResponses::PresentNotes(9))));
+        }
+        StartedCall::Done(Box::new(ToolResponses::PresentNotes(1)))
+    }
+
+    /// An open call waits for the frame, then starts, fast or slow; one
+    /// whose request is unanswered keeps waiting, and the round with it.
+    #[test]
+    fn waiting_calls_start_on_the_frame_once_allowed() {
+        let (allow, asked) = oneshot::channel();
+        let mut round = ToolRound::start(
+            vec![
+                waiting("fast", Gate::Open),
+                waiting("slow", Gate::Open),
+                waiting("asked", Gate::Asked(asked)),
+            ],
+            &Waker::noop(),
+        );
+        assert!(!round.poll(), "nothing has started");
+
+        round.start_waiting(&mut start);
+        assert_eq!(round.waiting.len(), 1, "the asked call still waits");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while round.outstanding > 1 {
+            assert!(Instant::now() < deadline, "the slow job never landed");
+            round.poll();
+        }
+        assert!(!round.poll(), "the asked call holds the round");
+
+        allow
+            .send(PermissionResponse::Allow { message: None })
+            .unwrap();
+        round.start_waiting(&mut start);
+        assert!(round.poll());
+        assert_eq!(
+            rows(&round.into_answers()),
+            [
+                "fast=PresentNotes(1)",
+                "slow=PresentNotes(9)",
+                "asked=PresentNotes(1)"
+            ]
+        );
+    }
+
+    /// "Stop" on a call's permission request stops the round, and a
+    /// request dropped unanswered answers its call with an error; neither
+    /// call runs.
+    #[test]
+    fn a_stopped_or_dropped_request_runs_nothing() {
+        let (stop, asked) = oneshot::channel();
+        let (dropped, never) = oneshot::channel::<PermissionResponse>();
+        let mut round = ToolRound::start(
+            vec![
+                waiting("gone", Gate::Asked(never)),
+                waiting("stop", Gate::Asked(asked)),
+            ],
+            &Waker::noop(),
+        );
+        drop(dropped);
+        stop.send(PermissionResponse::Cancel {
+            reason: "enough".into(),
+        })
+        .unwrap();
+        round.start_waiting(&mut |_| panic!("nothing runs"));
+        assert!(round.poll());
+        let answered = round.into_answers();
+        assert!(answered.cancelled, "the turn stops");
+        let rows = rows(&answered);
+        assert!(rows[0].starts_with("gone=Error(\"The permission request was dropped"));
+        assert_eq!(rows[1], format!("stop=Error({CANCELLED:?})"));
     }
 }

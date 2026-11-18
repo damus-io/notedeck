@@ -6244,6 +6244,7 @@ dependencies = [
 name = "notedeck_headway"
 version = "0.11.0-beta.1"
 dependencies = [
+ "agentium-core",
  "base64 0.22.1",
  "egui",
  "egui_kittest",

@@ -92,6 +92,18 @@ pub enum ToolResponses {
     Query(QueryResponse),
     PresentNotes(i32),
     ExecutedTool(ExecutedTool),
+    /// What an app tool returned (see [`ToolCalls::App`]).
+    App(AppToolResponse),
+}
+
+/// An app tool's answer: the JSON value it returned, handed to the model as
+/// is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppToolResponse {
+    /// The tool's registered name, e.g. `headway_show_board`.
+    pub tool: String,
+    /// What it returned.
+    pub value: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +119,10 @@ impl UnknownToolCall {
             return Err(ToolCallError::NotFound(self.name.to_owned()));
         };
 
-        let parsed_args = (tool.parse_call)(&self.arguments)?;
+        let parsed_args = match tool.parse_call {
+            ToolParse::Typed(parse) => parse(&self.arguments)?,
+            ToolParse::App => ToolCalls::App(AppToolCall::parse(tool.name(), &self.arguments)?),
+        };
         Ok(ToolCall {
             id: self.id.clone(),
             typ: parsed_args,
@@ -141,25 +156,63 @@ pub enum ToolCalls {
     Query(QueryCall),
     PresentNotes(PresentNotesCall),
     Invalid(InvalidToolCall),
+    /// A call of an app's tool (a headway or notebook tool), which Dave runs
+    /// through the host's tool registry rather than a parser of its own.
+    App(AppToolCall),
+}
+
+/// A call of an app tool: its name and the model's arguments, untyped. The
+/// registry checks the arguments against the tool's own types when it runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppToolCall {
+    /// The tool's registered name, e.g. `headway_show_board`.
+    pub name: String,
+    /// The model's arguments.
+    pub args: Value,
+}
+
+impl AppToolCall {
+    /// Read the model's raw `arguments` for the tool `name`: a JSON object,
+    /// or nothing for a tool that takes no arguments.
+    fn parse(name: &str, arguments: &str) -> Result<Self, ToolCallError> {
+        let args = if arguments.trim().is_empty() {
+            Value::Object(Default::default())
+        } else {
+            serde_json::from_str::<Value>(arguments)
+                .map_err(|e| ToolCallError::ArgParseFailure(format!("{arguments}, error: {e}")))?
+        };
+        if !args.is_object() {
+            return Err(ToolCallError::ArgParseFailure(format!(
+                "{arguments}: the arguments must be a JSON object"
+            )));
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            args,
+        })
+    }
 }
 
 impl ToolCalls {
     /// The function name used in the backend API tool-call schema
     /// (distinct from [`tool_name`](Self::tool_name), the registry name).
-    pub fn api_name(&self) -> &'static str {
+    /// An app tool has one name for both.
+    pub fn api_name(&self) -> &str {
         match self {
             Self::Query(_) => "search",
             Self::Invalid(_) => "error",
             Self::PresentNotes(_) => "present",
+            Self::App(call) => &call.name,
         }
     }
 
     /// Returns the tool name as defined in the tool registry (for prompt-based tool calls)
-    pub fn tool_name(&self) -> &'static str {
+    pub fn tool_name(&self) -> &str {
         match self {
             Self::Query(_) => "query",
             Self::Invalid(_) => "invalid",
             Self::PresentNotes(_) => "present_notes",
+            Self::App(call) => &call.name,
         }
     }
 
@@ -168,6 +221,7 @@ impl ToolCalls {
             Self::Query(search) => serde_json::to_string(search).unwrap(),
             Self::Invalid(partial) => serde_json::to_string(partial).unwrap(),
             Self::PresentNotes(call) => serde_json::to_string(&call.to_simple()).unwrap(),
+            Self::App(call) => call.args.to_string(),
         }
     }
 }
@@ -198,21 +252,35 @@ impl fmt::Display for ToolCallError {
 /// dave's streaming, persistence, and UI layers.
 #[derive(Debug, Clone)]
 pub struct Tool {
-    parse_call: fn(&str) -> Result<ToolCalls, ToolCallError>,
+    parse_call: ToolParse,
     spec: ToolSpec,
 }
 
+/// How a [`Tool`]'s raw arguments become a [`ToolCalls`].
+#[derive(Debug, Clone, Copy)]
+enum ToolParse {
+    /// One of dave's own tools, with its typed parser.
+    Typed(fn(&str) -> Result<ToolCalls, ToolCallError>),
+    /// An app tool: the arguments stay JSON (see [`ToolCalls::App`]).
+    App,
+}
+
 impl Tool {
+    /// An app tool offered to the model under its own spec. Its calls parse
+    /// to [`ToolCalls::App`], for the host's tool registry to run.
+    pub fn app(spec: ToolSpec) -> Self {
+        Self {
+            parse_call: ToolParse::App,
+            spec,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         self.spec.name()
     }
 
     pub fn description(&self) -> &'static str {
         self.spec.description()
-    }
-
-    pub fn parse_call(&self) -> fn(&str) -> Result<ToolCalls, ToolCallError> {
-        self.parse_call
     }
 
     /// The portable spec advertised to backends. Backends build whatever
@@ -540,6 +608,8 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
         }
 
         ToolResponses::ExecutedTool(r) => format!("{}: {}", r.tool_name, r.summary),
+
+        ToolResponses::App(r) => r.value.to_string(),
     }
 }
 
@@ -553,7 +623,7 @@ fn _note_kind_desc(kind: u64) -> String {
 
 fn present_tool() -> Tool {
     Tool {
-        parse_call: PresentNotesCall::parse,
+        parse_call: ToolParse::Typed(PresentNotesCall::parse),
         spec: ToolSpec::new(
             "present_notes",
             "A tool for presenting notes to the user for display. Should be called at the end of a response so that the UI can present the notes referred to in the previous message.",
@@ -569,7 +639,7 @@ fn present_tool() -> Tool {
 
 fn query_tool() -> Tool {
     Tool {
-        parse_call: QueryCall::parse,
+        parse_call: ToolParse::Typed(QueryCall::parse),
         spec: QueryCall::spec(),
     }
 }
@@ -581,6 +651,40 @@ pub fn dave_tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app tool's call keeps the model's arguments as JSON, takes none
+    /// as an empty object, and refuses arguments that aren't an object.
+    #[test]
+    fn an_app_tools_call_keeps_its_arguments_as_json() {
+        let spec = ToolSpec::new("headway_show_board", "Show a board.", vec![]);
+        let tools = HashMap::from([(spec.name().to_owned(), Tool::app(spec))]);
+        let call = |args: &str| {
+            UnknownToolCall {
+                id: "1".into(),
+                name: "headway_show_board".into(),
+                arguments: args.into(),
+            }
+            .parse(&tools)
+        };
+
+        let parsed = call(r#"{"board":"dave"}"#).unwrap();
+        let ToolCalls::App(app) = parsed.calls() else {
+            panic!("an app call");
+        };
+        assert_eq!(app.name, "headway_show_board");
+        assert_eq!(app.args, json!({ "board": "dave" }));
+        assert_eq!(parsed.calls().api_name(), "headway_show_board");
+
+        let ToolCalls::App(empty) = call("").unwrap().calls().clone() else {
+            panic!("an app call");
+        };
+        assert_eq!(empty.args, json!({}));
+
+        assert!(matches!(
+            call("[1]"),
+            Err(ToolCallError::ArgParseFailure(_))
+        ));
+    }
 
     /// Regression: tool descriptions with defaults had a double closing paren
     /// e.g. "(Default: 50))" instead of "(Default: 50)".

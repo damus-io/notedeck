@@ -18,6 +18,7 @@ pub mod inspector;
 mod inspector_sync;
 mod jump;
 pub(crate) mod mesh;
+mod native_tools;
 mod nav;
 mod note_ledger;
 mod notifications;
@@ -1487,6 +1488,10 @@ impl notedeck::App for Dave {
         // handlers build is ingested locally into nostrdb; the host's
         // private-sync Session fans the freshly-ingested PNS envelopes out to the
         // private relays, so dave keeps no outbound publish queue of its own.
+        // App tool calls start here, where the tool registry is: those whose
+        // approval allows them now, so a fast one finishes its round in the
+        // drain below.
+        self.start_app_tool_calls(|call| native_tools::start_app_call(ctx, call));
         let ProcessEventsResult {
             needs_send: sessions_needing_send,
             needs_compact: sessions_needing_compact,

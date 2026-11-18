@@ -675,6 +675,11 @@ pub struct ChatSession {
     /// over even if the backend's stream has ended (see
     /// [`ToolRound`](crate::tool_round::ToolRound)).
     pub(crate) tool_round: Option<crate::tool_round::ToolRound>,
+    /// The app tools this session runs under its agent spec (see
+    /// [`native_tools`](crate::native_tools)): what its backend advertises
+    /// in place of Dave's own tools, and the approval each call needs.
+    /// `None` for a session under no spec, which can call no app tool.
+    pub(crate) spec_tools: Option<crate::native_tools::SpecTools>,
     /// A wake-up turn (one the backend began on its own, when a background
     /// task, wake-up or cron resumed the session) is underway. Set by
     /// [`DaveApiResponse::WakeupTurnStarted`], cleared at its `QueryComplete`.
@@ -824,6 +829,7 @@ impl ChatSession {
             incoming_tokens: None,
             task_handle: None,
             tool_round: None,
+            spec_tools: None,
             wakeup_turn: false,
             turn_started_at: None,
             turns: Turns::default(),
@@ -913,6 +919,7 @@ impl ChatSession {
             incoming_tokens: None,
             task_handle: None,
             tool_round: None,
+            spec_tools: None,
             wakeup_turn: false,
             turn_started_at: None,
             turns: Turns::default(),

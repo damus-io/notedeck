@@ -12,13 +12,14 @@ use crate::publish::{
     Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
-use crate::tool_round::{AnsweredRound, RoundCall, StartedCall, ToolRound};
-use crate::tools::Tool;
+use crate::tool_round::{AnsweredRound, Gate, RoundCall, StartedCall, ToolRound, WaitingCall};
+use crate::tools::{AppToolCall, Tool};
 use crate::{
     backend, get_backend, messages, reconcile, secret_key_bytes, session, session_events,
     session_loader, Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId,
     SessionInfo, SubagentInfo, ToolCall, ToolCalls, ToolResponses,
 };
+use agentium_core::agent_spec::Approval;
 use nostrdb::Transaction;
 use nostrdb_net::KeypairUnowned;
 use notedeck::{AppContext, Waker};
@@ -106,6 +107,22 @@ impl<'a> HostCtx<'a> {
 
 impl Dave {
     /// Process incoming tokens from the ai backend for ALL sessions.
+    /// Start every session's waiting app tool calls that may start now (see
+    /// [`ToolRound::start_waiting`]), each with `start`, which runs one
+    /// through the host's tool registry. Run each frame before
+    /// [`process_events`](Self::process_events), so a call that answers at
+    /// once finishes its round on the same drain.
+    pub(crate) fn start_app_tool_calls(
+        &mut self,
+        mut start: impl FnMut(&AppToolCall) -> StartedCall,
+    ) {
+        for session in self.session_manager.iter_mut() {
+            if let Some(round) = session.tool_round.as_mut() {
+                round.start_waiting(&mut start);
+            }
+        }
+    }
+
     pub(crate) fn process_events(&mut self, host: &HostCtx<'_>) -> ProcessEventsResult {
         let mut needs_send: HashSet<SessionId> = HashSet::new();
         let mut needs_compact: HashSet<SessionId> = HashSet::new();
@@ -404,7 +421,7 @@ pub(crate) fn apply_response(
             session.append_token(&token);
         }
         DaveApiResponse::ToolCalls(toolcalls) => {
-            handle_tool_calls(session, &toolcalls, ctx.host.ndb, ctx.host.waker);
+            handle_tool_calls(session, &toolcalls, ctx.host);
         }
         DaveApiResponse::ToolRunning(running) => {
             session.push_running_tool(running);
@@ -683,8 +700,7 @@ fn flush_open_assistant(
 fn handle_tool_calls(
     session: &mut session::ChatSession,
     toolcalls: &[ToolCall],
-    ndb: &nostrdb::Ndb,
-    waker: &Waker,
+    host: &HostCtx<'_>,
 ) {
     tracing::info!("got tool calls: {:?}", toolcalls);
     // A backend asks for its next round only with this one's answers, so a
@@ -704,31 +720,104 @@ fn handle_tool_calls(
     // stays the trailing run and is redispatched afterwards.
     session.insert_turn_content(Message::ToolCalls(toolcalls.to_vec()));
 
-    let calls = toolcalls
-        .iter()
-        .map(|call| RoundCall {
+    let mut calls = Vec::with_capacity(toolcalls.len());
+    for call in toolcalls {
+        let started = start_call(session, call, host);
+        calls.push(RoundCall {
             id: call.id().to_owned(),
-            started: start_call(call, ndb),
-        })
-        .collect();
-    session.tool_round = Some(ToolRound::start(calls, waker));
+            started,
+        });
+    }
+    session.tool_round = Some(ToolRound::start(calls, host.waker));
 }
 
-/// Start one tool call. Every tool Dave runs itself today is a fast host
-/// tool, so each answers on the spot; a slow tool would hand back a
-/// [`StartedCall::Pending`] job instead.
-fn start_call(call: &ToolCall, ndb: &nostrdb::Ndb) -> StartedCall {
+/// Start one tool call. Dave's own tools are fast host tools, so each
+/// answers on the spot. An app tool waits for the frame to start it, after
+/// the user allows it if its approval is gated ([`start_app_call`]).
+fn start_call(
+    session: &mut session::ChatSession,
+    call: &ToolCall,
+    host: &HostCtx<'_>,
+) -> StartedCall {
     let response = match call.calls() {
         ToolCalls::PresentNotes(present) => {
             ToolResponses::PresentNotes(present.note_ids.len() as i32)
         }
         ToolCalls::Invalid(invalid) => ToolResponses::Error(invalid.error.clone()),
-        ToolCalls::Query(search_call) => match Transaction::new(ndb) {
-            Ok(txn) => ToolResponses::Query(search_call.execute(&txn, ndb)),
+        ToolCalls::Query(search_call) => match Transaction::new(host.ndb) {
+            Ok(txn) => ToolResponses::Query(search_call.execute(&txn, host.ndb)),
             Err(err) => ToolResponses::Error(format!("failed to open db: {err}")),
         },
+        ToolCalls::App(app) => return start_app_call(session, app, host),
     };
     StartedCall::Done(Box::new(response))
+}
+
+/// Start the app tool call `call` as its approval in the session's spec
+/// says: an auto call waits only for the frame, a gated one shows a
+/// permission request and waits for the answer too. A tool the session's
+/// spec doesn't offer never runs, whatever the model asked.
+fn start_app_call(
+    session: &mut session::ChatSession,
+    call: &AppToolCall,
+    host: &HostCtx<'_>,
+) -> StartedCall {
+    let approval = session
+        .spec_tools
+        .as_ref()
+        .and_then(|tools| tools.catalog.get(&call.name))
+        .map(|tool| tool.approval);
+    let gate = match approval {
+        Some(Approval::Auto) => Gate::Open,
+        Some(Approval::Gated) => match ask_permission(session, call, host) {
+            Some(answer) => Gate::Asked(answer),
+            None => {
+                return StartedCall::Done(Box::new(ToolResponses::Error(format!(
+                    "'{}' needs the user's approval, and this session can't ask for it",
+                    call.name
+                ))))
+            }
+        },
+        Some(Approval::Impossible) | None => {
+            return StartedCall::Done(Box::new(ToolResponses::Error(format!(
+                "'{}' isn't one of this session's tools",
+                call.name
+            ))))
+        }
+    };
+    StartedCall::Waiting(WaitingCall {
+        call: call.clone(),
+        gate,
+    })
+}
+
+/// Show a permission request for the app tool call `call`, as a backend's
+/// would be shown (published for remote clients, answered from the
+/// session's runtime allowlist when it covers the tool), and hand back where
+/// the answer arrives. `None` for a session with nowhere to keep the
+/// request: only an agentic session can be asked.
+fn ask_permission(
+    session: &mut session::ChatSession,
+    call: &AppToolCall,
+    host: &HostCtx<'_>,
+) -> Option<tokio::sync::oneshot::Receiver<PermissionResponse>> {
+    session.agentic.as_ref()?;
+    let (response_tx, answer) = tokio::sync::oneshot::channel();
+    let request = messages::PermissionRequest::pending(
+        uuid::Uuid::new_v4(),
+        call.name.clone(),
+        call.args.clone(),
+    );
+    handle_permission_request(
+        session,
+        messages::PendingPermission {
+            request,
+            response_tx,
+        },
+        &host.secret_key,
+        host.ndb,
+    );
+    Some(answer)
 }
 
 /// Finish the session's round of tool calls if it is done: every call is
@@ -1214,9 +1303,14 @@ pub(crate) fn dispatch_turn(
     // `rx` is `None` for persistent-stream backends on subsequent turns — the
     // session already owns a long-lived channel we must keep, so only replace
     // `incoming_tokens` when a new receiver was minted.
+    // A session under an agent spec is offered its spec's tools instead.
+    let tools = session
+        .spec_tools
+        .as_ref()
+        .map_or_else(|| ctx.tools.clone(), |t| t.model_tools.clone());
     let stream = backend.stream_request(
         messages,
-        ctx.tools.clone(),
+        tools,
         model_name,
         ctx.host.user_id(),
         session_id,
@@ -2118,13 +2212,15 @@ mod tests {
         /// when the test drops its sender.
         struct HandedStream {
             next: Mutex<Option<mpsc::Receiver<DaveApiResponse>>>,
+            /// The names of the tools the last request offered, sorted.
+            offered: Arc<Mutex<Vec<String>>>,
         }
 
         impl AiBackend for HandedStream {
             fn stream_request(
                 &self,
                 _messages: Vec<Message>,
-                _tools: Arc<HashMap<String, Tool>>,
+                tools: Arc<HashMap<String, Tool>>,
                 _model: Option<String>,
                 _user_id: String,
                 _session_id: String,
@@ -2134,6 +2230,9 @@ mod tests {
                 _permission_mode: claude_agent_sdk_rs::PermissionMode,
                 _waker: Waker,
             ) -> crate::backend::ResponseStream {
+                let mut names: Vec<String> = tools.keys().cloned().collect();
+                names.sort();
+                *self.offered.lock().unwrap() = names;
                 crate::backend::ResponseStream {
                     rx: self.next.lock().unwrap().take(),
                     task: None,
@@ -2159,16 +2258,26 @@ mod tests {
             test: crate::tests::TestDave,
             sid: SessionId,
             stream: mpsc::Sender<DaveApiResponse>,
+            /// The tools the turn's request offered (see [`HandedStream`]).
+            offered: Arc<Mutex<Vec<String>>>,
         }
 
         fn mid_turn() -> MidTurn {
+            mid_turn_under(None)
+        }
+
+        /// [`mid_turn`], the session running under `spec_tools`.
+        fn mid_turn_under(spec_tools: Option<crate::native_tools::SpecTools>) -> MidTurn {
             let mut test = crate::tests::TestDave::new();
             let [sid] = test.add_sessions(["/tmp/tools"], BackendType::OpenAI);
+            test.dave.session_manager.get_mut(sid).unwrap().spec_tools = spec_tools;
             let (stream, rx) = mpsc::channel();
+            let offered = Arc::default();
             test.dave.backends.insert(
                 BackendType::OpenAI,
                 Box::new(HandedStream {
                     next: Mutex::new(Some(rx)),
+                    offered: Arc::clone(&offered),
                 }),
             );
             let parts = test.parts();
@@ -2179,7 +2288,12 @@ mod tests {
                 Vec::new()
             ));
             parts.dave.send_user_message_for(sid, &parts.host);
-            MidTurn { test, sid, stream }
+            MidTurn {
+                test,
+                sid,
+                stream,
+                offered,
+            }
         }
 
         fn invalid(id: &str) -> ToolCall {
@@ -2268,6 +2382,7 @@ mod tests {
                 mut test,
                 sid,
                 stream,
+                ..
             } = mid_turn();
             stream
                 .send(DaveApiResponse::ToolCalls(vec![invalid("a"), invalid("b")]))
@@ -2296,6 +2411,7 @@ mod tests {
                 mut test,
                 sid,
                 stream,
+                ..
             } = mid_turn();
             stream
                 .send(DaveApiResponse::Token("looking".into()))
@@ -2356,6 +2472,7 @@ mod tests {
                 mut test,
                 sid,
                 stream,
+                ..
             } = mid_turn();
             let (saw_tx, saw_cancel) = mpsc::channel();
             // Held until the test is done, so the job's own answer can't
@@ -2401,6 +2518,258 @@ mod tests {
             assert!(!test.dave.session_manager.get(sid).unwrap().is_dispatched());
             assert_ne!(status(&mut test, sid), AgentStatus::Working);
             assert_eq!(saw_cancel.recv_timeout(Duration::from_secs(5)), Ok(true));
+        }
+
+        /// The Notedeck toolset in the native loop: a session under an
+        /// agent spec is offered its spec's app tools, and each call runs
+        /// as its approval says.
+        mod app_tools {
+            use super::*;
+            use crate::native_tools::SpecTools;
+            use crate::tools::{AppToolCall, AppToolResponse};
+            use agentium_core::agent_spec::AgentSpec;
+            use notedeck::ToolSpec;
+            use serde_json::json;
+
+            /// A session's tools under a spec over a headway with one read
+            /// (auto) and one write (gated).
+            fn headway_tools() -> SpecTools {
+                let spec = AgentSpec::from_json(
+                    r#"{
+                      "slug": "butler",
+                      "model": { "provider": "anthropic", "model": "claude-sonnet-5-5" },
+                      "prompt": "Validate the idea.",
+                      "toolsets": [{ "kind": "notedeck", "apps": ["headway"] }],
+                      "budget": { "max_steps": 10 }
+                    }"#,
+                )
+                .unwrap();
+                let host = [
+                    ToolSpec::new("headway_show_board", "Show a board.", vec![])
+                        .read_only()
+                        .command(&["headway", "show"]),
+                    ToolSpec::new("headway_move_card", "Move a card.", vec![])
+                        .command(&["headway", "move"]),
+                ];
+                SpecTools::for_spec(&spec, &host).unwrap()
+            }
+
+            fn app_call(id: &str, name: &str) -> ToolCall {
+                ToolCall::new(
+                    id.into(),
+                    ToolCalls::App(AppToolCall {
+                        name: name.into(),
+                        args: json!({ "board": "dave" }),
+                    }),
+                )
+            }
+
+            /// What the registry stands in for here: every call answers at
+            /// once with three cards.
+            fn three_cards(call: &AppToolCall) -> StartedCall {
+                StartedCall::Done(Box::new(ToolResponses::App(AppToolResponse {
+                    tool: call.name.clone(),
+                    value: json!({ "cards": 3 }),
+                })))
+            }
+
+            /// The answer rows, `id: what`.
+            fn answers(test: &mut crate::tests::TestDave, sid: SessionId) -> Vec<String> {
+                rows(test, sid)
+                    .into_iter()
+                    .filter(|r| !r.starts_with("calls[") && !r.starts_with("PermissionRequest"))
+                    .collect()
+            }
+
+            /// The id of the session's one permission request.
+            fn request_id(test: &crate::tests::TestDave, sid: SessionId) -> uuid::Uuid {
+                let session = test.dave.session_manager.get(sid).unwrap();
+                let mut requests = session.chat.iter().filter_map(|m| match m {
+                    Message::PermissionRequest(r) => Some(r),
+                    _ => None,
+                });
+                let request = requests.next().expect("a permission request is shown");
+                assert!(requests.next().is_none(), "one request");
+                assert_eq!(request.tool_name, "headway_move_card");
+                assert_eq!(request.tool_input, json!({ "board": "dave" }));
+                request.id
+            }
+
+            /// The spec's tools replace Dave's own in the request, and a
+            /// read runs unasked: on the frame after its call, through the
+            /// registry, and the model is asked to go on.
+            #[test]
+            fn a_read_runs_unasked_through_the_registry() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    offered,
+                } = mid_turn_under(Some(headway_tools()));
+                assert_eq!(
+                    *offered.lock().unwrap(),
+                    ["headway_move_card", "headway_show_board"]
+                );
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![app_call(
+                        "s",
+                        "headway_show_board",
+                    )]))
+                    .unwrap();
+                drop(stream);
+                {
+                    let parts = test.parts();
+                    let result = parts.dave.process_events(&parts.host);
+                    assert!(!result.needs_send.contains(&sid), "not run yet");
+                }
+                assert_eq!(status(&mut test, sid), AgentStatus::Working);
+
+                test.dave.start_app_tool_calls(three_cards);
+                let parts = test.parts();
+                assert!(parts
+                    .dave
+                    .process_events(&parts.host)
+                    .needs_send
+                    .contains(&sid));
+                assert_eq!(
+                    answers(&mut test, sid),
+                    [format!(
+                        "s: {:?}",
+                        ToolResponses::App(AppToolResponse {
+                            tool: "headway_show_board".into(),
+                            value: json!({ "cards": 3 }),
+                        })
+                    )]
+                );
+            }
+
+            /// A write asks first: a permission request is shown and the
+            /// call doesn't start until the user allows it.
+            #[test]
+            fn a_write_runs_only_once_allowed() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn_under(Some(headway_tools()));
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![app_call(
+                        "m",
+                        "headway_move_card",
+                    )]))
+                    .unwrap();
+                drop(stream);
+                {
+                    let parts = test.parts();
+                    parts.dave.process_events(&parts.host);
+                }
+                let id = request_id(&test, sid);
+
+                test.dave
+                    .start_app_tool_calls(|_| panic!("a gated call starts only once allowed"));
+                assert_eq!(status(&mut test, sid), AgentStatus::NeedsInput);
+
+                crate::update::handle_permission_response(
+                    &mut test.dave.session_manager,
+                    id,
+                    PermissionResponse::Allow { message: None },
+                );
+                test.dave.start_app_tool_calls(three_cards);
+                let parts = test.parts();
+                assert!(parts
+                    .dave
+                    .process_events(&parts.host)
+                    .needs_send
+                    .contains(&sid));
+                let answers = answers(&mut test, sid);
+                assert_eq!(answers.len(), 1, "{answers:?}");
+                assert!(answers[0].starts_with("m: App("), "{answers:?}");
+            }
+
+            /// A denied write never runs, and the model is told why.
+            #[test]
+            fn a_denied_write_answers_without_running() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn_under(Some(headway_tools()));
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![app_call(
+                        "m",
+                        "headway_move_card",
+                    )]))
+                    .unwrap();
+                drop(stream);
+                {
+                    let parts = test.parts();
+                    parts.dave.process_events(&parts.host);
+                }
+                let id = request_id(&test, sid);
+                crate::update::handle_permission_response(
+                    &mut test.dave.session_manager,
+                    id,
+                    PermissionResponse::Deny {
+                        reason: "not that column".into(),
+                    },
+                );
+                test.dave
+                    .start_app_tool_calls(|_| panic!("a denied call never starts"));
+                let parts = test.parts();
+                assert!(parts
+                    .dave
+                    .process_events(&parts.host)
+                    .needs_send
+                    .contains(&sid));
+                // The reason shows as the user's reply too, as it does for
+                // any backend's request; the model gets it in the answer.
+                assert_eq!(
+                    answers(&mut test, sid),
+                    [
+                        "user: not that column",
+                        "m: The user denied this call: not that column"
+                    ]
+                );
+            }
+
+            /// A session under no spec runs no app tool, whatever the model
+            /// asks for: the call answers an error on the drain its stream
+            /// ends in.
+            #[test]
+            fn a_session_under_no_spec_runs_no_app_tool() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    offered,
+                } = mid_turn();
+                assert!(!offered
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|n| n.starts_with("headway")));
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![app_call(
+                        "x",
+                        "headway_delete_card",
+                    )]))
+                    .unwrap();
+                drop(stream);
+                test.dave
+                    .start_app_tool_calls(|_| panic!("nothing waits to start"));
+                let parts = test.parts();
+                assert!(parts
+                    .dave
+                    .process_events(&parts.host)
+                    .needs_send
+                    .contains(&sid));
+                assert_eq!(
+                    answers(&mut test, sid),
+                    ["x: 'headway_delete_card' isn't one of this session's tools"]
+                );
+            }
         }
     }
 }

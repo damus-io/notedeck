@@ -238,6 +238,7 @@ fn render_tool_response(tr: &ToolResponse) -> String {
         ToolResponses::Error(msg) => format!("error: {}", one_line(msg, 200)),
         ToolResponses::Query(q) => format!("query: {} notes", q.notes.len()),
         ToolResponses::PresentNotes(n) => format!("present: {n} notes"),
+        ToolResponses::App(r) => format!("{}: {}", r.tool, one_line(&r.value.to_string(), 200)),
     }
 }
 

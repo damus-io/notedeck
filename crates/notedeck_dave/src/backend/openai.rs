@@ -389,6 +389,12 @@ fn message_to_api(
     match msg {
         Message::Error(_err) => None,
 
+        // The reply text of a permission answer (a deny reason) is shown in
+        // the chat, but the model gets it in the denied call's answer: a
+        // user message between a round's tool calls and their answers is
+        // one the API refuses.
+        Message::User(m) if m.permission_reply => None,
+
         Message::User(m) => Some(ChatCompletionRequestMessage::User(
             ChatCompletionRequestUserMessage {
                 name: None,
@@ -510,6 +516,51 @@ mod tests {
 
         // UI-only messages are never sent to the API.
         assert!(message_to_api(&Message::Error("e".to_string()), &txn, &ndb).is_none());
+        // Nor is a permission answer's reply text, which the call's own
+        // answer carries.
+        let reply = Message::User(crate::messages::UserMessage::permission_reply("no"));
+        assert!(message_to_api(&reply, &txn, &ndb).is_none());
+    }
+
+    /// An app tool's call goes out under the tool's own name, and its answer
+    /// is the tool's JSON value.
+    #[test]
+    fn app_tool_calls_and_answers_map_to_the_tools_own_name_and_value() {
+        use crate::tools::{AppToolCall, AppToolResponse, ToolCalls, ToolResponse};
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let txn = Transaction::new(&ndb).unwrap();
+
+        let call = ToolCall::new(
+            "call_1".to_string(),
+            ToolCalls::App(AppToolCall {
+                name: "headway_show_board".to_string(),
+                args: serde_json::json!({ "board": "dave" }),
+            }),
+        );
+        let api = message_to_api(&Message::ToolCalls(vec![call]), &txn, &ndb).unwrap();
+        let ChatCompletionRequestMessage::Assistant(a) = api else {
+            panic!("tool calls must map to an assistant message");
+        };
+        let calls = a.tool_calls.expect("tool_calls present");
+        assert_eq!(calls[0].function.name, "headway_show_board");
+        assert_eq!(calls[0].function.arguments, r#"{"board":"dave"}"#);
+
+        let answer = Message::ToolResponse(ToolResponse::new(
+            "call_1".to_string(),
+            ToolResponses::App(AppToolResponse {
+                tool: "headway_show_board".to_string(),
+                value: serde_json::json!({ "cards": 3 }),
+            }),
+        ));
+        let ChatCompletionRequestMessage::Tool(t) = message_to_api(&answer, &txn, &ndb).unwrap()
+        else {
+            panic!("an answer maps to a tool message");
+        };
+        assert_eq!(t.tool_call_id, "call_1");
+        assert!(matches!(
+            t.content,
+            ChatCompletionRequestToolMessageContent::Text(ref text) if text == r#"{"cards":3}"#
+        ));
     }
 
     #[test]
