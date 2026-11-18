@@ -18,10 +18,14 @@
 //!   from, in a shipped build and in a dev checkout.
 //! - [`guest`]: where the guest's `notedeck-agent` binary comes from, and
 //!   the build stamp the host compares it against.
+//! - [`mounts`]: which host directories a guest gets (a checkout and the
+//!   git dir behind it, at the same paths as on the host), and whether the
+//!   shared git state is readonly.
 //! - [`boot`]: boot a guest and run one command in it, the smoke test that
 //!   the whole chain works on a machine.
 
 pub mod guest;
+pub mod mounts;
 
 #[cfg(microvm)]
 pub mod boot;
