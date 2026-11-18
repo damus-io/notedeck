@@ -8,9 +8,9 @@
 //! each turn: SpecRunners::get_or_build("butler")
 //!   builtin::find ─▶ AgentSpec ─┬─ model ─▶ BackendProfiles::resolve_provider ─▶ Endpoint
 //!                               ├─ toolsets ─▶ SpecTools (Catalog + researcher)
-//!                               └─ prompt, budget.max_steps
+//!                               └─ prompt, budget
 //!                                     ▼
-//!   OpenAiBackend::for_endpoint(..).with_system_prompt(..).with_max_steps(..)
+//!   OpenAiBackend::for_endpoint(..).with_system_prompt(..).with_budget(..)
 //!   session.spec_tools = runner.tools   ─▶ dispatch_turn on runner.backend
 //! ```
 //!
@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use agentium_core::agent_spec::{builtin, provider::ProviderError};
+use agentium_core::agent_spec::{builtin, pricing, provider::ProviderError};
 use nostrdb::Ndb;
 use notedeck::ToolSpec;
 
@@ -37,7 +37,7 @@ use crate::web_tools::SEARCH_URL_VAR;
 
 /// One spec, ready to run sessions: its backend and its tools.
 pub(crate) struct SpecRunner {
-    /// The native loop on the spec's endpoint, with its prompt and step cap.
+    /// The native loop on the spec's endpoint, with its prompt and budget.
     pub(crate) backend: Box<dyn AiBackend>,
     /// What its sessions may call.
     pub(crate) tools: SpecTools,
@@ -130,9 +130,15 @@ fn build(slug: &str, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerError>
             slug: slug.to_owned(),
             err,
         })?;
+    if spec.budget.max_cost_cents.is_some() && pricing::rate(&endpoint.model).is_none() {
+        tracing::warn!(
+            "agent spec {slug}: no price for model {:?}, so its max_cost_cents isn't enforced",
+            endpoint.model
+        );
+    }
     let backend = OpenAiBackend::for_endpoint(&endpoint, deps.ndb.clone())
         .with_system_prompt(spec.prompt)
-        .with_max_steps(spec.budget.max_steps);
+        .with_budget(&spec.budget);
     Ok(SpecRunner {
         backend: Box::new(backend),
         tools,

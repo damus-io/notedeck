@@ -40,6 +40,7 @@
 pub mod builtin;
 pub mod catalog;
 pub mod policy;
+pub mod pricing;
 pub mod provider;
 #[cfg(test)]
 mod tests;
@@ -211,10 +212,13 @@ impl Toolset {
 pub struct Budget {
     /// Most tool-call steps in one run; at least 1.
     pub max_steps: u32,
-    /// Most spend in one run, in US cents, when the provider reports cost.
+    /// Most spend in one run, in US cents, priced from the usage each
+    /// response reports ([`pricing`]). A run on a model the price table
+    /// doesn't list is never stopped for cost. A sub-agent's spend counts
+    /// toward its parent's run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_cents: Option<u32>,
-    /// Wall-clock limit for one run, in seconds.
+    /// Wall-clock limit for one run, in seconds, from its first request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }

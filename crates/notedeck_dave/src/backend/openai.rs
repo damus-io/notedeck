@@ -1,8 +1,10 @@
 use crate::backend::traits::{AiBackend, ResponseStream};
-use crate::messages::DaveApiResponse;
+use crate::messages::{DaveApiResponse, UsageInfo};
 use crate::tools::{PartialToolCall, Tool, ToolCall, ToolCalls, ToolResponses};
 use crate::Message;
+use agentium_core::agent_spec::pricing::{self, Cost, Meter, Rate, Usage};
 use agentium_core::agent_spec::provider::Endpoint;
+use agentium_core::agent_spec::web::ASK_RESEARCHER;
 use agentium_core::agent_spec::Budget;
 use async_openai::{config::OpenAIConfig, types::*, Client};
 use claude_agent_sdk_rs::PermissionMode;
@@ -14,6 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// The native agentic loop over an OpenAI-compatible endpoint.
@@ -22,13 +25,26 @@ use tokio::sync::watch;
 /// calls it makes, and the request after each round that sends the results
 /// back. Dave drives the rounds (it runs the tools and dispatches again); this
 /// backend bounds them. A run stops after [`max_steps`](Self::max_steps)
-/// rounds of tool calls, and [`interrupt_session`](AiBackend::interrupt_session)
-/// stops it at once, mid-stream or between rounds.
+/// rounds of tool calls, after [`timeout`](Self::timeout), or once it has
+/// spent [`max_cost_cents`](Self::max_cost_cents); and
+/// [`interrupt_session`](AiBackend::interrupt_session) stops it at once,
+/// mid-stream or between rounds.
+///
+/// ```text
+/// run ─ round 1 ─ tools ─ round 2 ─ tools ─ … ─ answer
+///       │  each request: steps < max_steps? started + timeout not passed?
+///       │                own spend + sub-agents' spend < max_cost_cents?
+///       └─ each response: usage × the model's rate ─▶ the run's own Meter
+/// ```
 pub struct OpenAiBackend {
     client: Client<OpenAIConfig>,
     ndb: Ndb,
     /// Most rounds of tool calls in one run.
     max_steps: u32,
+    /// Longest a run may take, from its first request.
+    timeout: Option<Duration>,
+    /// Most a run may spend, in cents, priced from each response's usage.
+    max_cost_cents: Option<u32>,
     /// The model a request goes out on when its session names none.
     default_model: String,
     /// The agent's role (an agent spec's prompt), sent ahead of every
@@ -37,7 +53,47 @@ pub struct OpenAiBackend {
     /// Each session's current run's stop flag, keyed by the backend session
     /// id. A new run replaces its session's entry; the stop it holds reaches
     /// every request of the run, including one already in flight.
-    runs: DashMap<String, watch::Sender<bool>>,
+    runs: DashMap<String, Run>,
+}
+
+/// A session's current run.
+struct Run {
+    /// Its stop flag.
+    stop: watch::Sender<bool>,
+    /// When its first request went out.
+    started: Instant,
+    /// What it has spent.
+    spend: Arc<RunSpend>,
+}
+
+/// What a run has spent, and what its session had before it.
+#[derive(Debug, Default)]
+struct RunSpend {
+    /// The session's spend before this run.
+    before: Cost,
+    /// This run's own requests.
+    own: Meter,
+    /// Its sub-agents', as their answers in the run report it.
+    children: Meter,
+}
+
+impl RunSpend {
+    /// The run's spend: its own requests and its sub-agents'.
+    fn run(&self) -> Cost {
+        self.own.spent() + self.children.spent()
+    }
+
+    /// The session's spend, this run's included.
+    fn session(&self) -> Cost {
+        self.before + self.run()
+    }
+}
+
+/// The run a request belongs to, as the request sees it.
+struct RunView {
+    stop: watch::Receiver<bool>,
+    started: Instant,
+    spend: Arc<RunSpend>,
 }
 
 impl OpenAiBackend {
@@ -48,6 +104,8 @@ impl OpenAiBackend {
             client,
             ndb,
             max_steps: Budget::DEFAULT_MAX_STEPS,
+            timeout: None,
+            max_cost_cents: None,
             default_model: DEFAULT_MODEL.to_owned(),
             system_prompt: None,
             runs: DashMap::new(),
@@ -81,19 +139,47 @@ impl OpenAiBackend {
         self
     }
 
-    /// The stop flag for the request about to go out on `session_id`. A
-    /// request that starts a run gets a fresh one; a later round of the same
-    /// run shares the run's, so a stop sent during one round still holds at
-    /// the next.
-    fn run_stop(&self, session_id: &str, starts_run: bool) -> watch::Receiver<bool> {
-        if !starts_run {
-            if let Some(stop) = self.runs.get(session_id) {
-                return stop.subscribe();
-            }
-        }
+    /// Bound each run by an agent spec's `budget`: its step cap, its
+    /// wall-clock limit and its spend.
+    pub fn with_budget(mut self, budget: &Budget) -> Self {
+        self.max_steps = budget.max_steps;
+        self.timeout = budget.timeout_secs.map(Duration::from_secs);
+        self.max_cost_cents = budget.max_cost_cents;
+        self
+    }
+
+    /// The run the request about to go out on `session_id` belongs to. A
+    /// request that starts a run gets a fresh one (its clock started, its
+    /// spend at zero); a later round of the same run shares the run's, so a
+    /// stop sent during one round still holds at the next, and its clock
+    /// and spend carry on.
+    fn run(&self, session_id: &str, starts_run: bool) -> RunView {
+        let last = self.runs.get(session_id).map(|run| RunView {
+            stop: run.stop.subscribe(),
+            started: run.started,
+            spend: Arc::clone(&run.spend),
+        });
+        let last = match last {
+            Some(run) if !starts_run => return run,
+            last => last,
+        };
+        let before = last.map_or(Cost::ZERO, |run| run.spend.session());
         let (stop, rx) = watch::channel(false);
-        self.runs.insert(session_id.to_owned(), stop);
-        rx
+        let run = Run {
+            stop,
+            started: Instant::now(),
+            spend: Arc::new(RunSpend {
+                before,
+                ..Default::default()
+            }),
+        };
+        let view = RunView {
+            stop: rx,
+            started: run.started,
+            spend: Arc::clone(&run.spend),
+        };
+        self.runs.insert(session_id.to_owned(), run);
+        view
     }
 }
 
@@ -135,7 +221,11 @@ impl AiBackend for OpenAiBackend {
         _permission_mode: PermissionMode,
         waker: Waker,
     ) -> ResponseStream {
-        let stop = self.run_stop(&session_id, starts_run(&messages));
+        let RunView {
+            stop,
+            started,
+            spend,
+        } = self.run(&session_id, starts_run(&messages));
 
         // The run was stopped after its last round's tool calls had already
         // arrived: Dave ran them and is sending the results back. Don't.
@@ -145,6 +235,18 @@ impl AiBackend for OpenAiBackend {
         if tool_steps(&messages) >= self.max_steps as usize {
             return answered(
                 DaveApiResponse::Failed(step_limit_message(self.max_steps)),
+                &waker,
+            );
+        }
+        if let Some(limit) = self.timeout.filter(|limit| started.elapsed() >= *limit) {
+            return answered(DaveApiResponse::Failed(time_limit_message(limit)), &waker);
+        }
+        spend
+            .children
+            .raise_to(sub_agent_spend(current_run(&messages)));
+        if let Some(cap) = self.max_cost_cents.filter(|cap| spend.run().reached(*cap)) {
+            return answered(
+                DaveApiResponse::Failed(cost_limit_message(spend.run(), cap)),
                 &waker,
             );
         }
@@ -160,24 +262,42 @@ impl AiBackend for OpenAiBackend {
                 .collect()
         };
 
+        let model = model.unwrap_or_else(|| self.default_model.clone());
+        let metering = Metering {
+            rate: pricing::rate(&model),
+            spend,
+            max_cost_cents: self.max_cost_cents,
+        };
         let request = CreateChatCompletionRequest {
-            model: model.unwrap_or_else(|| self.default_model.clone()),
+            model,
             stream: Some(true),
+            // Usage comes on a last chunk, and only when asked for. Only a
+            // model the price table knows is asked, so a provider that
+            // rejects the option is never sent it.
+            stream_options: metering.rate.map(|_| ChatCompletionStreamOptions {
+                include_usage: true,
+            }),
             messages: api_messages,
             tools: Some(tools.values().map(tool_to_api).collect()),
             user: Some(user_id),
             ..Default::default()
         };
         let client = self.client.clone();
+        let limit = self.timeout;
 
         let handle = tokio::spawn(async move {
-            let turn = stream_turn(client, request, tools, tx.clone(), waker.clone());
+            let turn = stream_turn(client, request, tools, metering, tx.clone(), waker.clone());
             tokio::select! {
                 // A stop wins a tie: the round's tool calls are dropped
                 // unsent, so nothing more runs.
                 biased;
                 () = stopped(stop) => {
                     let _ = tx.send(DaveApiResponse::CommandReply(STOPPED.to_owned()));
+                    waker.wake();
+                }
+                () = expired(started, limit) => {
+                    let limit = limit.unwrap_or_default();
+                    let _ = tx.send(DaveApiResponse::Failed(time_limit_message(limit)));
                     waker.wake();
                 }
                 () = turn => {}
@@ -198,8 +318,8 @@ impl AiBackend for OpenAiBackend {
     /// tool calls with it) and no later round is sent. The turn ends with a
     /// "Stopped." row; the next user message starts a new run.
     fn interrupt_session(&self, session_id: String, _waker: Waker) {
-        if let Some(stop) = self.runs.get(&session_id) {
-            stop.send_replace(true);
+        if let Some(run) = self.runs.get(&session_id) {
+            run.stop.send_replace(true);
         }
     }
 
@@ -220,6 +340,31 @@ fn step_limit_message(max_steps: u32) -> String {
     )
 }
 
+/// Why a run ended at its time limit, and how to let it go on.
+fn time_limit_message(limit: Duration) -> String {
+    format!(
+        "Stopped after {}s, this turn's time limit. Send a message to let it continue.",
+        limit.as_secs()
+    )
+}
+
+/// Why a run ended at its spending limit, and how to let it go on.
+fn cost_limit_message(spent: Cost, cap_cents: u32) -> String {
+    let cap = Cost::from_cents(f64::from(cap_cents));
+    format!(
+        "Stopped after spending {spent}, this turn's limit of {cap}. \
+         Send a message to let it continue."
+    )
+}
+
+/// Resolve once `limit` has passed since `started`; never, with no limit.
+async fn expired(started: Instant, limit: Option<Duration>) {
+    match limit {
+        Some(limit) => tokio::time::sleep_until((started + limit).into()).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Whether `messages` (a request's whole history) starts a new run: the
 /// user's message is the last thing in it. A later round of a run ends on the
 /// tool results it sends back.
@@ -227,17 +372,87 @@ fn starts_run(messages: &[Message]) -> bool {
     messages.last().is_some_and(Message::is_user_turn)
 }
 
-/// How many rounds of tool calls the current run has made: the tool-call rows
-/// since the user's last message.
-fn tool_steps(messages: &[Message]) -> usize {
+/// The current run's rows: everything since the user's last message.
+fn current_run(messages: &[Message]) -> &[Message] {
     let run_start = messages
         .iter()
         .rposition(Message::is_user_turn)
         .map_or(0, |i| i + 1);
-    messages[run_start..]
+    &messages[run_start..]
+}
+
+/// How many rounds of tool calls the current run has made: the tool-call rows
+/// since the user's last message.
+fn tool_steps(messages: &[Message]) -> usize {
+    current_run(messages)
         .iter()
         .filter(|m| matches!(m, Message::ToolCalls(_)))
         .count()
+}
+
+/// What the sub-agents the `run` asked spent, as each answer reports it
+/// (`spent_cents` beside the researcher's summary or error).
+fn sub_agent_spend(run: &[Message]) -> Cost {
+    run.iter()
+        .filter_map(|m| match m {
+            Message::ToolResponse(response) => match response.responses() {
+                ToolResponses::App(app) if app.tool == ASK_RESEARCHER => {
+                    app.value.get(SPENT_CENTS)?.as_f64()
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .map(Cost::from_cents)
+        .fold(Cost::ZERO, |total, cost| total + cost)
+}
+
+/// The key a sub-agent's answer reports its spend under, in cents.
+pub(crate) const SPENT_CENTS: &str = "spent_cents";
+
+/// How a request's spend is counted and capped.
+struct Metering {
+    /// Its model's price; `None` for one the table doesn't list, whose
+    /// spend isn't known.
+    rate: Option<Rate>,
+    /// The run it adds to.
+    spend: Arc<RunSpend>,
+    /// The run's cap, in cents.
+    max_cost_cents: Option<u32>,
+}
+
+impl Metering {
+    /// Count a response's `usage`: its cost to the run, and its tokens and
+    /// the session's spend so far to the session's usage meter.
+    fn count(&self, usage: &CompletionUsage, tx: &mpsc::Sender<DaveApiResponse>) {
+        let tokens = UsageInfo {
+            input_tokens: u64::from(usage.prompt_tokens),
+            output_tokens: u64::from(usage.completion_tokens),
+            num_turns: 1,
+            ..Default::default()
+        };
+        let cost_usd = self.rate.map(|rate| {
+            self.spend.own.add(rate.cost(Usage {
+                input_tokens: tokens.input_tokens,
+                output_tokens: tokens.output_tokens,
+            }));
+            // The usage card takes each report as the session's running
+            // total, and each round as a turn.
+            self.spend.session().usd()
+        });
+        let _ = tx.send(DaveApiResponse::UsageUpdate(tokens.clone()));
+        let _ = tx.send(DaveApiResponse::QueryComplete(UsageInfo {
+            cost_usd,
+            ..tokens
+        }));
+    }
+
+    /// Whether the run has spent its budget.
+    fn over_budget(&self) -> Option<String> {
+        let cap = self.max_cost_cents?;
+        let spent = self.spend.run();
+        spent.reached(cap).then(|| cost_limit_message(spent, cap))
+    }
 }
 
 /// A turn answered without asking the model: `response`, then the end of the
@@ -266,6 +481,7 @@ async fn stream_turn(
     client: Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
     tools: Arc<HashMap<String, Tool>>,
+    metering: Metering,
     tx: mpsc::Sender<DaveApiResponse>,
     waker: Waker,
 ) {
@@ -293,6 +509,7 @@ async fn stream_turn(
         };
 
     let mut all_tool_calls: HashMap<u32, PartialToolCall> = HashMap::new();
+    let mut usage = None;
 
     // Timeout for receiving each stream chunk — if no data arrives
     // for this long, the API connection is considered stalled.
@@ -318,6 +535,11 @@ async fn stream_turn(
                 return;
             }
         };
+
+        // Asked for, the request's usage comes on the last chunk.
+        if token.usage.is_some() {
+            usage = token.usage;
+        }
 
         for choice in &token.choices {
             let resp = &choice.delta;
@@ -355,10 +577,25 @@ async fn stream_turn(
         }
     }
 
+    if let Some(usage) = &usage {
+        metering.count(usage, &tx);
+        waker.wake();
+    }
+
     let parsed_tool_calls: Vec<ToolCall> = all_tool_calls
         .into_values()
         .filter_map(|partial| finish_tool_call(partial, &tools))
         .collect();
+
+    // The reply that spent the budget asked for more tools: don't run
+    // them, which could spend more (a sub-agent), and end the run here.
+    if !parsed_tool_calls.is_empty() {
+        if let Some(why) = metering.over_budget() {
+            let _ = tx.send(DaveApiResponse::Failed(why));
+            waker.wake();
+            return;
+        }
+    }
 
     if !parsed_tool_calls.is_empty()
         && tx
@@ -516,7 +753,7 @@ mod tests {
     //! function names, and the tool schema envelope) without a live API.
     use super::*;
     use crate::messages::AssistantMessage;
-    use crate::tools::{dave_tools, ToolCall};
+    use crate::tools::{dave_tools, ToolCall, ToolResponse};
     use notedeck_testing::fixtures::TempNdb;
 
     #[test]
@@ -683,6 +920,11 @@ mod tests {
     }
 
     fn request(backend: &OpenAiBackend, messages: Vec<Message>) -> ResponseStream {
+        request_of(backend, messages)
+    }
+
+    /// [`request`], for a test with a local named `request`.
+    fn request_of(backend: &OpenAiBackend, messages: Vec<Message>) -> ResponseStream {
         backend.stream_request(
             messages,
             Arc::new(HashMap::new()),
@@ -856,6 +1098,169 @@ mod tests {
         let stream = request(&backend, run_of(0));
         assert!(stream.task.is_some(), "a new run is sent to the model");
         stream.task.unwrap().abort();
+    }
+
+    /// An endpoint on a local port that answers one request.
+    struct OneReply {
+        /// Its base URL.
+        base_url: String,
+        /// Joins to the request it got.
+        server: std::thread::JoinHandle<String>,
+    }
+
+    /// An endpoint on a local port that streams one reply: a tool call, then
+    /// a last chunk reporting `prompt_tokens` of usage.
+    fn streams_a_tool_call_costing(prompt_tokens: u32) -> OneReply {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let call = serde_json::json!({
+            "id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+            "choices": [{ "index": 0, "finish_reason": null, "delta": { "tool_calls": [{
+                "index": 0, "id": "t1", "type": "function",
+                "function": { "name": "mytool", "arguments": "{}" }
+            }]}}]
+        });
+        let usage = serde_json::json!({
+            "id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+            "choices": [],
+            "usage": { "prompt_tokens": prompt_tokens, "completion_tokens": 0,
+                       "total_tokens": prompt_tokens }
+        });
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !String::from_utf8_lossy(&seen).trim_end().ends_with('}') {
+                let n = conn.read(&mut buf).unwrap();
+                assert!(n > 0, "the connection closed before the body arrived");
+                seen.extend_from_slice(&buf[..n]);
+            }
+            write!(
+                conn,
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n\
+                 data: {call}\n\ndata: {usage}\n\ndata: [DONE]\n\n"
+            )
+            .unwrap();
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+        OneReply {
+            base_url: base,
+            server,
+        }
+    }
+
+    /// A reply whose usage spends the run's budget doesn't get its tool calls
+    /// run, and the run's next round isn't sent: both end on the cost row.
+    #[tokio::test]
+    async fn a_run_stops_once_its_usage_spends_its_budget() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        // 10k prompt tokens on Sonnet 5.5 ($2/MTok) is 2 cents.
+        let OneReply { base_url, server } = streams_a_tool_call_costing(10_000);
+        let endpoint = Endpoint {
+            provider: "anthropic".into(),
+            base_url,
+            api_key: None,
+            model: "claude-sonnet-5-5".into(),
+        };
+        let budget = Budget {
+            max_steps: 10,
+            max_cost_cents: Some(1),
+            timeout_secs: None,
+        };
+        let backend = OpenAiBackend::for_endpoint(&endpoint, ndb.clone()).with_budget(&budget);
+        let over = format!("failed: {}", cost_limit_message(Cost::from_cents(2.0), 1));
+
+        let responses = turn(&backend, run_of(0)).await;
+        let request = tokio::task::spawn_blocking(move || server.join().unwrap())
+            .await
+            .unwrap();
+        assert!(
+            request.contains(r#""stream_options":{"include_usage":true}"#),
+            "a priced model is asked for its usage: {request}"
+        );
+        assert!(
+            !responses
+                .iter()
+                .any(|r| matches!(r, DaveApiResponse::ToolCalls(_))),
+            "the over-budget reply's calls aren't run"
+        );
+        let cost = responses.iter().find_map(|r| match r {
+            DaveApiResponse::QueryComplete(usage) => usage.cost_usd,
+            _ => None,
+        });
+        assert_eq!(cost, Some(0.02), "the spend reaches the usage card");
+        assert_eq!(said(&responses).last(), Some(&over));
+
+        // Had the calls run, their results would not go out either.
+        let stream = request_of(&backend, run_of(1));
+        assert!(stream.task.is_none(), "the model isn't asked again");
+        assert_eq!(said(&drain(stream).await), [over]);
+
+        // The user's next message starts a run with nothing spent.
+        let fresh = backend.run("s", true);
+        assert_eq!(fresh.spend.run(), Cost::ZERO);
+        assert_eq!(fresh.spend.session(), Cost::from_cents(2.0));
+    }
+
+    /// What a sub-agent spent, reported beside its answer, counts toward the
+    /// parent's budget.
+    #[tokio::test]
+    async fn a_sub_agents_spend_counts_toward_the_run() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let (backend, _listener) = hanging_backend(&ndb);
+        let backend = backend.with_budget(&Budget {
+            max_steps: 10,
+            max_cost_cents: Some(4),
+            timeout_secs: None,
+        });
+        let research = |id: &str, cents: f64| {
+            Message::ToolResponse(ToolResponse::new(
+                id.to_string(),
+                ToolResponses::App(crate::tools::AppToolResponse {
+                    tool: ASK_RESEARCHER.to_owned(),
+                    value: serde_json::json!({ "summary": "…", SPENT_CENTS: cents }),
+                }),
+            ))
+        };
+
+        // Under the cap, the round goes out.
+        let mut messages = run_of(0);
+        messages.extend([round("r1"), research("r1", 3.0)]);
+        let stream = request_of(&backend, messages.clone());
+        assert!(stream.task.is_some(), "3 of 4 cents: the round is sent");
+        stream.task.unwrap().abort();
+
+        // A second research call takes it past.
+        messages.extend([round("r2"), research("r2", 2.0)]);
+        assert_eq!(
+            said(&turn(&backend, messages).await),
+            [format!(
+                "failed: {}",
+                cost_limit_message(Cost::from_cents(5.0), 4)
+            )]
+        );
+    }
+
+    /// A run past its time limit ends: the request in flight, and any round
+    /// after it.
+    #[tokio::test]
+    async fn a_run_stops_at_its_time_limit() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let (mut backend, _listener) = hanging_backend(&ndb);
+        let limit = std::time::Duration::from_millis(200);
+        backend.timeout = Some(limit);
+        let timed_out = [format!("failed: {}", time_limit_message(limit))];
+
+        // The user's message goes out and hangs; the clock ends it.
+        assert_eq!(said(&turn(&backend, run_of(0)).await), timed_out);
+
+        // A later round of the same run isn't sent.
+        let stream = request_of(&backend, run_of(1));
+        assert!(stream.task.is_none(), "the model isn't asked again");
+        assert_eq!(said(&drain(stream).await), timed_out);
     }
 
     #[test]

@@ -13,9 +13,14 @@
 //! parent (butler)                     child (researcher)
 //!  ask_researcher{question} ─ gated ─▶ [system: its prompt, user: question]
 //!                                       model ⇄ web_search / web_fetch
-//!                                       … up to budget.max_steps rounds
-//!  ◀──────────── summary ───────────── final answer
+//!                                       … up to budget.max_steps rounds,
+//!                                         budget.timeout_secs, max_cost_cents
+//!  ◀──── summary + spent_cents ─────── final answer
 //! ```
+//!
+//! What the child spent rides back beside its summary (or its error, once
+//! it has spent anything), so the parent's run counts it toward its own
+//! `max_cost_cents`.
 //!
 //! The child runs as one [`ToolJob`] of the parent's round, on its own
 //! thread with its own runtime: it never touches the frame, and the
@@ -26,6 +31,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use agentium_core::agent_spec::pricing::{self, Cost, Meter, Rate, Usage};
 use agentium_core::agent_spec::provider::{self, Endpoint};
 use agentium_core::agent_spec::web::ASK_RESEARCHER;
 use agentium_core::agent_spec::{AgentSpec, Approval, Catalog, ToolSource};
@@ -35,7 +41,7 @@ use async_openai::Client;
 use nostrdb::{Ndb, Transaction};
 use serde_json::{json, Value};
 
-use crate::backend::{finish_tool_call, message_to_api, openai_config, tool_to_api};
+use crate::backend::{finish_tool_call, message_to_api, openai_config, tool_to_api, SPENT_CENTS};
 use crate::tool_round::{block_on_own_runtime, ToolCancel, ToolJob};
 use crate::tools::{AppToolCall, AppToolResponse, PartialToolCall, Tool, ToolCall, ToolCalls};
 use crate::web_tools::WebClient;
@@ -104,6 +110,13 @@ impl SubAgent {
         search_url: Option<String>,
     ) -> Result<Self, SubAgentError> {
         spec.check_sub_agent()?;
+        if spec.budget.max_cost_cents.is_some() && pricing::rate(&endpoint.model).is_none() {
+            tracing::warn!(
+                "agent spec {}: no price for model {:?}, so its max_cost_cents isn't enforced",
+                spec.slug,
+                endpoint.model
+            );
+        }
         // A sub-agent's tools never come from the registry: it holds no app
         // toolset, so it is offered nothing of the host's.
         let catalog = Catalog::build(&spec, &[])?;
@@ -127,20 +140,34 @@ impl SubAgent {
     pub(crate) fn job(self: &Arc<Self>, question: String, ndb: Ndb) -> ToolJob {
         let agent = Arc::clone(self);
         Box::new(move |cancel| {
-            let summary = agent.answer(&question, &ndb, cancel)?;
+            let Answered { result, spent } = agent.answer(&question, &ndb, cancel);
+            let mut value = match result {
+                Ok(summary) => json!({ "researcher": agent.slug(), "summary": summary }),
+                // A child that spent nothing failed for free: a plain error.
+                Err(err) if spent.is_zero() => return Err(err),
+                // One that spent something still reports it, for the
+                // parent's budget.
+                Err(err) => json!({ "researcher": agent.slug(), "error": err }),
+            };
+            if !spent.is_zero() {
+                value[SPENT_CENTS] = json!(spent.cents());
+            }
             Ok(ToolResponses::App(AppToolResponse {
                 tool: ASK_RESEARCHER.to_owned(),
-                value: json!({ "researcher": agent.slug(), "summary": summary }),
+                value,
             }))
         })
     }
 
     /// Run the child loop on a runtime of its own until it answers.
-    fn answer(&self, question: &str, ndb: &Ndb, cancel: &ToolCancel) -> Result<String, String> {
-        block_on_own_runtime(async {
+    fn answer(&self, question: &str, ndb: &Ndb, cancel: &ToolCancel) -> Answered {
+        let meter = Meter::default();
+        let result = block_on_own_runtime(async {
             let mut model = OpenAiChild {
                 client: Client::with_config(openai_config(&self.endpoint)),
                 model: self.endpoint.model.clone(),
+                rate: pricing::rate(&self.endpoint.model),
+                meter: &meter,
                 api_tools: self.model_tools.values().map(tool_to_api).collect(),
                 tools: &self.model_tools,
                 ndb,
@@ -150,10 +177,30 @@ impl SubAgent {
                 let web = &web;
                 async move { web.call(&call).await }
             };
-            let run = run_child(&self.spec, &self.catalog, question, &mut model, &mut tools);
+            let run = run_child(
+                &self.spec,
+                &self.catalog,
+                question,
+                &mut model,
+                &mut tools,
+                &meter,
+            );
             bounded(run, self.spec.budget.timeout_secs, cancel).await
-        })
+        });
+        Answered {
+            result,
+            spent: meter.spent(),
+        }
     }
+}
+
+/// How the child loop ended, and what it spent getting there.
+struct Answered {
+    /// Its summary, or why there is none.
+    result: Result<String, String>,
+    /// What its model requests cost; nothing on a model the price table
+    /// doesn't list.
+    spent: Cost,
 }
 
 /// `run`, stopped by `cancel` or after `timeout_secs`.
@@ -216,14 +263,17 @@ where
 /// tools it calls as `catalog` allows, and answer what it finally says.
 ///
 /// After `spec.budget.max_steps` rounds of tool calls the model is told to
-/// answer from what it has and asked once more with no tools. A call of a
-/// gated tool answers an error: there is nobody in a sub-agent to ask.
+/// answer from what it has and asked once more with no tools. Once `meter`
+/// (what the model's replies cost) reaches `spec.budget.max_cost_cents`, a
+/// reply's tool calls aren't run and the child fails. A call of a gated
+/// tool answers an error: there is nobody in a sub-agent to ask.
 pub(crate) async fn run_child(
     spec: &AgentSpec,
     catalog: &Catalog,
     question: &str,
     model: &mut impl ChildModel,
     tools: &mut impl ChildTools,
+    meter: &Meter,
 ) -> Result<String, String> {
     let mut chat = vec![
         Message::System(spec.prompt.as_str().into()),
@@ -234,6 +284,15 @@ pub(crate) async fn run_child(
             ChildReply::Answer(answer) => return answered(answer),
             ChildReply::Calls(calls) => calls,
         };
+        if let Some(cap) = spec.budget.max_cost_cents {
+            let spent = meter.spent();
+            if spent.reached(cap) {
+                let cap = Cost::from_cents(f64::from(cap));
+                return Err(format!(
+                    "the researcher spent {spent}, its budget of {cap}, without answering"
+                ));
+            }
+        }
         chat.push(Message::ToolCalls(calls.clone()));
         for call in calls {
             let response = run_call(catalog, call.calls(), tools).await;
@@ -298,6 +357,10 @@ async fn run_call(
 struct OpenAiChild<'a> {
     client: Client<async_openai::config::OpenAIConfig>,
     model: String,
+    /// Its model's price, when the table lists it.
+    rate: Option<Rate>,
+    /// What each reply cost is counted on.
+    meter: &'a Meter,
     /// The tools as the request carries them.
     api_tools: Vec<async_openai::types::ChatCompletionTool>,
     /// The tools a reply's calls are parsed against.
@@ -325,6 +388,12 @@ impl ChildModel for OpenAiChild<'_> {
             .create(request)
             .await
             .map_err(|err| format!("the researcher's model failed: {err}"))?;
+        if let (Some(rate), Some(usage)) = (self.rate, &response.usage) {
+            self.meter.add(rate.cost(Usage {
+                input_tokens: u64::from(usage.prompt_tokens),
+                output_tokens: u64::from(usage.completion_tokens),
+            }));
+        }
         let message = response
             .choices
             .into_iter()
@@ -372,6 +441,9 @@ mod tests {
         requests: Vec<(usize, bool)>,
         /// The last chat it saw, as text rows.
         last_chat: Vec<String>,
+        /// What each reply costs, counted on `meter`.
+        cost_per_reply: Cost,
+        meter: Arc<Meter>,
     }
 
     impl Scripted {
@@ -381,6 +453,8 @@ mod tests {
                 tools: catalog.model_tools(),
                 requests: Vec::new(),
                 last_chat: Vec::new(),
+                cost_per_reply: Cost::ZERO,
+                meter: Arc::default(),
             }
         }
 
@@ -406,6 +480,7 @@ mod tests {
         ) -> Result<ChildReply, String> {
             self.requests.push((chat.len(), with_tools));
             self.last_chat = chat.iter().map(row).collect();
+            self.meter.add(self.cost_per_reply);
             self.replies.pop_front().ok_or("script ran out".to_owned())
         }
     }
@@ -460,6 +535,7 @@ mod tests {
             "Who sells idea journals?",
             &mut model,
             &mut web(&mut calls),
+            &Meter::default(),
         )
         .await
         .unwrap();
@@ -494,9 +570,16 @@ mod tests {
         ];
         model.replies = replies.into();
         let mut calls = Vec::new();
-        let summary = run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
-            .await
-            .unwrap();
+        let summary = run_child(
+            &spec,
+            &catalog,
+            "q",
+            &mut model,
+            &mut web(&mut calls),
+            &Meter::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(summary, "partial: Acme");
         assert_eq!(calls.len(), 2);
         assert_eq!(model.requests.last(), Some(&(7, false)));
@@ -509,10 +592,49 @@ mod tests {
             ChildReply::Calls(vec![still_calling]),
         ]
         .into();
-        let err = run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
-            .await
-            .unwrap_err();
+        let err = run_child(
+            &spec,
+            &catalog,
+            "q",
+            &mut model,
+            &mut web(&mut calls),
+            &Meter::default(),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("2 steps"), "{err}");
+    }
+
+    /// Once its replies have cost its budget, the child runs no more of
+    /// the tools they call and fails, saying what it spent.
+    #[tokio::test]
+    async fn past_its_cost_budget_the_child_stops() {
+        let mut spec = researcher();
+        spec.budget.max_cost_cents = Some(2);
+        let catalog = Catalog::build(&spec, &[]).unwrap();
+        let mut model = Scripted::new(&catalog, vec![]);
+        model.cost_per_reply = Cost::from_cents(1.0);
+        let search = |id| model.call(id, WEB_SEARCH, json!({ "query": "q" }));
+        model.replies = vec![
+            ChildReply::Calls(vec![search("1")]),
+            ChildReply::Calls(vec![search("2")]),
+            ChildReply::Answer("never asked".into()),
+        ]
+        .into();
+        let meter = Arc::clone(&model.meter);
+        let mut calls = Vec::new();
+        let err = run_child(
+            &spec,
+            &catalog,
+            "q",
+            &mut model,
+            &mut web(&mut calls),
+            &meter,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(calls.len(), 1, "the second reply's call isn't run");
+        assert!(err.contains("$0.02"), "{err}");
     }
 
     /// A child whose spec doesn't widen its web tools can't run them: there
@@ -531,9 +653,16 @@ mod tests {
         ]
         .into();
         let mut calls = Vec::new();
-        run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
-            .await
-            .unwrap();
+        run_child(
+            &spec,
+            &catalog,
+            "q",
+            &mut model,
+            &mut web(&mut calls),
+            &Meter::default(),
+        )
+        .await
+        .unwrap();
         assert!(calls.is_empty(), "nothing ran: {calls:?}");
         assert!(
             model.last_chat[3].contains("can't ask"),
@@ -554,11 +683,16 @@ mod tests {
         let catalog = Catalog::build(&spec, &[]).unwrap();
         let mut model = Scripted::new(&catalog, vec![ChildReply::Answer("  ".into())]);
         let mut calls = Vec::new();
-        assert!(
-            run_child(&spec, &catalog, "q", &mut model, &mut web(&mut calls))
-                .await
-                .is_err()
-        );
+        assert!(run_child(
+            &spec,
+            &catalog,
+            "q",
+            &mut model,
+            &mut web(&mut calls),
+            &Meter::default()
+        )
+        .await
+        .is_err());
     }
 
     /// A spec with private data can't be a sub-agent, whatever names it.
@@ -610,15 +744,20 @@ mod tests {
     /// An OpenAI-compatible endpoint on a local port that answers one chat
     /// completion with `answer` and hands back the request it got.
     fn one_completion(answer: &str) -> FakeProvider {
+        one_completion_on("tiny", answer, None)
+    }
+
+    /// [`one_completion`] from `model`, reporting `usage` when given.
+    fn one_completion_on(model: &str, answer: &str, usage: Option<Value>) -> FakeProvider {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = Endpoint {
             provider: "local".into(),
             base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
             api_key: None,
-            model: "tiny".into(),
+            model: model.into(),
         };
-        let body = json!({
+        let mut body = json!({
             "id": "c1",
             "object": "chat.completion",
             "created": 0,
@@ -628,8 +767,11 @@ mod tests {
                 "finish_reason": "stop",
                 "message": { "role": "assistant", "content": answer }
             }]
-        })
-        .to_string();
+        });
+        if let Some(usage) = usage {
+            body["usage"] = usage;
+        }
+        let body = body.to_string();
         let server = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
             conn.set_read_timeout(Some(Duration::from_secs(10)))
@@ -682,6 +824,28 @@ mod tests {
             !request.contains("headway"),
             "nothing of the parent's: {request}"
         );
+    }
+
+    /// What the child's replies cost rides back beside its summary, for
+    /// the parent's budget.
+    #[test]
+    fn the_jobs_answer_reports_what_the_child_spent() {
+        notedeck::enostr::install_crypto();
+        // Haiku 5.5: 10 cents per million in, 50 out.
+        let usage = json!({ "prompt_tokens": 100_000, "completion_tokens": 10_000,
+                            "total_tokens": 110_000 });
+        let FakeProvider { endpoint, server } =
+            one_completion_on("claude-haiku-5-5", "Acme.", Some(usage));
+        let agent = Arc::new(SubAgent::new(researcher(), endpoint, None).unwrap());
+        let ndb_testing::TempNdb { dir: _dir, ndb } = ndb_testing::TempNdb::new();
+        let answer = agent.job("q".into(), ndb)(&ToolCancel::default()).unwrap();
+        server.join().unwrap();
+
+        let ToolResponses::App(app) = answer else {
+            panic!("an app answer: {answer:?}");
+        };
+        assert_eq!(app.value["summary"], "Acme.");
+        assert_eq!(app.value[SPENT_CENTS], 1.5);
     }
 
     /// A stop from the parent ends a child that is still running.
