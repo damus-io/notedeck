@@ -22,6 +22,7 @@ use microsandbox::sandbox::exec::{ExecEvent, ExecHandle, ExecSink};
 use microsandbox::Sandbox;
 
 use crate::client::{connect, GuestClient, GuestInput, GuestOutput};
+use crate::ipc::NotedeckIpc;
 use crate::SandboxError;
 
 /// How much of the executor's stderr is kept to explain its exit.
@@ -128,14 +129,22 @@ impl GuestInput for ExecSink {
 /// [`crate::image::GuestSetup`]) in `sandbox`,
 /// serving the working tree `root`, and open a session with it. Refused
 /// unless the guest is this build ([`crate::guest::HOST_BUILD`]).
+///
+/// With `ipc`, the executor also serves notedeck's socket to the guest
+/// (see [`crate::ipc`]); the sandbox must have been built with
+/// [`NotedeckIpc::apply`] for the same route.
 pub async fn start(
     sandbox: &Sandbox,
     binary: &str,
     root: &Path,
+    ipc: Option<&NotedeckIpc>,
 ) -> Result<GuestClient, SandboxError> {
-    let root = root.to_string_lossy().into_owned();
+    let mut args = vec!["--root".to_owned(), root.to_string_lossy().into_owned()];
+    if let Some(ipc) = ipc {
+        args.extend(ipc.agent_args());
+    }
     let mut handle = sandbox
-        .exec_stream_with(binary, |o| o.args(["--root", root.as_str()]).stdin_pipe())
+        .exec_stream_with(binary, |o| o.args(args).stdin_pipe())
         .await?;
     let stdin = handle.take_stdin().ok_or(SandboxError::NoStdin)?;
     let client = connect(ExecOutput::new(handle), stdin, crate::guest::HOST_BUILD).await?;

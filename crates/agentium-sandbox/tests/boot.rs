@@ -127,7 +127,7 @@ async fn the_agent_runs_in_the_default_image_with_no_install_step() {
         let probe = egress.probe_host().expect("coding allowlist has a host");
         let dns = egress::check_dns(&sandbox, probe).await?;
         eprintln!("boot DNS check: {dns:?}");
-        let client = exec::start(&sandbox, image::AGENT_PATH, &plan.checkout).await?;
+        let client = exec::start(&sandbox, image::AGENT_PATH, &plan.checkout, None).await?;
         let read = client
             .call(CodingCall::Read(ReadInput {
                 file_path: plan.checkout.join("Cargo.toml").to_string_lossy().into(),

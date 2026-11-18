@@ -23,9 +23,9 @@
 //! have, so a port-22 rule would grant nothing.
 //!
 //! The host's LAN, its loopback and the cloud metadata address are all
-//! denied, because nothing allows them. A guest that has to reach the host
-//! (notedeck's embedded relay, headway:dave/aim-clown-announce) needs a rule
-//! added deliberately, not a wider default.
+//! denied, because nothing allows them. A guest that has to reach notedeck
+//! does so over vsock ([`crate::ipc`]), which never touches the network and
+//! so needs no rule here.
 //!
 //! # github.com is also the way out
 //!

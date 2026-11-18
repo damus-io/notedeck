@@ -26,6 +26,8 @@
 //! - [`egress`]: where a guest may connect and what it may resolve: a
 //!   short hostname allowlist on HTTPS, everything else denied, and the
 //!   boot check that DNS works under it.
+//! - [`ipc`]: the opt-in route from a guest to notedeck's own socket over
+//!   vsock, so `nd` works inside it.
 //! - [`boot`]: boot a guest and run one command in it, the smoke test that
 //!   the whole chain works on a machine.
 //! - [`client`]: the host's end of the tool protocol, one session with the
@@ -37,6 +39,7 @@ pub mod client;
 pub mod egress;
 pub mod guest;
 pub mod image;
+pub mod ipc;
 pub mod mounts;
 
 #[cfg(microvm)]
@@ -96,6 +99,10 @@ pub enum SandboxError {
     /// hostname: a wildcard, a port, a URL.
     #[error("not a bare hostname for the egress allowlist: {0:?}")]
     BadHost(String),
+    /// A route to notedeck's socket ([`ipc::NotedeckIpc`]) was given a
+    /// relative host path; microsandbox needs an absolute one.
+    #[error("the host notedeck socket must be an absolute path: {}", .0.display())]
+    IpcSocketNotAbsolute(std::path::PathBuf),
     /// The guest couldn't resolve a name its egress allowlist permits: DNS
     /// is blocked by the policy or the host's resolver is unreachable.
     #[error(

@@ -204,6 +204,7 @@ dependencies = [
  "microsandbox-network",
  "notedeck-agent-guest",
  "notedeck-agent-proto",
+ "notedeck_ipc",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",

@@ -29,6 +29,8 @@
 //! [`GuestMessage`]: notedeck_agent_proto::wire::GuestMessage
 
 pub mod executor;
+#[cfg(unix)]
+pub mod ipc_bridge;
 mod serve;
 
 pub use executor::{ExecError, Executor};

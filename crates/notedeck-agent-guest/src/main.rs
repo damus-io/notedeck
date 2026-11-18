@@ -1,19 +1,26 @@
 //! `notedeck-agent`: the tool executor a sandbox guest runs.
 //!
 //! ```text
-//! notedeck-agent [--root <dir>]   serve tool calls on stdio, paths relative to <dir>
+//! notedeck-agent [--root <dir>] [--ipc-socket <path> --ipc-vsock-port <port>]
+//!                                 serve tool calls on stdio, paths relative to <dir>
 //!                                 (default: the current directory)
 //! notedeck-agent --version        print the build and protocol, and exit
 //! ```
 //!
 //! The protocol is `notedeck_agent_proto::wire`. The binary holds no
-//! credential and talks to nothing but its stdio: the model conversation,
-//! the permission gate and the diff UI all stay on the host.
+//! credential and its tool calls come only over stdio: the model
+//! conversation, the permission gate and the diff UI all stay on the host.
+//!
+//! With the two `--ipc-*` flags it also serves notedeck's own socket at
+//! `<path>`, spliced onto vsock `<port>` on the host
+//! (`notedeck_agent_guest::ipc_bridge`), so `nd` works inside the guest.
+//! The host passes them only for a sandbox it lets reach notedeck.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use notedeck_agent_guest::{serve, Executor};
+use notedeck_agent_proto::ipc;
 use notedeck_agent_proto::wire::{Version, PROTOCOL_VERSION};
 
 /// The commit this binary was built from, stamped by
@@ -30,11 +37,14 @@ const BUILD: &str = match option_env!("NOTEDECK_AGENT_BUILD") {
 /// a single vCPU, so this isn't the CPU count.
 const WORKERS: usize = 4;
 
-const USAGE: &str = "usage: notedeck-agent [--root <dir>] | --version";
+const USAGE: &str = "usage: notedeck-agent [--root <dir>] \
+                     [--ipc-socket <path> --ipc-vsock-port <port>] | --version";
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let mut root = None;
+    let mut ipc_socket = None;
+    let mut ipc_port = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--version") => {
@@ -47,6 +57,20 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 };
                 root = Some(PathBuf::from(dir));
+            }
+            Some(ipc::SOCKET_FLAG) => {
+                let Some(path) = args.next() else {
+                    eprintln!("{} needs a path\n{USAGE}", ipc::SOCKET_FLAG);
+                    return ExitCode::from(2);
+                };
+                ipc_socket = Some(PathBuf::from(path));
+            }
+            Some(ipc::VSOCK_PORT_FLAG) => {
+                let Some(port) = args.next().and_then(|p| p.to_str()?.parse::<u32>().ok()) else {
+                    eprintln!("{} needs a port number\n{USAGE}", ipc::VSOCK_PORT_FLAG);
+                    return ExitCode::from(2);
+                };
+                ipc_port = Some(port);
             }
             _ => {
                 eprintln!("unknown argument {arg:?}\n{USAGE}");
@@ -61,6 +85,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    match (ipc_socket, ipc_port) {
+        (None, None) => {}
+        (Some(socket), Some(port)) => start_ipc_bridge(&socket, port),
+        _ => {
+            eprintln!(
+                "{} and {} go together\n{USAGE}",
+                ipc::SOCKET_FLAG,
+                ipc::VSOCK_PORT_FLAG
+            );
+            return ExitCode::from(2);
+        }
+    }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(WORKERS)
@@ -83,4 +120,26 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Serve notedeck's socket at `socket` in the guest, spliced onto vsock
+/// `port` on the host. A bridge that won't start is reported and skipped:
+/// the tool calls don't need it, and `nd` then fails on its own with no
+/// socket to reach.
+#[cfg(target_os = "linux")]
+fn start_ipc_bridge(socket: &std::path::Path, port: u32) {
+    use notedeck_agent_guest::ipc_bridge;
+    let connect = move || ipc_bridge::vsock_connect(libc::VMADDR_CID_HOST, port);
+    if let Err(e) = ipc_bridge::spawn(socket, connect) {
+        eprintln!("notedeck-agent: no ipc bridge at {}: {e}", socket.display());
+    }
+}
+
+/// vsock is a Linux guest's; the binary only ever runs in one.
+#[cfg(not(target_os = "linux"))]
+fn start_ipc_bridge(socket: &std::path::Path, _port: u32) {
+    eprintln!(
+        "notedeck-agent: no ipc bridge at {}: vsock needs a Linux guest",
+        socket.display()
+    );
 }

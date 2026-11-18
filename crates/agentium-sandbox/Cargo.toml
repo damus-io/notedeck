@@ -43,6 +43,9 @@ microvm = ["dep:microsandbox", "dep:microsandbox-filesystem", "dep:microsandbox-
 thiserror = { workspace = true }
 # The tool protocol's wire types and line reassembler (src/client.rs).
 notedeck-agent-proto = { workspace = true }
+# Where notedeck's socket is on this host, and the env var `nd` reads it
+# from, for the guest's route to it (src/ipc.rs). Pure Rust: dirs + serde.
+notedeck_ipc = { workspace = true }
 serde_json = { workspace = true }
 # The client's pump task, its channels and its handshake timeout. Not behind
 # `microvm`: the client is transport-generic and is tested over in-memory

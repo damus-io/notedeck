@@ -19,5 +19,6 @@
 //! cross-compiles with the guest.
 
 pub mod call;
+pub mod ipc;
 pub mod lines;
 pub mod wire;
