@@ -191,6 +191,85 @@ fn private_data_beside_egress_is_refused() {
     ));
 }
 
+/// The reviewer as shipped: its class tightens make Bash impossible, so its
+/// host shell reaches nothing and may sit beside private boards.
+#[test]
+fn the_reviewers_closed_shell_may_sit_beside_private_boards() {
+    let reviewer = spec(REVIEWER);
+    let coding = toolset(&reviewer, ToolsetKind::Coding);
+    assert!(coding.has_egress());
+    assert!(!reviewer.reaches_network(coding));
+}
+
+/// The reviewer without its tightens runs a host shell that can `curl`
+/// beside the boards it reads: the exfiltration path validate exists to
+/// close, whether Bash is gated or widened to run unasked.
+#[test]
+fn a_host_shell_beside_private_boards_is_refused() {
+    let mut open = spec(REVIEWER);
+    open.policy.tighten.clear();
+    assert!(matches!(
+        open.validate(),
+        Err(SpecError::PrivateDataWithShell(_))
+    ));
+    open.policy.widen.push(Widen {
+        tool: "Bash".into(),
+        to: Auto,
+        why: "review runs the tests".into(),
+    });
+    assert!(matches!(
+        open.validate(),
+        Err(SpecError::PrivateDataWithShell(_))
+    ));
+
+    // Gating Bash still leaves the network one click away.
+    let mut gated = open.clone();
+    gated.policy.tighten.push(Tighten {
+        tool: Some("Bash".into()),
+        class: None,
+        to: Gated,
+    });
+    assert!(matches!(
+        gated.validate(),
+        Err(SpecError::PrivateDataWithShell(_))
+    ));
+
+    // Naming Bash impossible closes it, and beats the widen.
+    let mut closed = open;
+    closed.policy.tighten.push(Tighten {
+        tool: Some("Bash".into()),
+        class: None,
+        to: Impossible,
+    });
+    closed.validate().unwrap();
+}
+
+/// A guest shell reaches the network too: no runner gives a guest none yet.
+#[test]
+fn a_guest_shell_beside_private_boards_is_refused() {
+    let mut coder = spec(CODER);
+    coder.toolsets.push(Toolset::Notedeck {
+        apps: vec!["headway".into()],
+    });
+    assert!(matches!(
+        coder.validate(),
+        Err(SpecError::PrivateDataWithShell(_))
+    ));
+}
+
+/// A coder's own repository beside its own shell is the full-power host
+/// coder jb55 chose: accepted, on either runner.
+#[test]
+fn a_coder_alone_keeps_its_shell() {
+    let mut coder = spec(CODER);
+    coder.validate().unwrap();
+    coder.toolsets = vec![Toolset::Coding {
+        runner: Runner::LocalExecutor,
+    }];
+    coder.validate().unwrap();
+    assert!(coder.reaches_network(&coder.toolsets[0]));
+}
+
 #[test]
 fn a_misspelled_field_is_an_error_not_a_dropped_rule() {
     let typo = BUTLER.replace("\"widen\"", "\"widden\"");

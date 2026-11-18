@@ -32,13 +32,21 @@
 //!
 //! An agent that can read private boards and also fetch arbitrary URLs is an
 //! exfiltration path: an injected page tells it to put board contents in the
-//! next URL. [`AgentSpec::validate`] refuses a spec whose toolsets hold
-//! private data and reach the network together. Research runs as a
-//! [`Toolset::SubAgent`]: another spec, with no private data, that returns a
-//! summary.
+//! next URL. [`AgentSpec::validate`] refuses a spec where one toolset reaches
+//! the network and another holds private data. Web tools reach it, and so
+//! does a coding toolset's shell on any runner, unless the spec's policy
+//! makes the shell impossible ([`coding::NETWORK_TOOLS`]). Research runs as
+//! a [`Toolset::SubAgent`]: another spec, with no private data, that returns
+//! a summary.
+//!
+//! A toolset's own data beside its own network is accepted: a coder reads
+//! its repository and runs a shell that can reach the network, at full
+//! power on the host, the same as Claude Code. What the rule stops is a
+//! second toolset's data (private boards) put within reach of that shell.
 
 pub mod builtin;
 pub mod catalog;
+pub mod coding;
 pub mod policy;
 pub mod pricing;
 pub mod provider;
@@ -198,11 +206,13 @@ impl Toolset {
         }
     }
 
-    /// Whether its tools reach the network outside notedeck. A sub-agent
-    /// call doesn't: its child does, in a context with none of the parent's
-    /// data.
+    /// Whether its tools can reach the network outside notedeck, before any
+    /// policy: the web tools, and a coding toolset's shell on any runner. A
+    /// sub-agent call doesn't: its child does, in a context with none of the
+    /// parent's data. [`AgentSpec::reaches_network`] says whether a spec's
+    /// policy closes it.
     pub fn has_egress(&self) -> bool {
-        matches!(self, Self::Web)
+        matches!(self, Self::Web | Self::Coding { .. })
     }
 }
 
@@ -254,12 +264,19 @@ pub enum SpecError {
     /// A sub-agent toolset calls the spec itself.
     #[error("agent spec {0} calls itself as a sub-agent")]
     SelfSubAgent(String),
-    /// Private data and egress in one context.
+    /// Private data and web egress in one context.
     #[error(
         "agent spec {0} reads private data and reaches the network in one context: \
          move the web toolset into a sub-agent spec"
     )]
     PrivateDataWithEgress(String),
+    /// Another toolset's private data beside a coding shell that can reach
+    /// the network.
+    #[error(
+        "agent spec {0} reads private data beside a shell that can reach the network: \
+         tighten Bash (or mutate_workspace) to impossible, or drop the private toolset"
+    )]
+    PrivateDataWithShell(String),
     /// `budget.max_steps` is zero.
     #[error("agent spec {0} has a zero step budget")]
     ZeroSteps(String),
@@ -290,8 +307,9 @@ impl AgentSpec {
     }
 
     /// Check the spec can run: a valid slug, a model, at least one toolset
-    /// and none twice, apps named, no self-call, never private data beside
-    /// egress, a non-zero step budget, and a well-formed policy.
+    /// and none twice, apps named, no self-call, never one toolset's
+    /// private data beside another's egress, a non-zero step budget, and a
+    /// well-formed policy.
     pub fn validate(&self) -> Result<(), SpecError> {
         let name = || self.slug.clone();
         validate_slug(&self.slug).map_err(|_| SpecError::Slug(name()))?;
@@ -316,10 +334,22 @@ impl AgentSpec {
                 _ => {}
             }
         }
-        let private = self.toolsets.iter().any(Toolset::holds_private_data);
-        let egress = self.toolsets.iter().any(Toolset::has_egress);
-        if private && egress {
-            return Err(SpecError::PrivateDataWithEgress(name()));
+        for (i, egress) in self.toolsets.iter().enumerate() {
+            if !self.reaches_network(egress) {
+                continue;
+            }
+            let others_private = self
+                .toolsets
+                .iter()
+                .enumerate()
+                .any(|(j, t)| j != i && t.holds_private_data());
+            if !others_private {
+                continue;
+            }
+            return Err(match egress {
+                Toolset::Coding { .. } => SpecError::PrivateDataWithShell(name()),
+                _ => SpecError::PrivateDataWithEgress(name()),
+            });
         }
         if self.budget.max_steps == 0 {
             return Err(SpecError::ZeroSteps(name()));
@@ -327,6 +357,20 @@ impl AgentSpec {
         self.policy.validate().map_err(|source| SpecError::Policy {
             spec: name(),
             source,
+        })
+    }
+
+    /// Whether `toolset`'s tools reach the network under this spec's policy:
+    /// [`Toolset::has_egress`], except a coding toolset whose network tools
+    /// ([`coding::NETWORK_TOOLS`]) the policy makes impossible under its
+    /// runner's containment, by name or by class.
+    pub fn reaches_network(&self, toolset: &Toolset) -> bool {
+        let Toolset::Coding { runner } = toolset else {
+            return toolset.has_egress();
+        };
+        let containment = runner.containment();
+        coding::NETWORK_TOOLS.iter().any(|tool| {
+            self.approval_for(tool.name, tool.class, containment) != Approval::Impossible
         })
     }
 
