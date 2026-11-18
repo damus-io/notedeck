@@ -12,6 +12,7 @@ use crate::collapse_state::CollapseState;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{now_unix, ChatSession, Nesting, SessionId, SessionManager};
+use crate::ui::badge::{BadgeColors, BadgeVariant};
 use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint, KeybindHint};
 use crate::ui::SquareLoadingSpinner;
 
@@ -298,6 +299,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     // worktree's +/-; under a header, the header does.
                     git_lines: place.cwd.and_then(|_| git_lines(session)),
                     own_bar: place.own_bar,
+                    spec: session.details.agent_spec.as_deref(),
                 },
             ),
             _ => self.chat_row_ui(
@@ -308,6 +310,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                 shortcut_hint,
                 cycle_hint,
                 queue_priority,
+                session.details.agent_spec.as_deref(),
             ),
         };
 
@@ -517,7 +520,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             }
         };
 
-        let title_max_width = rect.width() - text_start_x - title_right;
         let cwd_max_width = rect.width() - text_start_x - cwd_right;
         let title_height = row_height(ui, &title_font());
         let title_top = if row.cwd_display.is_some() {
@@ -525,6 +527,12 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         } else {
             rect.center().y - title_height / 2.0
         };
+        let spec_width = row.spec.map_or(0.0, |spec| {
+            let right_center =
+                egui::pos2(rect.right() - title_right, title_top + title_height / 2.0);
+            paint_spec_tag(ui, spec, right_center) + SPEC_TAG_GAP
+        });
+        let title_max_width = rect.width() - text_start_x - title_right - spec_width;
         self.title_ui(
             ui,
             row.title,
@@ -543,7 +551,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         }
     }
 
-    /// Render a chat session row (no status bar, no cwd).
+    /// Render a chat session row (no status bar, no cwd). A session under an
+    /// agent spec shows its slug as a tag before the right side.
     #[allow(clippy::too_many_arguments)]
     fn chat_row_ui(
         &self,
@@ -554,6 +563,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         shortcut_hint: Option<usize>,
         cycle_hint: Option<&str>,
         queue_priority: Option<FocusPriority>,
+        spec: Option<&str>,
     ) -> RowResponse {
         let desired_size = egui::vec2(ui.available_width(), 32.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
@@ -578,7 +588,11 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             hints,
         );
 
-        let max_text_width = rect.width() - text_start_x - right_used;
+        let spec_width = spec.map_or(0.0, |spec| {
+            paint_spec_tag(ui, spec, rect.right_center() - egui::vec2(right_used, 0.0))
+                + SPEC_TAG_GAP
+        });
+        let max_text_width = rect.width() - text_start_x - right_used - spec_width;
         let font_id = egui::FontId::proportional(14.0);
         let title_height = ui
             .painter()
@@ -740,6 +754,9 @@ struct AgentRow<'s> {
     git_lines: Option<GitLines>,
     /// Whether to paint the row's status bar (see [`RowPlace::own_bar`]).
     own_bar: bool,
+    /// The agent spec the session runs under (its slug, e.g. `butler`),
+    /// drawn as a tag at the end of the title line.
+    spec: Option<&'s str>,
 }
 
 /// Left padding of a row's text, past the status bar.
@@ -762,6 +779,27 @@ fn row_status_color(status: AgentStatus, last_activity: Option<u64>) -> egui::Co
 const PENDING_SPINNER_SLOT: f32 = 22.0;
 /// Space above and below a row's text.
 const ROW_PAD: f32 = 6.0;
+
+/// Space between an agent spec tag and the title it ends.
+const SPEC_TAG_GAP: f32 = 6.0;
+
+/// Paint a session's agent spec slug (`butler`) as a small muted pill whose
+/// right edge's middle is at `right_center`, so a session under a spec reads
+/// differently from a plain chat on the same backend. Returns the width it
+/// took.
+fn paint_spec_tag(ui: &egui::Ui, spec: &str, right_center: Pos2) -> f32 {
+    let BadgeColors { bg, .. } = BadgeVariant::Default.colors(ui);
+    let fg = ui.visuals().weak_text_color();
+    let painter = ui.painter();
+    // egui lays text out from an owned string; the slug is borrowed up to here.
+    let galley = painter.layout_no_wrap(spec.to_owned(), cwd_font(), fg);
+    let pad = egui::vec2(5.0, 1.0);
+    let size = galley.size() + 2.0 * pad;
+    let rect = egui::Rect::from_min_size(right_center - egui::vec2(size.x, size.y / 2.0), size);
+    painter.rect_filled(rect, size.y / 2.0, bg);
+    painter.galley(rect.min + pad, galley, fg);
+    size.x
+}
 
 /// A row title's font.
 fn title_font() -> egui::FontId {
@@ -2530,6 +2568,7 @@ mod tests {
             queue_priority: None,
             git_lines: None,
             own_bar: true,
+            spec: None,
         }
     }
 
@@ -2595,6 +2634,43 @@ mod tests {
                     list.agent_row_ui(ui, test_row(id, title, status));
                 }),
         )
+    }
+
+    /// A session under an agent spec shows its slug as a tag at the end of
+    /// its title line; the title gives way to it.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agent_row_spec_tag() {
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(260.0, 48.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(|ui| {
+                    let mut session_manager = SessionManager::new();
+                    let id = session_manager.new_session(
+                        PathBuf::from("/tmp/project"),
+                        AiMode::Agentic,
+                        BackendType::OpenAI,
+                    );
+                    let focus_queue = FocusQueue::new();
+                    let collapse_state = CollapseState::new();
+                    let list = SessionListUi::new(
+                        &mut session_manager,
+                        &focus_queue,
+                        &collapse_state,
+                        false,
+                    );
+                    list.agent_row_ui(
+                        ui,
+                        AgentRow {
+                            spec: Some("butler"),
+                            ..test_row(id, "validate the idea journal entries", AgentStatus::Idle)
+                        },
+                    );
+                }),
+        );
+        harness.run();
+        harness.snapshot("agent_row_spec_tag");
     }
 
     #[test]

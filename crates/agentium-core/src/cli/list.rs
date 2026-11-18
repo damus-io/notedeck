@@ -188,8 +188,8 @@ impl RowLayout {
 ///
 /// Leads with the session's sayable `agentium:word-word-word` reference — the
 /// selector a human copies into `show`/`send`/etc. — then the status, title,
-/// (optionally) host, working dir, backend, permission mode, and how long ago
-/// `last_active` was. `list` passes the state revision's `created_at` there;
+/// (optionally) host, working dir, backend (or the agent spec, for a session
+/// under one), permission mode, and how long ago `last_active` was. `list` passes the state revision's `created_at` there;
 /// `watch` passes the fold's last activity, which also counts streamed messages.
 pub fn session_row(
     s: &SessionState,
@@ -213,7 +213,15 @@ pub fn session_row(
         None => String::new(),
     };
     let cwd = col(&abbreviate_home(&s.cwd, &s.home_dir), 26);
-    let backend = col(s.backend.as_deref().unwrap_or("-"), 8);
+    // A session under an agent spec shows the spec: its backend is always
+    // the native loop's, so `butler` says more than `openai`.
+    let backend = s
+        .agent_spec
+        .as_deref()
+        .filter(|spec| !spec.is_empty())
+        .or(s.backend.as_deref())
+        .unwrap_or("-");
+    let backend = col(backend, 8);
     let mode = col(s.permission_mode.as_deref().unwrap_or("-"), 12);
     format!(
         "{gutter}{sref_col}  {status_col}  {title}  {host}{}  {backend}  {mode}  {}",
@@ -338,6 +346,25 @@ pub(crate) mod tests {
         assert_eq!(s.display_title(), "Custom");
         s.custom_title = Some(String::new());
         assert_eq!(s.display_title(), "derived");
+    }
+
+    /// A row shows a session's agent spec where it shows the backend: every
+    /// spec session runs on the native loop's backend, so the spec is what
+    /// tells a butler from a plain chat.
+    #[test]
+    fn a_row_shows_the_agent_spec_over_the_backend() {
+        let layout = RowLayout {
+            sref_width: 0,
+            host_width: None,
+            flag_needs_input: false,
+        };
+        let mut s = session("mac", "t", "idle", 0);
+        s.backend = Some("openai".into());
+        assert!(session_row(&s, 0, 0, false, &layout).contains("openai"));
+
+        s.agent_spec = Some("butler".into());
+        let row = session_row(&s, 0, 0, false, &layout);
+        assert!(row.contains("butler") && !row.contains("openai"), "{row}");
     }
 
     #[test]

@@ -94,6 +94,9 @@ after_turn__turn____from__before_5fd1 = after turn {$turn} · from {$before}
 # Dave session inspector background: badge for a background subagent
 agent_6107 = agent
 
+# Dave session inspector overview row: the agent spec (e.g. butler) whose model, prompt and tools the session runs under
+Agent_spec_59fd = Agent spec
+
 # Title for algorithmic feeds column
 Algo_2452 = Algo
 

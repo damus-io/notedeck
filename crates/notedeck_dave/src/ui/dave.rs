@@ -4275,7 +4275,8 @@ const SUBAGENT_INHERITS: &str = "inherited from its parent";
 const HEADER_TITLE_SIZE: f32 = 13.0;
 
 /// Draw the chat header: the backend icon, the session's title, and a
-/// subtitle of its backend profile's label (`profile_label`), model and cwd.
+/// subtitle of its agent spec's slug (`details.agent_spec`), backend
+/// profile's label (`profile_label`), model and cwd.
 ///
 /// With `refs`, a title holding a reference (autowork titles a session with
 /// its card's `headway:<board>/<word-id>`) draws the reference as its inline
@@ -4323,22 +4324,27 @@ pub(crate) fn session_header_ui(
                 }
             });
 
-            let subtitle = match (model_text, &cwd_text) {
-                (Some(model), Some(cwd)) => Some(format!("{} \u{00B7} {}", model, cwd)),
-                (Some(model), None) => Some(model.to_string()),
-                (None, Some(cwd)) => Some(cwd.clone()),
-                (None, None) => None,
-            };
-            let subtitle = match (profile_label, subtitle) {
-                (Some(label), Some(text)) => Some(format!("{label} \u{00B7} {text}")),
-                (Some(label), None) => Some(label.to_string()),
-                (None, subtitle) => subtitle,
-            };
-            let subtitle = match subtitle {
-                Some(text) if is_subagent => Some(format!("{text} \u{00B7} {SUBAGENT_INHERITS}")),
-                None if is_subagent => Some(SUBAGENT_INHERITS.to_string()),
-                other => other,
-            };
+            // The agent spec leads: a butler session otherwise reads like
+            // any OpenAI chat.
+            let parts = [
+                details.agent_spec.as_deref(),
+                profile_label,
+                model_text,
+                cwd_text.as_deref(),
+                is_subagent.then_some(SUBAGENT_INHERITS),
+            ];
+            let subtitle =
+                parts
+                    .into_iter()
+                    .flatten()
+                    .fold(None::<String>, |text, part| match text {
+                        Some(mut text) => {
+                            text.push_str(" \u{00B7} ");
+                            text.push_str(part);
+                            Some(text)
+                        }
+                        None => Some(part.to_string()),
+                    });
 
             if let Some(text) = subtitle {
                 header_cwd.walltime_rect = subtitle_ui(ui, text, walltime);
@@ -6094,5 +6100,31 @@ mod tests {
         );
         harness.run();
         harness.snapshot("dave_input_normal_mode_cue");
+    }
+
+    /// The header's subtitle leads with the agent spec a session runs
+    /// under, so a butler session doesn't read like any OpenAI chat.
+    #[test]
+    fn the_header_names_the_agent_spec() {
+        use crate::backend::BackendType;
+        use crate::session::SessionManager;
+
+        let mut sessions = SessionManager::new();
+        let id = sessions.new_session(
+            std::path::PathBuf::from("/tmp/project"),
+            AiMode::Agentic,
+            BackendType::OpenAI,
+        );
+        let session = sessions.get_mut(id).expect("session");
+        session.details.agent_spec = Some("butler".to_string());
+        let details = &session.details;
+
+        let harness = Harness::new_ui(|ui| {
+            super::session_header_ui(ui, details, BackendType::OpenAI, None, false, None, None);
+        });
+        // The spec leads, then the rest of the subtitle after a "·".
+        assert!(harness
+            .query_by_label_contains("butler \u{00B7} ")
+            .is_some());
     }
 }

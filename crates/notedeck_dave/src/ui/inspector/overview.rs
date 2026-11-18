@@ -151,6 +151,15 @@ fn facts_rows_ui(
         ui.end_row();
     }
 
+    if let Some(spec) = facts.details.and_then(|d| d.agent_spec.as_deref()) {
+        key_ui(
+            ui,
+            &tr!(i18n, "Agent spec", "Dave session inspector overview row: the agent spec (e.g. butler) whose model, prompt and tools the session runs under"),
+        );
+        mono_ui(ui, spec);
+        ui.end_row();
+    }
+
     key_ui(
         ui,
         &tr!(i18n, "Mode", "Dave session inspector overview row"),

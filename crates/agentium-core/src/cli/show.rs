@@ -398,6 +398,9 @@ fn render_detail(
     if let Some(profile) = s.profile.as_deref().filter(|p| !p.is_empty()) {
         out.push_str(&field("profile", profile));
     }
+    if let Some(spec) = s.agent_spec.as_deref().filter(|p| !p.is_empty()) {
+        out.push_str(&field("agent spec", spec));
+    }
     out.push_str(&field("perm mode", &dash(s.permission_mode.as_deref())));
     if let Some(ind) = s.indicator.as_deref().filter(|i| !i.is_empty()) {
         out.push_str(&field("indicator", ind));
@@ -576,6 +579,37 @@ mod tests {
         s.issue_url = Some("headway:dave/receive-east-neutral".into());
         let out = render_detail(&s, &[], None, &summary, 0, false);
         assert!(out.contains("headway:dave/receive-east-neutral"), "{out}");
+    }
+
+    /// A session under an agent spec names it in the text and in `--json`
+    /// (`agent_spec`, flattened from the state); one under none shows no
+    /// line and a `null`.
+    #[test]
+    fn show_names_the_agent_spec_in_text_and_json() {
+        let summary = ConversationSummary {
+            message_count: 0,
+            pending: vec![],
+            subagents: vec![],
+        };
+        let mut detail = SessionDetail {
+            state: session("mac", "t", "idle", 0),
+            run_configs: vec![],
+            usage: None,
+            summary,
+        };
+        assert!(!detail.render(0, false).contains("agent spec"));
+        let json = serde_json::to_value(detail.json()).unwrap();
+        assert!(json["session"]["agent_spec"].is_null(), "{json}");
+
+        detail.state.agent_spec = Some("butler".into());
+        let out = detail.render(0, false);
+        assert!(
+            out.lines()
+                .any(|l| l.contains("agent spec") && l.contains("butler")),
+            "{out}"
+        );
+        let json = serde_json::to_value(detail.json()).unwrap();
+        assert_eq!(json["session"]["agent_spec"], "butler", "{json}");
     }
 
     /// The parent and relation lines show only when the spawn recorded them,
