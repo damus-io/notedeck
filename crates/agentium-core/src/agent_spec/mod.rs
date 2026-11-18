@@ -37,6 +37,7 @@
 //! [`Toolset::SubAgent`]: another spec, with no private data, that returns a
 //! summary.
 
+pub mod builtin;
 pub mod catalog;
 pub mod policy;
 pub mod provider;

@@ -1071,6 +1071,11 @@ pub struct SessionState {
     /// env. Absent for a session on the plain backend, and on states written
     /// before profiles existed.
     pub profile: Option<String>,
+    /// The agent spec the session runs under (`agent-spec` tag,
+    /// [`SPEC_TAG`](crate::agent_spec::SPEC_TAG)): a spec's slug, e.g.
+    /// `butler`, never the spec itself, which is local config. Absent for a
+    /// session that runs under none, and on states written before specs.
+    pub agent_spec: Option<String>,
     pub created_at: u64,
     /// Real CLI session ID when the d-tag is a provisional UUID.
     /// Present only for sessions created via spawn commands.
@@ -1158,6 +1163,9 @@ impl SessionState {
             model: get_tag_value(note, "model").map(|s| s.to_string()),
             profile: get_tag_value(note, "profile")
                 .filter(|p| !p.is_empty())
+                .map(|s| s.to_string()),
+            agent_spec: get_tag_value(note, crate::agent_spec::SPEC_TAG)
+                .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
             created_at: note.created_at(),
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
@@ -2301,6 +2309,7 @@ mod tests {
             parent_session: None,
             relation: Default::default(),
             profile: None,
+            agent_spec: None,
         }
     }
 
@@ -3882,6 +3891,7 @@ mod tests {
             parent_session: None,
             relation: Default::default(),
             profile: None,
+            agent_spec: None,
         };
 
         // Two individually-ordered lists, as the live and deleted loads arrive.
@@ -3976,6 +3986,7 @@ mod tests {
             parent_session: Some("agentium:parent-ref-here".to_string()),
             relation: crate::session_events::SessionRelation::Successor,
             profile: Some("hydra".to_string()),
+            agent_spec: Some("butler".to_string()),
         };
         let event = state.build_event(&sk).unwrap().to_event_json();
         let filter = Filter::new()

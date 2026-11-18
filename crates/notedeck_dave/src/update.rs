@@ -1494,6 +1494,9 @@ pub fn clone_session(
     // A clone runs under the same backend profile: dropping it would send the
     // clone's work to the plain backend's account instead.
     let profile = session.details.profile.clone();
+    // And under the same agent spec, or the clone would run on the host's
+    // default backend with none of the spec's tools.
+    let agent_spec = session.details.agent_spec.clone();
 
     if session.is_remote() {
         return Some(RemoteSpawn {
@@ -1520,6 +1523,7 @@ pub fn clone_session(
     );
     if let Some(clone) = session_manager.get_mut(new_id) {
         clone.details.profile = profile;
+        clone.details.agent_spec = agent_spec;
     }
     None
 }

@@ -12,6 +12,7 @@ use crate::publish::{
     Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
+use crate::spec_runner::{SpecDeps, SpecRunners};
 use crate::tool_round::{
     AnsweredRound, CallRunner, Gate, RoundCall, StartedCall, ToolRound, WaitingCall,
 };
@@ -1372,6 +1373,43 @@ pub(crate) fn dispatch_turn(
         session.incoming_tokens = Some(rx);
     }
     session.task_handle = stream.task;
+}
+
+/// Start a turn on `session`, which runs under the agent spec `slug`: on the
+/// spec's runner ([`SpecRunners::get_or_build`]), offered the spec's tools.
+///
+/// When the runner can't be built (no such spec here, no key for its
+/// provider, a toolset the host can't offer) the turn fails with why
+/// ([`fail_turn`]) and nothing is kept, so the next turn tries again.
+/// `fallback` is the host's backend for the session's type, which shuts
+/// down any stream the session still holds.
+pub(crate) fn dispatch_spec_turn(
+    session: &mut session::ChatSession,
+    slug: &str,
+    runners: &mut SpecRunners,
+    deps: &SpecDeps<'_>,
+    fallback: &dyn AiBackend,
+    ctx: &DispatchCtx<'_>,
+) {
+    let runner = match runners.get_or_build(slug, deps) {
+        Ok(runner) => runner,
+        Err(err) => {
+            tracing::warn!("session {}: {err}", session.id);
+            let session_id = format!("dave-session-{}", session.id);
+            fail_turn(
+                session,
+                fallback,
+                session_id,
+                err.to_string(),
+                ctx.host.waker,
+            );
+            return;
+        }
+    };
+    // Every turn, not only the first: a restored session starts without
+    // them, and the runner's are the ones its calls are checked against.
+    session.spec_tools = Some(runner.tools.clone());
+    dispatch_turn(session, runner.backend.as_ref(), ctx);
 }
 
 /// End the turn just dispatched on `session` with `error`, without the backend.
@@ -2787,7 +2825,7 @@ mod tests {
             fn butler_with_researcher(base_url: String) -> SpecTools {
                 use agentium_core::agent_spec::provider::Endpoint;
                 let spec = AgentSpec::from_json(include_str!(
-                    "../../agentium-core/src/agent_spec/examples/butler.json"
+                    "../../agentium-core/src/agent_spec/builtin/butler.json"
                 ))
                 .unwrap();
                 let host = [
@@ -2802,7 +2840,7 @@ mod tests {
                 ];
                 let child = |slug: &str| {
                     let researcher = AgentSpec::from_json(include_str!(
-                        "../../agentium-core/src/agent_spec/examples/researcher.json"
+                        "../../agentium-core/src/agent_spec/builtin/researcher.json"
                     ))
                     .unwrap();
                     assert_eq!(slug, researcher.slug);

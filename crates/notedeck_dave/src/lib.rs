@@ -42,6 +42,7 @@ mod session_commands;
 pub mod session_discovery;
 mod session_restore_loader;
 pub mod slash;
+pub(crate) mod spec_runner;
 mod stream_events;
 mod sub_agent;
 #[cfg(test)]
@@ -377,6 +378,13 @@ pub struct Dave {
     /// The account's backend profiles (kind-31992), looked up by slug when a
     /// session that runs under one dispatches a turn.
     backend_profiles: backend_profiles::BackendProfiles,
+    /// The runner of each agent spec a session here runs under, built on its
+    /// first turn (see [`spec_runner`]).
+    spec_runners: spec_runner::SpecRunners,
+    /// The host's tools, which a spec's Notedeck toolset picks from. Read
+    /// once, on the first frame: apps register their tools when the host
+    /// builds them, so the list doesn't change after.
+    host_tools: Option<Vec<notedeck::ToolSpec>>,
     /// ndb subscription for remote sessions' kind-31990 inspector snapshots.
     inspector_snapshot_sub: Option<nostrdb::Subscription>,
     /// When the wake scheduled for a snapshot held back by its interval
@@ -626,6 +634,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_reap: Vec::new(),
             run_config_sub: None,
             backend_profiles: Default::default(),
+            spec_runners: Default::default(),
+            host_tools: None,
             inspector_snapshot_sub: None,
             snapshot_wake_at: None,
             session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
@@ -1057,15 +1067,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             None
         };
 
-        let bt = self
-            .session_manager
-            .get(id)
-            .map(|s| s.backend_type)
-            .unwrap_or(BackendType::Remote);
+        let backend = spec_runner::session_backend(
+            &self.backends,
+            &self.spec_runners,
+            self.session_manager.get(id),
+        );
         let deleted = update::delete_session(
             &mut self.session_manager,
             &mut self.focus_queue,
-            get_backend(&self.backends, bt),
+            backend,
             &mut self.directory_picker,
             id,
         );
@@ -1299,19 +1309,39 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         };
 
-        // Only dispatch if we have the backend this session needs.
-        // Without this guard, get_backend falls back to Remote which
-        // immediately disconnects, causing an infinite redispatch loop.
-        if !self.backends.contains_key(&session.backend_type) {
-            return;
-        }
-
         let ctx = DispatchCtx {
             host,
             tools: self.tools.clone(),
             session_env: &self.settings.session_env,
             profiles: &self.backend_profiles,
         };
+
+        // A session under an agent spec runs on its spec's runner, whatever
+        // backends this host was configured with.
+        if let Some(slug) = session.details.agent_spec.clone() {
+            let deps = spec_runner::SpecDeps {
+                profiles: &self.backend_profiles,
+                host_tools: self.host_tools.as_deref().unwrap_or_default(),
+                ndb: host.ndb,
+            };
+            let fallback = get_backend(&self.backends, session.backend_type);
+            stream_events::dispatch_spec_turn(
+                session,
+                &slug,
+                &mut self.spec_runners,
+                &deps,
+                fallback,
+                &ctx,
+            );
+            return;
+        }
+
+        // Only dispatch if we have the backend this session needs.
+        // Without this guard, get_backend falls back to Remote which
+        // immediately disconnects, causing an infinite redispatch loop.
+        if !self.backends.contains_key(&session.backend_type) {
+            return;
+        }
         dispatch_turn(
             session,
             get_backend(&self.backends, session.backend_type),
@@ -1357,6 +1387,11 @@ impl notedeck::App for Dave {
         if !self.host {
             self.pump_session_cache(ctx);
             return;
+        }
+
+        // Once: what a spec session's Notedeck toolset picks from.
+        if self.host_tools.is_none() {
+            self.host_tools = Some(ctx.tool_specs());
         }
 
         // Copied out up front: the backend dispatches below hand a clone of this

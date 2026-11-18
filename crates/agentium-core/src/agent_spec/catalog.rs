@@ -442,7 +442,7 @@ mod tests {
     /// since it offers them.
     #[test]
     fn the_researcher_is_offered_web_tools_it_widened() {
-        let researcher = AgentSpec::from_json(include_str!("examples/researcher.json")).unwrap();
+        let researcher = AgentSpec::from_json(include_str!("builtin/researcher.json")).unwrap();
         let catalog = Catalog::build(&researcher, &host_tools()).unwrap();
         assert_eq!(names(&catalog), [web::WEB_SEARCH, web::WEB_FETCH]);
         for tool in catalog.tools() {

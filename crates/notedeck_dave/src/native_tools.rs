@@ -63,9 +63,6 @@ impl SpecTools {
     /// The tools `spec` offers, from `available`: what the host has
     /// ([`AppContext::tool_specs`]). A SubAgent toolset's spec is set up by
     /// `sub_agent`, from its slug; web searches go to `search_url`.
-    // The butler's spec (headway:dave/picnic-diagram-dizzy) is the first
-    // session to run under one.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn for_spec(
         spec: &AgentSpec,
         available: &[notedeck::ToolSpec],

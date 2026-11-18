@@ -43,10 +43,14 @@ impl BackendProfiles {
     /// Where an agent spec's `model` sends its requests: an OpenAI profile of
     /// the account's, else a built-in keyed from this process's env. See
     /// [`provider::resolve`].
-    // The spec runner (headway:dave/picnic-diagram-dizzy) is its first caller.
-    #[allow(dead_code)]
     pub(crate) fn resolve_provider(&self, model: &ModelRef) -> Result<Endpoint, ProviderError> {
         provider::resolve(model, &self.profiles, |var| std::env::var(var).ok())
+    }
+
+    /// Every profile, Claude and OpenAI, by slug: what a spec's sub-agent
+    /// resolves its own model against.
+    pub(crate) fn all(&self) -> &BTreeMap<String, BackendProfile> {
+        &self.profiles
     }
 
     /// Whether the live kind-31992 subscription is set up.

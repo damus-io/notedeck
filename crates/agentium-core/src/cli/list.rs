@@ -326,6 +326,7 @@ pub(crate) mod tests {
             parent_session: None,
             relation: Default::default(),
             profile: None,
+            agent_spec: None,
         }
     }
 

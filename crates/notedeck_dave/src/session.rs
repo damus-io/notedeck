@@ -190,6 +190,12 @@ pub struct SessionDetails {
     /// fixed for its life; a slug this host has no profile for fails every
     /// turn rather than falling back (see `stream_events::dispatch_turn`).
     pub profile: Option<String>,
+    /// The agent spec the session runs under, by slug (e.g. `butler`): its
+    /// turns go to the native loop on the spec's model, with the spec's
+    /// prompt, tools and budget (see `spec_runner`). `None` runs under no
+    /// spec. Set when the session is created and fixed for its life, like
+    /// `profile`; a slug this host has no spec for fails every turn.
+    pub agent_spec: Option<String>,
     /// Model currently reported by the backend for display.
     ///
     /// This may differ from `requested_model` if the backend resolved an alias
@@ -864,6 +870,7 @@ impl ChatSession {
                 project_root: project.map(|p| p.root),
                 requested_model: None,
                 profile: None,
+                agent_spec: None,
                 model: None,
             },
             backend_type,
@@ -954,6 +961,7 @@ impl ChatSession {
                 project_root: None,
                 requested_model: None,
                 profile: None,
+                agent_spec: None,
                 model: None,
             },
             backend_type,

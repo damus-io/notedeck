@@ -8,9 +8,9 @@ use crate::backend::BackendType;
 use crate::conversation_feed::{self, ConversationFeed};
 use crate::stream_events::HostCtx;
 use crate::{
-    conversation, focus_queue, get_backend, secret_key_bytes, session, session_converter,
-    session_events, session_loader, session_restore_loader, update, AiMode, ChatSession, Dave,
-    DaveOverlay, SessionId, SessionMessage,
+    conversation, focus_queue, secret_key_bytes, session, session_converter, session_events,
+    session_loader, session_restore_loader, update, AiMode, ChatSession, Dave, DaveOverlay,
+    SessionId, SessionMessage,
 };
 use nostrdb::{NoteKey, Subscription, Transaction};
 use notedeck::AppContext;
@@ -355,7 +355,9 @@ impl Dave {
         if session.pending_created_at.is_some() {
             return OpenMessageDelivery::Draft("the session is still connecting");
         }
-        if !session.is_remote() && !self.backends.contains_key(&session.backend_type) {
+        let runnable = self.backends.contains_key(&session.backend_type)
+            || session.details.agent_spec.is_some();
+        if !session.is_remote() && !runnable {
             return OpenMessageDelivery::Draft("no local backend runs this session");
         }
         OpenMessageDelivery::Send
@@ -728,15 +730,15 @@ impl Dave {
                         .map(|s| s.id)
                         .collect();
                     for id in to_delete {
-                        let bt = self
-                            .session_manager
-                            .get(id)
-                            .map(|s| s.backend_type)
-                            .unwrap_or(BackendType::Remote);
+                        let backend = crate::spec_runner::session_backend(
+                            &self.backends,
+                            &self.spec_runners,
+                            self.session_manager.get(id),
+                        );
                         update::delete_session(
                             &mut self.session_manager,
                             &mut self.focus_queue,
-                            get_backend(&self.backends, bt),
+                            backend,
                             &mut self.directory_picker,
                             id,
                         );
@@ -1240,6 +1242,9 @@ fn hydrate_session_from_state(
     // The profile it runs under, so a restored session resumes on the same
     // endpoint (or fails loudly here if this host lacks the profile).
     session.details.profile = state.profile.clone();
+    // And the spec it runs under, so its next turn goes to the spec's loop
+    // with the spec's tools rather than the host's default backend.
+    session.details.agent_spec = state.agent_spec.clone();
     session.details.parent_session = state.parent_session.clone();
     session.details.relation = state.relation;
     session.spawn_id = state.spawn_id.clone();
@@ -1383,6 +1388,7 @@ mod tests {
             parent_session: Some("agentium:the-parent-ref".to_string()),
             relation: session_events::SessionRelation::Successor,
             profile: Some("hydra".to_string()),
+            agent_spec: None,
         }
     }
 

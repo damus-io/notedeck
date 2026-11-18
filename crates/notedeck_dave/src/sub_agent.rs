@@ -83,9 +83,6 @@ impl SubAgent {
     /// the spec `find` has for `slug`, its model resolved against the
     /// account's `profiles` and the process `env` as any spec's is
     /// ([`provider::resolve`](agentium_core::agent_spec::provider::resolve)).
-    // The butler's spec (headway:dave/picnic-diagram-dizzy) is the first to
-    // call one.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn resolve(
         slug: &str,
         find: impl FnOnce(&str) -> Option<AgentSpec>,
@@ -361,7 +358,7 @@ mod tests {
     use std::collections::VecDeque;
 
     const RESEARCHER: &str =
-        include_str!("../../agentium-core/src/agent_spec/examples/researcher.json");
+        include_str!("../../agentium-core/src/agent_spec/builtin/researcher.json");
 
     fn researcher() -> AgentSpec {
         AgentSpec::from_json(RESEARCHER).unwrap()
@@ -568,7 +565,7 @@ mod tests {
     #[test]
     fn a_spec_with_private_data_is_no_sub_agent() {
         let butler = AgentSpec::from_json(include_str!(
-            "../../agentium-core/src/agent_spec/examples/butler.json"
+            "../../agentium-core/src/agent_spec/builtin/butler.json"
         ))
         .unwrap();
         let endpoint = Endpoint {

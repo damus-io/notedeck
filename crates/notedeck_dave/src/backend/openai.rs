@@ -31,6 +31,9 @@ pub struct OpenAiBackend {
     max_steps: u32,
     /// The model a request goes out on when its session names none.
     default_model: String,
+    /// The agent's role (an agent spec's prompt), sent ahead of every
+    /// request's messages; `None` sends the chat as it is.
+    system_prompt: Option<String>,
     /// Each session's current run's stop flag, keyed by the backend session
     /// id. A new run replaces its session's entry; the stop it holds reaches
     /// every request of the run, including one already in flight.
@@ -46,6 +49,7 @@ impl OpenAiBackend {
             ndb,
             max_steps: Budget::DEFAULT_MAX_STEPS,
             default_model: DEFAULT_MODEL.to_owned(),
+            system_prompt: None,
             runs: DashMap::new(),
         }
     }
@@ -59,6 +63,15 @@ impl OpenAiBackend {
             default_model: endpoint.model.clone(),
             ..Self::new(Client::with_config(openai_config(endpoint)), ndb)
         }
+    }
+
+    /// Send `prompt` (an agent spec's) as the system message ahead of every
+    /// request, with today's date after it, so the role never sits in the
+    /// session's chat: the chat stays the user's conversation, and a restored
+    /// session gets the role from its spec again rather than from history.
+    pub fn with_system_prompt(mut self, prompt: String) -> Self {
+        self.system_prompt = Some(prompt);
+        self
     }
 
     /// Cap each run at `max_steps` rounds of tool calls (an agent spec's
@@ -82,6 +95,13 @@ impl OpenAiBackend {
         self.runs.insert(session_id.to_owned(), stop);
         rx
     }
+}
+
+/// `prompt` as a system message, with today's date after it: an agent's
+/// prompt can say "a week from today" and have the model know what today is.
+fn dated_system_prompt(prompt: &str) -> Message {
+    let today = chrono::Local::now().format("%Y-%m-%d");
+    Message::System(format!("{prompt}\n\nToday is {today}.").into())
 }
 
 /// The model a request goes out on when neither its session nor the
@@ -133,8 +153,9 @@ impl AiBackend for OpenAiBackend {
 
         let api_messages: Vec<ChatCompletionRequestMessage> = {
             let txn = Transaction::new(&self.ndb).expect("txn");
-            messages
-                .iter()
+            let role = self.system_prompt.as_deref().map(dated_system_prompt);
+            role.iter()
+                .chain(messages.iter())
                 .filter_map(|c| message_to_api(c, &txn, &self.ndb))
                 .collect()
         };
@@ -747,6 +768,40 @@ mod tests {
             "{request}"
         );
         assert!(request.contains(r#""model":"qwen3""#), "{request}");
+    }
+
+    /// A spec's prompt goes out as the request's first message, dated,
+    /// ahead of the chat, which never holds it.
+    #[tokio::test]
+    async fn a_system_prompt_leads_every_request() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = Endpoint {
+            provider: "local".into(),
+            base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+            api_key: None,
+            model: "qwen3".into(),
+        };
+        let seen = first_request(listener);
+        let backend = OpenAiBackend::for_endpoint(&endpoint, ndb.clone())
+            .with_system_prompt("You are the butler.".into());
+
+        let stream = request(&backend, run_of(0));
+        let request = tokio::task::spawn_blocking(move || seen.join().unwrap())
+            .await
+            .unwrap();
+        stream.task.unwrap().abort();
+
+        let body = &request[request.find("\r\n\r\n").expect("a body") + 4..];
+        let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+        let first = &body["messages"][0];
+        assert_eq!(first["role"], "system", "{body}");
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(
+            first["content"],
+            format!("You are the butler.\n\nToday is {today}."),
+        );
+        assert_eq!(body["messages"][1]["role"], "user", "the chat follows");
     }
 
     #[test]

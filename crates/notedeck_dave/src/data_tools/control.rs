@@ -49,6 +49,7 @@ use notedeck::{
 use serde::{Deserialize, Serialize, Serializer};
 
 use super::{open_txn, SESSION_ENV, TOOL_CATEGORY};
+use crate::backend::BackendType;
 
 /// How long `link`/`unlink` waits for the host to republish the session with
 /// the new link before reporting that it hasn't. The host applies the command
@@ -373,6 +374,8 @@ struct SpawnArgs {
     #[serde(default)]
     profile: Option<String>,
     #[serde(default)]
+    spec: Option<String>,
+    #[serde(default)]
     child: bool,
     #[serde(default)]
     successor: bool,
@@ -400,6 +403,29 @@ impl SpawnArgs {
             (true, false) => Ok(SessionRelation::Child),
             (false, true) => Ok(SessionRelation::Successor),
             (false, false) => Ok(SessionRelation::None),
+        }
+    }
+
+    /// The agent spec the session runs under, when one is named. A spec
+    /// names its own provider and runs in the native loop, so it takes no
+    /// profile and no backend but `openai`. Whether the host has a spec of
+    /// that slug is the host's to say: specs are its local config.
+    fn agent_spec(&self) -> Result<Option<&str>, String> {
+        let Some(spec) = self.spec.as_deref().filter(|s| !s.is_empty()) else {
+            return Ok(None);
+        };
+        agentium_core::config::validate_slug(spec)
+            .map_err(|_| format!("`spec` {spec:?} is not a spec slug"))?;
+        if self.profile.is_some() {
+            return Err(
+                "`spec` and `profile` are exclusive: a spec names its own provider".to_owned(),
+            );
+        }
+        match self.backend.as_deref() {
+            None | Some("openai") => Ok(Some(spec)),
+            Some(other) => Err(format!(
+                "a spec runs in the native loop (backend `openai`), not `{other}`"
+            )),
         }
     }
 
@@ -475,6 +501,7 @@ impl SlowTool for Spawn {
                 ToolArg::new("model", ToolArgType::String, "The model it starts on, as the backend names it (`opus`, a full id)."),
                 ToolArg::new("issue_url", ToolArgType::String, "The issue it works, as a URI, e.g. `headway:<board>/<word-id>`."),
                 ToolArg::new("profile", ToolArgType::String, "The backend profile it runs under. Defaults to the current session's unless `backend` is given."),
+                ToolArg::new("spec", ToolArgType::String, "The agent spec it runs under, e.g. `butler`: the native loop on the spec's model, prompt, tools and budget. Implies backend `openai`; excludes `profile`."),
                 ToolArg::new("child", ToolArgType::Boolean, "Record it as a child of the current session, which it reports back to."),
                 ToolArg::new("successor", ToolArgType::Boolean, "Record it as the current session's successor, which carries its work on."),
                 ToolArg::new("idempotency_key", ToolArgType::String, "Your own name for this request, so a retry of it is recognized as one."),
@@ -502,6 +529,7 @@ impl SlowTool for Spawn {
         args: Self::Args,
     ) -> Result<ToolJob<SpawnAnswer>, String> {
         let relation = args.relation()?;
+        let spec = args.agent_spec()?;
         let permission_mode = args
             .permission_mode
             .as_deref()
@@ -525,7 +553,12 @@ impl SlowTool for Spawn {
         let flags = TargetFlags {
             host: args.host.as_deref(),
             cwd: cwd.as_deref(),
-            backend: args.backend.as_deref(),
+            // A spec's session runs in the native loop, and naming the backend
+            // keeps the current session's profile from being inherited.
+            backend: args
+                .backend
+                .as_deref()
+                .or(spec.map(|_| BackendType::OpenAI.as_str())),
             profile: args.profile.as_deref(),
         };
         let target = SpawnTarget::resolve(&flags, current)?;
@@ -553,6 +586,7 @@ impl SlowTool for Spawn {
             parent_session: target.parent_session.as_deref(),
             relation,
             profile: target.profile.as_deref(),
+            spec,
         };
         // `allow_duplicate` omits the key: opting out of the guard has to opt
         // out of the host's dedupe too, or the host would re-impose it.
@@ -1477,5 +1511,33 @@ impl AppTool for ConfigRm {
 
     fn render(&self, out: &Self::Output) -> Option<String> {
         render_write(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn spawn_args(args: serde_json::Value) -> SpawnArgs {
+        serde_json::from_value(args).expect("spawn args")
+    }
+
+    /// `spec` runs in the native loop under the spec's own provider: it
+    /// takes the `openai` backend or none, never a profile, and only a slug.
+    #[test]
+    fn a_spec_takes_no_profile_and_no_other_backend() {
+        let spec = |args| spawn_args(args).agent_spec().map(|s| s.map(str::to_owned));
+        assert_eq!(spec(json!({})), Ok(None));
+        assert_eq!(spec(json!({"spec": "butler"})), Ok(Some("butler".into())));
+        assert_eq!(
+            spec(json!({"spec": "butler", "backend": "openai"})),
+            Ok(Some("butler".into()))
+        );
+        let err = spec(json!({"spec": "butler", "backend": "claude"})).unwrap_err();
+        assert!(err.contains("`claude`"), "{err}");
+        let err = spec(json!({"spec": "butler", "profile": "hydra"})).unwrap_err();
+        assert!(err.contains("exclusive"), "{err}");
+        assert!(spec(json!({"spec": "not a slug!"})).is_err());
     }
 }

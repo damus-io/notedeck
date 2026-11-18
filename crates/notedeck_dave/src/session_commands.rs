@@ -105,6 +105,10 @@ struct SpawnRequest {
     /// rather than running them on the plain backend. `None` is a plain
     /// session.
     profile: Option<String>,
+    /// The agent spec the session runs under, by slug, from the command's
+    /// `agent-spec` tag. A session under a spec always runs in the native
+    /// loop, whatever backend the command names.
+    spec: Option<String>,
     /// The request's identity, from the command's `idempotency_key` tag.
     /// Two commands carrying the same key are one spawn asked for twice, so
     /// the second is answered with the session the first produced rather
@@ -163,7 +167,8 @@ enum SessionCommand {
     /// Create a fresh session locally (`command = "spawn_session"`).
     Spawn {
         command_id: String,
-        request: SpawnRequest,
+        /// Boxed: a spawn carries far more than a resume or a stop.
+        request: Box<SpawnRequest>,
     },
     /// Reopen + revive + resume an existing session (`command = "resume_session"`),
     /// named by its kind-31988 d-tag.
@@ -255,9 +260,18 @@ fn decode_session_command(
             let profile = session_events::get_tag_value(note, "profile")
                 .filter(|p| !p.is_empty())
                 .map(|s| s.to_string());
+            let spec = session_events::get_tag_value(note, agentium_core::agent_spec::SPEC_TAG)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            // A spec's model is served by the native loop, never a CLI.
+            let backend = if spec.is_some() {
+                BackendType::OpenAI
+            } else {
+                backend
+            };
             Some(SessionCommand::Spawn {
                 command_id,
-                request: SpawnRequest {
+                request: Box::new(SpawnRequest {
                     cwd,
                     backend,
                     spawn_id,
@@ -269,8 +283,9 @@ fn decode_session_command(
                     permission_mode,
                     model,
                     profile,
+                    spec,
                     idempotency_key,
-                },
+                }),
             })
         }
         "resume_session" => {
@@ -319,6 +334,7 @@ impl Dave {
             permission_mode,
             model,
             profile,
+            spec,
             idempotency_key,
         } = request;
 
@@ -383,6 +399,9 @@ impl Dave {
             // dispatch reads it to layer the profile's env (or to refuse the
             // turn when this host lacks the profile).
             session.details.profile = profile;
+            // Like the profile: the first dispatch below reads it to run the
+            // turn under the spec.
+            session.details.agent_spec = spec;
             // Set the mode *here*, before the first message is queued below:
             // `dispatch` reads it to build the backend's options, and that
             // dispatch happens later in this same frame. Applying it afterwards —
@@ -498,7 +517,7 @@ impl Dave {
                         // Defer any first message until the read txn closes:
                         // appending it builds a kind-1988 event (a fresh ndb read).
                         if let Some(delivery) =
-                            self.apply_spawn_command(request, session_events::now_secs())
+                            self.apply_spawn_command(*request, session_events::now_secs())
                         {
                             first_prompts.push(delivery);
                         }
@@ -822,6 +841,63 @@ mod tests {
         }
     }
 
+    /// A spawn under an agent spec arrives as a native-loop session under
+    /// that spec, whatever backend the command named, and the session's
+    /// kind-31988 state names the spec so a restore runs it under it again.
+    #[tokio::test]
+    async fn a_spawn_under_a_spec_runs_in_the_native_loop_under_it() {
+        let sk = test_secret_key();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let cmd = session_events::build_spawn_command_event(
+            "host-a",
+            "/work/ideas",
+            "claude",
+            &session_events::SpawnOptions {
+                spec: Some("butler"),
+                prompt: Some("the transcript"),
+                ..Default::default()
+            },
+            "spawn-butler",
+            None,
+            &sk,
+        )
+        .unwrap();
+        let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+        ndb.process_event_with(&cmd.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        ndb.wait_for_all_notes(sub, 1).await.unwrap();
+
+        let request = {
+            let txn = Transaction::new(&ndb).unwrap();
+            let note = ndb.get_note_by_id(&txn, &cmd.note_id).unwrap();
+            let Some(SessionCommand::Spawn { request, .. }) =
+                decode_session_command(&note, "host-a", BackendType::Claude)
+            else {
+                panic!("expected a Spawn command for this host");
+            };
+            *request
+        };
+        assert_eq!(request.spec.as_deref(), Some("butler"));
+        assert_eq!(request.backend, BackendType::OpenAI);
+
+        let mut host = TestDave::new();
+        let before: Vec<_> = host.dave.session_manager.iter().map(|s| s.id).collect();
+        host.dave.apply_spawn_command(request, 1_800_000_000);
+        let spawned = host
+            .dave
+            .session_manager
+            .iter()
+            .find(|s| !before.contains(&s.id))
+            .expect("the spawn materialized a session");
+        assert_eq!(spawned.details.agent_spec.as_deref(), Some("butler"));
+        assert_eq!(spawned.backend_type, BackendType::OpenAI);
+
+        let state =
+            crate::publish::session_state_snapshot(spawned, "idle".into(), "host-a".into(), 1)
+                .expect("agentic session");
+        assert_eq!(state.agent_spec.as_deref(), Some("butler"));
+    }
+
     /// A spawn under a profile keeps it the whole trip: a Dave queueing the
     /// spawn for another host (the picker's profile row, or a remote clone)
     /// puts its profile and model on the kind-31989 command, and the host that
@@ -866,7 +942,7 @@ mod tests {
             else {
                 panic!("expected a Spawn command for this host");
             };
-            request
+            *request
         };
         assert_eq!(request.profile.as_deref(), Some("hydra"));
 
@@ -933,7 +1009,7 @@ mod tests {
                 else {
                     panic!("expected a Spawn command for this host");
                 };
-                request
+                *request
             };
 
             let mut test = TestDave::new();
@@ -979,6 +1055,7 @@ mod tests {
             permission_mode: None,
             model: None,
             profile: None,
+            spec: None,
             idempotency_key: key.map(str::to_string),
         }
     }

@@ -5,8 +5,8 @@ use super::*;
 use crate::tool::{Capability, ToolSpec};
 use Approval::*;
 
-const BUTLER: &str = include_str!("examples/butler.json");
-const RESEARCHER: &str = include_str!("examples/researcher.json");
+const BUTLER: &str = include_str!("builtin/butler.json");
+const RESEARCHER: &str = include_str!("builtin/researcher.json");
 const REVIEWER: &str = include_str!("examples/reviewer.json");
 const CODER: &str = include_str!("examples/coder.json");
 

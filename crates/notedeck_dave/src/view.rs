@@ -5,8 +5,8 @@ use crate::backend::{BackendChoice, BackendType};
 use crate::ui::keybindings::{ActiveOffers, KeyAction, KeyContext, NormalView};
 use crate::ui_tools;
 use crate::{
-    check_keybindings, focus_queue, get_backend, secret_key_bytes, ui, update, worktree, Dave,
-    DaveAction, DaveOverlay, DaveResponse, KeyActionResult, OverlayResult, PendingWorktreeRemoval,
+    check_keybindings, focus_queue, secret_key_bytes, ui, update, worktree, Dave, DaveAction,
+    DaveOverlay, DaveResponse, KeyActionResult, OverlayResult, PendingWorktreeRemoval,
     RunConfigEditor, SceneViewAction, SendActionResult, SessionListAction, UiActionResult,
 };
 use notedeck::{ui::is_narrow, AppAction, AppContext, ToolOutcome};
@@ -648,18 +648,18 @@ impl Dave {
         key_action: KeyAction,
         egui_ctx: &egui::Context,
     ) -> Option<AppAction> {
-        let bt = self
-            .session_manager
-            .get_active()
-            .map(|s| s.backend_type)
-            .unwrap_or(BackendType::Remote);
+        let backend = crate::spec_runner::session_backend(
+            &self.backends,
+            &self.spec_runners,
+            self.session_manager.get_active(),
+        );
         match ui::handle_key_action(
             key_action,
             &mut self.session_manager,
             &mut self.scene,
             &mut self.focus_queue,
             &self.collapse_state,
-            get_backend(&self.backends, bt),
+            backend,
             self.show_scene,
             self.auto_steal.is_enabled(),
             &mut self.home_session,
@@ -723,16 +723,12 @@ impl Dave {
 
     /// Handle the Send action, including tentative permission states
     fn handle_send_action(&mut self, ctx: &AppContext, ui: &egui::Ui) {
-        let bt = self
-            .session_manager
-            .get_active()
-            .map(|s| s.backend_type)
-            .unwrap_or(BackendType::Remote);
-        match ui::handle_send_action(
-            &mut self.session_manager,
-            get_backend(&self.backends, bt),
-            ui.ctx(),
-        ) {
+        let backend = crate::spec_runner::session_backend(
+            &self.backends,
+            &self.spec_runners,
+            self.session_manager.get_active(),
+        );
+        match ui::handle_send_action(&mut self.session_manager, backend, ui.ctx()) {
             SendActionResult::SendMessage => {
                 self.handle_user_send(ctx);
             }
@@ -847,15 +843,15 @@ impl Dave {
             return None;
         }
 
-        let bt = self
-            .session_manager
-            .get_active()
-            .map(|s| s.backend_type)
-            .unwrap_or(BackendType::Remote);
+        let backend = crate::spec_runner::session_backend(
+            &self.backends,
+            &self.spec_runners,
+            self.session_manager.get_active(),
+        );
         match ui::handle_ui_action(
             action,
             &mut self.session_manager,
-            get_backend(&self.backends, bt),
+            backend,
             &mut self.active_overlay,
             &mut self.show_session_list,
             ui.ctx(),

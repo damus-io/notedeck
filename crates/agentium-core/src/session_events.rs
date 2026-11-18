@@ -1642,6 +1642,14 @@ pub fn build_session_state_event(
     if let Some(profile) = state.profile.as_deref().filter(|p| !p.is_empty()) {
         builder = builder.start_tag().tag_str("profile").tag_str(profile);
     }
+    // The agent spec's slug only, beside (never in) the `backend` tag: the
+    // spec is local config, so an old reader sees a plain OpenAI session.
+    if let Some(spec) = state.agent_spec.as_deref().filter(|s| !s.is_empty()) {
+        builder = builder
+            .start_tag()
+            .tag_str(crate::agent_spec::SPEC_TAG)
+            .tag_str(spec);
+    }
 
     // Real Claude CLI session ID for backend --resume.
     // Empty string means the backend hasn't started yet.
@@ -1836,6 +1844,13 @@ pub struct SpawnOptions<'a> {
     /// them on the plain backend. `None`/empty spawns a plain session. Ignored
     /// on a resume, whose rehydrated state already carries its profile.
     pub profile: Option<&'a str>,
+    /// The agent spec (its slug, [`SPEC_TAG`](crate::agent_spec::SPEC_TAG)
+    /// tag) the new session runs under, e.g. `butler`. The host looks the
+    /// slug up among its own specs and runs the session's turns in the native
+    /// loop under it, failing them when it has no such spec. `None`/empty
+    /// spawns a session under no spec. Ignored on a resume, whose rehydrated
+    /// state already carries its spec.
+    pub spec: Option<&'a str>,
 }
 
 /// How long a host and client treat a spawn's [`idempotency_key`] as still
@@ -1857,10 +1872,11 @@ pub const SPAWN_DEDUPE_WINDOW_SECS: u64 = 600;
 ///
 /// The digest covers exactly the fields that decide *what session you get*: the
 /// target host, the cwd it runs in, the backend, and each of `opts`' spawn
-/// extras (title, first prompt, permission mode, model, issue, profile). Two
-/// spawns differing in any of them are different requests and get different
-/// keys. The profile is hashed only when set, so a plain spawn's key is the one
-/// it was before profiles existed.
+/// extras (title, first prompt, permission mode, model, issue, profile, spec).
+/// Two spawns differing in any of them are different requests and get
+/// different keys. The profile and the spec are hashed only when set, so a
+/// plain spawn's key is the one it was before either existed; the spec is
+/// labelled first, so a spec and a profile of one slug never hash alike.
 ///
 /// [`SpawnOptions::idempotency_key`] itself is excluded — it names the request,
 /// so it cannot be an input to its own name. That also makes the function safe to
@@ -1902,6 +1918,11 @@ pub fn spawn_idempotency_key(
     if let Some(profile) = opts.profile.filter(|p| !p.is_empty()) {
         hasher.update((profile.len() as u64).to_le_bytes());
         hasher.update(profile.as_bytes());
+    }
+    if let Some(spec) = opts.spec.filter(|s| !s.is_empty()) {
+        hasher.update(b"spec");
+        hasher.update((spec.len() as u64).to_le_bytes());
+        hasher.update(spec.as_bytes());
     }
     hex::encode(&hasher.finalize()[..16])
 }
@@ -2024,6 +2045,14 @@ pub fn build_spawn_command_event(
         // keeps the profile its state already records.
         if let Some(profile) = opts.profile.filter(|p| !p.is_empty()) {
             builder = builder.start_tag().tag_str("profile").tag_str(profile);
+        }
+        // The agent spec, named like the kind-31988 tag the host copies it
+        // to. A resumed session keeps the spec its state already records.
+        if let Some(spec) = opts.spec.filter(|s| !s.is_empty()) {
+            builder = builder
+                .start_tag()
+                .tag_str(crate::agent_spec::SPEC_TAG)
+                .tag_str(spec);
         }
     }
 
@@ -3661,6 +3690,54 @@ mod tests {
         let key = |o: &SpawnOptions<'_>| spawn_idempotency_key("h", "/c", "claude", o);
         assert_ne!(key(&plain), key(&hydra));
         assert_eq!(key(&plain), key(&empty));
+    }
+
+    /// A spawn under an agent spec names its slug on the command with the
+    /// kind-31988 tag the host copies it to; a resume never carries one, and
+    /// the spec changes the spawn's idempotency key without colliding with a
+    /// profile of the same slug.
+    #[test]
+    fn spawn_command_carries_the_spec_on_new_sessions_only() {
+        let sk = test_secret_key();
+        let opts = SpawnOptions {
+            spec: Some("butler"),
+            ..Default::default()
+        };
+        let spawn =
+            build_spawn_command_event("host-a", "/tmp/proj", "openai", &opts, "spawn-1", None, &sk)
+                .unwrap();
+        assert!(
+            spawn.note_json.contains(r#"["agent-spec","butler"]"#),
+            "json: {}",
+            spawn.note_json
+        );
+
+        let resume = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "openai",
+            &opts,
+            "spawn-1",
+            Some(&ResumeSpawn {
+                target_session_id: "sess-1",
+                cli_session_id: "cli-1",
+            }),
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !resume.note_json.contains("agent-spec"),
+            "json: {}",
+            resume.note_json
+        );
+
+        let key = |o: &SpawnOptions<'_>| spawn_idempotency_key("h", "/c", "openai", o);
+        let as_profile = SpawnOptions {
+            profile: Some("butler"),
+            ..Default::default()
+        };
+        assert_ne!(key(&opts), key(&SpawnOptions::default()));
+        assert_ne!(key(&opts), key(&as_profile));
     }
 
     #[test]
