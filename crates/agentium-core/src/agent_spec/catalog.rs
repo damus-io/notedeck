@@ -13,11 +13,24 @@
 //! name (`["headway", "show"]` is `nd headway show`), so a
 //! `Notedeck { apps: ["headway"] }` toolset offers exactly what `nd headway`
 //! runs. No wrapper per tool: the model gets each tool's own
-//! [`ToolSpec`], and the host's tool registry runs the call. A tool the model
-//! can't use is left out: a UI tool (it acts on a window) and a streaming
-//! one (nothing waits on a stream). An argument the command bar fills from
-//! the current view ([`ToolArg::from_current`](crate::tool::ToolArg::from_current))
-//! is one the model passes itself.
+//! [`ToolSpec`], and the host's tool registry runs the call. A streaming
+//! tool is left out, since nothing waits on a stream. An argument the
+//! command bar fills from the current view
+//! ([`ToolArg::from_current`](crate::tool::ToolArg::from_current)) is one
+//! the model passes itself.
+//!
+//! ## A UI tool is offered when it has a command line
+//!
+//! A [UI tool](crate::tool::ToolKind::Ui) acts on the window: it opens a pane, moves a
+//! cursor or routes a column. Most are a key binding's action and have no
+//! command line, so no toolset reaches them. One that an app puts on the
+//! `nd` surface (`nd nostr open …`) has been made for a caller outside the
+//! window, and its toolset offers it like any other `nd <app>` command. It
+//! is [`Navigate`](Capability::Navigate) unless its spec declares a class,
+//! so it runs unasked. A UI tool that changes data has to declare that
+//! class ([`ToolSpec::capability`]), or it runs unasked too. The registry
+//! answers its call with an intent, which the host routes to the tool's
+//! app.
 //!
 //! ## Web, sub-agent and coding tools are declared here
 //!
@@ -31,7 +44,7 @@ use std::collections::HashMap;
 
 use super::{coding, web};
 use super::{AgentSpec, Approval, Containment, Policy, SessionMode, Toolset};
-use crate::tool::{Capability, ToolKind, ToolSpec};
+use crate::tool::{Capability, ToolSpec};
 use crate::tools::Tool;
 
 /// One tool the agent may call.
@@ -215,11 +228,10 @@ impl Offering<'_> {
 }
 
 /// Whether `app`'s Notedeck toolset offers `tool`: it is `nd <app> …`, and a
-/// model can call it (see the module docs).
+/// model can call it. A UI tool qualifies through its command line alone
+/// (see the module docs).
 fn offers(app: &str, tool: &ToolSpec) -> bool {
-    tool.command_path().first() == Some(&app)
-        && tool.kind() == ToolKind::Data
-        && tool.stream_mode().is_none()
+    tool.command_path().first() == Some(&app) && tool.stream_mode().is_none()
 }
 
 /// Every tool `spec`'s policy names, widened or tightened.
@@ -235,8 +247,9 @@ mod tests {
     use crate::agent_spec::{Budget, ModelRef, Policy, Tighten, Widen};
     use crate::tool::{StreamMode, ToolArg, ToolArgType};
 
-    /// What a host with headway and notebook offers, plus tools no agent
-    /// gets: a UI tool, a streaming one, and one with no command line.
+    /// What a host with headway and notebook offers, a UI tool on the
+    /// command line among them, plus tools no agent gets: a UI tool that is
+    /// only a key binding's, a streaming one, and one with no command line.
     fn host_tools() -> Vec<ToolSpec> {
         vec![
             ToolSpec::new("headway_show_board", "Show a board.", vec![])
@@ -252,6 +265,7 @@ mod tests {
             ToolSpec::new("headway_open", "Open a card in the window.", vec![])
                 .ui()
                 .command(&["headway", "open"]),
+            ToolSpec::new("headway_cursor_down", "Move the cursor down.", vec![]).ui(),
             ToolSpec::new("headway_watch", "Follow a board.", vec![])
                 .read_only()
                 .streams(StreamMode::Append)
@@ -284,8 +298,8 @@ mod tests {
         catalog.tools().iter().map(|t| t.spec.name()).collect()
     }
 
-    /// An app's toolset is its `nd <app>` data tools, minus what a model
-    /// can't call; reads run unasked and writes are gated.
+    /// An app's toolset is its `nd <app>` commands, minus what a model
+    /// can't call; reads and window moves run unasked, writes are gated.
     #[test]
     fn an_apps_toolset_is_its_nd_commands_reads_auto_writes_gated() {
         let host = host_tools();
@@ -295,13 +309,23 @@ mod tests {
             [
                 "headway_show_board",
                 "headway_comment_card",
-                "headway_move_card"
+                "headway_move_card",
+                "headway_open",
             ]
         );
         let approval = |name| catalog.get(name).unwrap().approval;
         assert_eq!(approval("headway_show_board"), Approval::Auto);
         assert_eq!(approval("headway_comment_card"), Approval::Gated);
         assert_eq!(approval("headway_move_card"), Approval::Gated);
+        assert_eq!(approval("headway_open"), Approval::Auto);
+        assert_eq!(
+            catalog.get("headway_open").unwrap().class,
+            Capability::Navigate
+        );
+        assert!(
+            catalog.get("headway_cursor_down").is_none(),
+            "a UI tool with no command line is a key binding's"
+        );
         assert!(
             catalog.get("notebook_show").is_none(),
             "notebook isn't named"
@@ -316,7 +340,7 @@ mod tests {
         let catalog =
             Catalog::build(&spec(&["headway", "notebook"], Policy::default()), &host).unwrap();
         let tools = catalog.model_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
         let mut call = crate::tools::PartialToolCall::default();
         *call.id_mut() = Some("1".into());
         *call.name_mut() = Some("notebook_show".into());

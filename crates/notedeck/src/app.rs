@@ -65,6 +65,11 @@ pub enum AppAction {
 /// to that app's [`AppResponse::action`], so a clicked widget pushes its action
 /// here instead. The shell drains it after each app's `render` (see
 /// [`take`](Self::take)) and routes every action exactly like `AppResponse::action`.
+///
+/// One producer pushes from `update` instead: Dave's native agent loop, when
+/// a model calls a UI tool (it opens a thread, routes a column). It pushes
+/// only when the host has a window ([`AppContext::egui`](crate::AppContext::egui)
+/// is `Some`), since headless there is no render to drain the queue.
 #[derive(Default)]
 pub struct AppActionQueue {
     actions: Vec<AppAction>,
@@ -640,11 +645,13 @@ impl Notedeck {
     /// correctness:
     ///
     /// - **Nav requests** ([`Navigator`]) and **app actions**
-    ///   ([`AppActionQueue`]) are *only ever produced during render* — apps
-    ///   enqueue them from `render`/`render_nav` and inline `KindRenderer`
-    ///   widgets, never from `update`. With no render pass, both queues stay
-    ///   empty, so skipping their drain leaks nothing and drops no work an
-    ///   `update` loop depends on.
+    ///   ([`AppActionQueue`]) are produced during render — apps enqueue them
+    ///   from `render`/`render_nav` and inline `KindRenderer` widgets. The one
+    ///   `update` producer, Dave's native loop sending a UI tool's intent,
+    ///   checks [`AppContext::egui`](crate::AppContext::egui) and refuses the
+    ///   call headless rather than queueing it. With no render pass, both
+    ///   queues stay empty, so skipping their drain leaks nothing and drops no
+    ///   work an `update` loop depends on.
     /// - **Keybindings / focus** are input-driven UI concerns with no
     ///   background counterpart.
     ///
