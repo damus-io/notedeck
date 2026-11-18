@@ -20,7 +20,9 @@
 //! `query` tool and thread summaries already hand a model.
 //!
 //! Showing the user one of these in the window, rather than reading it, is
-//! [`open`]'s job: `nd nostr open-profile|open-thread|open-hashtag`.
+//! [`open`]'s job: `nd nostr open-profile|open-thread|open-hashtag`. Acting
+//! as the user (post, reply, react, follow, zap) is [`act`]'s, and every one
+//! of those asks first.
 
 use nostrdb::{Filter, Note, NoteReply, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
@@ -47,13 +49,16 @@ const MAX_LIMIT: u64 = 200;
 /// e-tags (or a hostile one) never walks forever.
 const MAX_ANCESTORS: usize = 64;
 
-/// Every nostr data tool, ready to register.
+/// Every nostr data tool, ready to register: the reads here, then
+/// [`act`]'s writes (post, reply, react, follow, unfollow).
 pub fn tools() -> Vec<RegisteredTool> {
-    vec![
+    let mut tools = vec![
         RegisteredTool::new(GetProfile),
         RegisteredTool::new(LoadThread),
         RegisteredTool::new(ReadTimeline),
-    ]
+    ];
+    tools.extend(act::tools());
+    tools
 }
 
 /// A read transaction, its error worded for the caller.
@@ -568,6 +573,8 @@ impl AppTool for ReadTimeline {
     }
 }
 
+#[path = "nostr_tools/act.rs"]
+pub mod act;
 #[path = "nostr_tools/open.rs"]
 pub mod open;
 

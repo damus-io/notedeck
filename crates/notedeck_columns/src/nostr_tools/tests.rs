@@ -348,13 +348,27 @@ fn read_timeline_by_author_and_hashtag() {
     assert!(err.contains("not both"), "{err}");
 }
 
-/// Every tool is a read a model can call: a data tool under `nd nostr`,
-/// read-only (so Observe in the approval table), answering once.
+/// The reads are what a model can call unasked: data tools under `nd
+/// nostr`, read-only (so Observe in the approval table), answering once.
+/// The writes beside them declare ActAsUser.
 #[test]
-fn the_tools_are_model_callable_reads_under_nd_nostr() {
+fn the_reads_are_observe_and_the_writes_act_as_the_user() {
     let tools = tools();
-    assert_eq!(tools.len(), 3);
-    for tool in &tools {
+    let names: Vec<_> = tools.iter().map(|t| t.name()).collect();
+    assert_eq!(
+        names,
+        [
+            "nostr_get_profile",
+            "nostr_load_thread",
+            "nostr_read_timeline",
+            "nostr_post",
+            "nostr_reply",
+            "nostr_react",
+            "nostr_follow",
+            "nostr_unfollow",
+        ]
+    );
+    for (i, tool) in tools.iter().enumerate() {
         let spec = tool.spec();
         assert_eq!(
             spec.command_path().first(),
@@ -364,15 +378,21 @@ fn the_tools_are_model_callable_reads_under_nd_nostr() {
         );
         assert_eq!(spec.kind(), notedeck::ToolKind::Data);
         assert!(spec.stream_mode().is_none());
-        assert_eq!(spec.capability_class(), notedeck::tool::Capability::Observe);
+        let class = if i < 3 {
+            notedeck::tool::Capability::Observe
+        } else {
+            notedeck::tool::Capability::ActAsUser
+        };
+        assert_eq!(spec.capability_class(), class, "{}", spec.name());
     }
 }
 
-/// A spec naming the `nostr` app is offered the reads and the opens, all
-/// unasked: a read is Observe, an open is Navigate. This is the catalog
+/// A spec naming the `nostr` app is offered every nostr tool. The reads
+/// (Observe) and opens (Navigate) run unasked; the writes and the zap
+/// (ActAsUser) ask every time, and Plan refuses them. This is the catalog
 /// built from the specs Columns registers, not from stand-ins.
 #[test]
-fn a_nostr_toolset_offers_the_reads_and_the_opens_unasked() {
+fn a_nostr_toolset_offers_reads_and_opens_unasked_and_gates_the_actions() {
     use agentium_core::agent_spec::{AgentSpec, Approval, Catalog};
     use notedeck::tool::Capability;
 
@@ -385,25 +405,270 @@ fn a_nostr_toolset_offers_the_reads_and_the_opens_unasked() {
     }))
     .expect("spec");
     let data: Vec<ToolSpec> = tools().iter().map(|t| t.spec().clone()).collect();
-    let ui = open::specs();
+    let mut ui = open::specs();
+    ui.extend(act::ui_specs());
     let catalog = Catalog::build(&spec, data.iter().chain(&ui)).expect("catalog");
 
     let offered: Vec<_> = catalog.tools().iter().map(|t| t.spec.name()).collect();
-    assert_eq!(
-        offered,
-        [
-            "nostr_get_profile",
-            "nostr_load_thread",
-            "nostr_read_timeline",
-            open::OPEN_PROFILE,
-            open::OPEN_THREAD,
-            open::OPEN_HASHTAG,
-        ]
-    );
-    for tool in catalog.tools() {
-        assert_eq!(tool.approval, Approval::Auto, "{}", tool.spec.name());
+    let unasked = [
+        "nostr_get_profile",
+        "nostr_load_thread",
+        "nostr_read_timeline",
+        open::OPEN_PROFILE,
+        open::OPEN_THREAD,
+        open::OPEN_HASHTAG,
+    ];
+    let gated = [
+        "nostr_post",
+        "nostr_reply",
+        "nostr_react",
+        "nostr_follow",
+        "nostr_unfollow",
+        act::ZAP,
+    ];
+    assert_eq!(offered.len(), unasked.len() + gated.len(), "{offered:?}");
+    for name in unasked {
+        assert_eq!(
+            catalog.get(name).unwrap().approval,
+            Approval::Auto,
+            "{name}"
+        );
+    }
+    for name in gated {
+        let tool = catalog.get(name).unwrap();
+        assert_eq!(tool.class, Capability::ActAsUser, "{name}");
+        assert_eq!(tool.approval, Approval::Gated, "{name}");
     }
     for name in [open::OPEN_PROFILE, open::OPEN_THREAD, open::OPEN_HASHTAG] {
         assert_eq!(catalog.get(name).unwrap().class, Capability::Navigate);
     }
+}
+
+// ---------------------------------------------------------------------------
+// the writes
+// ---------------------------------------------------------------------------
+
+/// What a write answered and the note it wrote, as the db holds it.
+struct Written {
+    /// The tool's answer.
+    out: Value,
+    /// The written note's JSON, read back from the db.
+    note: Value,
+}
+
+impl World {
+    /// Call the write `name` with `args` as alice, then wait for the note it
+    /// wrote (of `kind`) to land in the db.
+    fn write(&mut self, name: &str, args: Value, kind: u64) -> Written {
+        let sub = {
+            let ctx = self.host.app_context();
+            ctx.ndb
+                .subscribe(&[Filter::new()
+                    .authors([self.alice.pubkey.bytes()])
+                    .kinds([kind])
+                    .build()])
+                .expect("subscribe")
+        };
+        let out = self.call(name, args).expect("write");
+        let ctx = self.host.app_context();
+        let mut stream = SubscriptionStream::new(ctx.ndb.clone(), sub);
+        notedeck_testing::await_notes(&mut stream, 1);
+
+        // A follow answers its note under `sent`; the others at the top.
+        let id = out["id"]
+            .as_str()
+            .or(out["sent"]["id"].as_str())
+            .expect("id");
+        let id = hex::decode(id).expect("hex");
+        let txn = Transaction::new(ctx.ndb).expect("txn");
+        let note = ctx
+            .ndb
+            .get_note_by_id(&txn, &id.try_into().expect("32 bytes"))
+            .expect("the written note is in the db");
+        let note: Value = serde_json::from_str(&note.json().expect("json")).expect("note json");
+        Written { out, note }
+    }
+}
+
+/// The tags of a note's JSON whose name is `name`, each as its strings.
+fn tags_named(note: &Value, name: &str) -> Vec<Vec<String>> {
+    note["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .map(|t| {
+            t.as_array()
+                .expect("tag")
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .filter(|t| t.first().map(String::as_str) == Some(name))
+        .collect()
+}
+
+/// A post is a kind 1 signed by the account, its hashtags tagged, stored
+/// locally at once, and the answer names it.
+#[test]
+fn post_signs_a_note_as_the_account_and_stores_it() {
+    let mut w = world();
+    let Written { out, note } = w.write(
+        "nostr_post",
+        json!({ "content": "  hello from the agent #notedeck  " }),
+        1,
+    );
+    assert_eq!(out["kind"], json!(1));
+    assert!(out["note"].as_str().unwrap().starts_with("note1"));
+    assert_eq!(note["pubkey"], json!(w.alice.pubkey.hex()));
+    assert_eq!(note["content"], json!("hello from the agent #notedeck"));
+    assert_eq!(tags_named(&note, "t"), [["t", "notedeck"]]);
+
+    let err = w
+        .call("nostr_post", json!({ "content": "  " }))
+        .unwrap_err();
+    assert!(err.contains("needs some content"), "{err}");
+}
+
+/// A reply threads under its parent's root and tags everyone in the
+/// thread; a note the db lacks is refused, not guessed at.
+#[test]
+fn reply_threads_under_the_root_and_needs_the_parent() {
+    let mut w = world();
+    let parent = nostrdb_net::NoteId::new(w.carol_reply).to_bech().unwrap();
+    let Written { note, .. } = w.write(
+        "nostr_reply",
+        json!({ "note": parent, "content": "agreed" }),
+        1,
+    );
+    let e = tags_named(&note, "e");
+    assert!(e.contains(&vec![
+        "e".into(),
+        hex::encode(w.root),
+        String::new(),
+        "root".into()
+    ]));
+    assert!(e.contains(&vec![
+        "e".into(),
+        hex::encode(w.carol_reply),
+        String::new(),
+        "reply".into()
+    ]));
+    let p: Vec<_> = tags_named(&note, "p")
+        .into_iter()
+        .map(|t| t[1].clone())
+        .collect();
+    assert!(p.contains(&w.carol.pubkey.hex()), "{p:?}");
+    assert!(p.contains(&w.bob.pubkey.hex()), "{p:?}");
+
+    let unseen = nostrdb_net::NoteId::new([9; 32]).hex();
+    let err = w
+        .call("nostr_reply", json!({ "note": unseen, "content": "hi" }))
+        .unwrap_err();
+    assert!(err.contains("isn't in this notedeck's db"), "{err}");
+}
+
+/// A reaction is a like by default, tags the note and its author, and
+/// refuses a sentence.
+#[test]
+fn react_likes_by_default_and_tags_the_note() {
+    let mut w = world();
+    let Written { out, note } = w.write("nostr_react", json!({ "note": hex::encode(w.root) }), 7);
+    assert_eq!(out["kind"], json!(7));
+    assert_eq!(note["content"], json!("+"));
+    assert_eq!(tags_named(&note, "e")[0][1], hex::encode(w.root));
+    assert_eq!(tags_named(&note, "p")[0][1], w.bob.pubkey.hex());
+    assert_eq!(tags_named(&note, "k"), [["k", "1"]]);
+
+    let err = w
+        .call(
+            "nostr_react",
+            json!({ "note": hex::encode(w.root), "reaction": "nice one" }),
+        )
+        .unwrap_err();
+    assert!(err.contains("not a reaction"), "{err}");
+}
+
+/// A follow republishes the contact list with the key added and the rest
+/// kept; following someone already followed sends nothing.
+#[test]
+fn follow_adds_to_the_contact_list_and_keeps_the_rest() {
+    let mut w = world();
+    let Written { out, note } = w.write("nostr_follow", json!({ "who": w.carol.pubkey.npub() }), 3);
+    assert_eq!(out["following"], json!(true));
+    assert_eq!(out["sent"]["kind"], json!(3));
+    let p: Vec<_> = tags_named(&note, "p")
+        .into_iter()
+        .map(|t| t[1].clone())
+        .collect();
+    assert_eq!(p, [w.bob.pubkey.hex(), w.carol.pubkey.hex()]);
+
+    let again = w
+        .call("nostr_follow", json!({ "who": w.bob.pubkey.hex() }))
+        .unwrap();
+    assert_eq!(again["following"], json!(true));
+    assert_eq!(again["sent"], Value::Null);
+}
+
+/// An unfollow republishes the contact list without the key; unfollowing
+/// someone not followed sends nothing.
+#[test]
+fn unfollow_drops_from_the_contact_list() {
+    let mut w = world();
+    let Written { out, note } = w.write("nostr_unfollow", json!({ "who": w.bob.pubkey.hex() }), 3);
+    assert_eq!(out["following"], json!(false));
+    assert!(tags_named(&note, "p").is_empty(), "{note}");
+
+    let again = w
+        .call("nostr_unfollow", json!({ "who": w.carol.pubkey.hex() }))
+        .unwrap();
+    assert_eq!(again["sent"], Value::Null);
+}
+
+/// With no contact list of the account's in the db, a follow refuses
+/// rather than publishing a list of one that would drop every other
+/// follow.
+#[test]
+fn follow_refuses_without_the_accounts_contact_list() {
+    let dave = FullKeypair::generate();
+    let carol = FullKeypair::generate();
+    let mut host = TestHost::with_account(&dave);
+    let tool = tools()
+        .into_iter()
+        .find(|t| t.name() == "nostr_follow")
+        .unwrap();
+    let mut ctx = host.app_context();
+    let mut cx = ctx.tool_context();
+    let ToolOutcome::Error(err) =
+        RegisteredTool::call(&tool, &mut cx, &json!({ "who": carol.pubkey.hex() }))
+    else {
+        panic!("a follow without a contact list went through");
+    };
+    assert!(err.contains("doesn't have your contact list"), "{err}");
+}
+
+/// A zap answers the zap button's action for the note's author, in
+/// millisats; a note the db lacks has no known author and is refused.
+#[test]
+fn zap_raises_the_zap_buttons_action_for_the_author() {
+    use notedeck::{AppAction, NoteAction, ZapAction};
+
+    let mut w = world();
+    let ctx = w.host.app_context();
+    let root = nostrdb_net::NoteId::new(w.root);
+    let outcome = act::call_ui(&ctx, act::ZAP, &json!({ "note": root.hex(), "sats": 21 }));
+    let Some(ToolOutcome::Intent(AppAction::Note(NoteAction::Zap(ZapAction::Send(zap))))) = outcome
+    else {
+        panic!("a zap didn't raise the zap action");
+    };
+    assert_eq!(zap.target.note_id, root);
+    assert_eq!(zap.target.zap_recipient, w.bob.pubkey);
+    assert_eq!(zap.specified_msats, Some(21_000));
+
+    let unseen = nostrdb_net::NoteId::new([9; 32]).hex();
+    let Some(ToolOutcome::Error(err)) = act::call_ui(&ctx, act::ZAP, &json!({ "note": unseen }))
+    else {
+        panic!("a zap of an unseen note went through");
+    };
+    assert!(err.contains("isn't in this notedeck's db"), "{err}");
+    assert!(act::call_ui(&ctx, open::OPEN_THREAD, &json!({})).is_none());
 }

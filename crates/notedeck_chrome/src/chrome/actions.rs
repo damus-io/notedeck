@@ -1359,6 +1359,60 @@ mod columns_search_tests {
             "the hashtag's timeline opens"
         );
     }
+
+    /// An agent's `nostr_zap`, once approved, takes the zap button's path:
+    /// the registry answers a CallTool, Columns raises the click's
+    /// `NoteAction::Zap`, and the chrome runs it through Columns' action
+    /// handler. With no wallet that is the button's own outcome, a
+    /// `SenderNoWallet` error on the note's zap state, which the note's zap
+    /// button then shows.
+    #[tokio::test]
+    async fn the_nostr_zap_tool_takes_the_zap_buttons_path() {
+        let OpenFixture {
+            _dir,
+            kp,
+            egui_ctx,
+            mut notedeck,
+            mut chrome,
+        } = OpenFixture::new();
+        let update = notedeck::App::take_tool_update(&mut chrome).expect("a first registry");
+        notedeck.apply_tool_update(update);
+        let mut ctx = notedeck.app_context();
+        let ids = ingest(
+            ctx.ndb,
+            &kp,
+            &[SeedNote {
+                kind: 1,
+                content: "a note an agent zaps",
+            }],
+        )
+        .await;
+
+        let ToolOutcome::Intent(action @ AppAction::CallTool(_)) = ctx.call_tool(
+            notedeck_columns::nostr_tools::act::ZAP,
+            &serde_json::json!({ "note": ids[0].hex(), "sats": 21 }),
+        ) else {
+            panic!("nostr_zap is a UI tool, so the registry answers with a CallTool");
+        };
+        let mut action = Some(action);
+        frame_at(&egui_ctx, 1.0 / 60.0, |ui| {
+            if let Some(action) = action.take() {
+                chrome_handle_app_action(&mut chrome, &mut ctx, action, ui);
+            }
+        });
+
+        let target = notedeck::ZapTarget::Note(notedeck::NoteZapTarget {
+            note_id: ids[0].bytes(),
+            zap_recipient: kp.pubkey.bytes(),
+        });
+        assert!(
+            matches!(
+                ctx.zaps.any_zap_state_for(kp.pubkey.bytes(), target),
+                Err(notedeck::ZappingError::SenderNoWallet)
+            ),
+            "the zap reached Columns' zap path and found no wallet"
+        );
+    }
 }
 
 // Routing an `AppAction::CallTool` to the app that owns the tool, and what the
