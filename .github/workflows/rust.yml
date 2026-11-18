@@ -75,6 +75,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/build-guest-agent
 
+  # agentium-sandbox's microVM runner (microsandbox), on the two desktop
+  # platforms it runs on. The `microvm` feature is off in every other job,
+  # so this is the only place microsandbox's graph is compiled. Building it
+  # fetches agentd (the guest's init) into OUT_DIR; it downloads nothing
+  # into $HOME. No guest is booted: hosted runners have no KVM.
+  sandbox:
+    name: Build sandbox runner (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install libcap-ng (msb_krun links it on Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcap-ng-dev
+      - run: cargo test -p agentium-sandbox --features microvm
+
   android:
     name: Check (android)
     runs-on: ubuntu-22.04

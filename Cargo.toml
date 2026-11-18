@@ -39,12 +39,16 @@ members = [
     "crates/notedeck_testing",
     "crates/notedeck-agent-proto",
     "crates/notedeck-agent-guest",
+    "crates/agentium-sandbox",
 ]
 
 [workspace.dependencies]
 agentium-core = { path = "crates/agentium-core" }
 notedeck-agent-proto = { path = "crates/notedeck-agent-proto" }
 notedeck-agent-guest = { path = "crates/notedeck-agent-guest" }
+# Desktop-only: microsandbox. Depend on it only under a desktop target gate;
+# see its Cargo.toml.
+agentium-sandbox = { path = "crates/agentium-sandbox" }
 opener = "0.8.2"
 async-trait = "0.1.89"
 chrono = "0.4.40" 

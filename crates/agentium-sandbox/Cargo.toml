@@ -1,0 +1,56 @@
+[package]
+name = "agentium-sandbox"
+edition = "2021"
+version.workspace = true
+description = "Desktop-only microVM sandboxes (microsandbox) for agents notedeck doesn't fully trust"
+
+# DESKTOP ONLY. microsandbox runs guests under libkrun, which needs
+# Apple-Silicon macOS (Hypervisor.framework) or KVM Linux, so nothing here
+# may reach the android or iOS builds. Three fences, any one of which is
+# enough on its own:
+#
+#   1. microsandbox lives in this crate and nowhere else, so a crate gets it
+#      only by depending on agentium-sandbox. agentium-core in particular
+#      must never depend on this crate: it is meant to drop into an iOS
+#      process.
+#   2. The dependency is target-gated below, so an android or iOS build
+#      resolves it away even with every feature on.
+#   3. It is optional, behind `microvm`, so a plain workspace build or
+#      clippy doesn't compile microsandbox's graph (sea-orm, sqlx, reqwest,
+#      rustls) or fetch its guest init.
+#
+# crates/bin_testing/tests/sandbox_desktop_only.rs checks all three.
+#
+# NO DOWNLOADS INTO $HOME AT BUILD TIME. microsandbox's default `prebuilt`
+# feature makes ITS build.rs download the msb runtime and libkrunfw (~54 MB)
+# into ~/.microsandbox, outside OUT_DIR, on every machine that builds it.
+# We turn defaults off and enable only `microsandbox-filesystem/prebuilt`,
+# which fetches agentd (the guest's PID 1, embedded with include_bytes!)
+# into OUT_DIR; set MSB_AGENTD_PATH to stage it from a file for an offline
+# build. msb and libkrunfw are found or installed at RUN time instead; see
+# src/runtime.rs.
+#
+# Pinned exactly: microsandbox is beta and moving (0.6.13 already changed a
+# builder API from 0.6.12, which a caret range picked up silently).
+
+[features]
+default = []
+# Build the microVM runner. On a platform microsandbox can't run on this
+# is a no-op and `availability()` says so.
+microvm = ["dep:microsandbox", "dep:microsandbox-filesystem", "dep:tokio"]
+
+[dependencies]
+thiserror = { workspace = true }
+
+[target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+# Defaults off: `prebuilt` is the $HOME download above, `keyring` pulls
+# dbus on Linux. `net` stays: a guest's network and its egress policy.
+microsandbox = { version = "=0.6.13", default-features = false, features = ["net"], optional = true }
+# Only to switch on its `prebuilt` feature (agentd into OUT_DIR); no code
+# here names it. Must stay at microsandbox's exact version.
+microsandbox-filesystem = { version = "=0.6.13", default-features = false, features = ["prebuilt"], optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

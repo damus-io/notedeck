@@ -31,6 +31,8 @@ mkShell ({
   ] ++ lib.optionals (!stdenv.isDarwin) [
     alsa-lib
     zenity
+    # agentium-sandbox --features microvm: microsandbox's VMM links it
+    libcap_ng
   ] ++ lib.optionals use_android [
     gradle
     jre
