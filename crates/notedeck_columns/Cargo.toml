@@ -63,6 +63,8 @@ crossbeam-channel = { workspace = true }
 rfd = { workspace = true }
 
 [dev-dependencies]
+# The agent catalog, to check what a `nostr` toolset offers from the real specs.
+agentium-core = { workspace = true }
 # egui no longer bundles fonts by default; harnesses that don't install
 # notedeck's own fonts fall back to egui's, as they did before 0.36.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }

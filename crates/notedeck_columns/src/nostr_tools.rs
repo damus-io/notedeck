@@ -18,6 +18,9 @@
 //!
 //! Notes are answered as the engine's [`SimpleNote`], the shape Dave's
 //! `query` tool and thread summaries already hand a model.
+//!
+//! Showing the user one of these in the window, rather than reading it, is
+//! [`open`]'s job: `nd nostr open-profile|open-thread|open-hashtag`.
 
 use nostrdb::{Filter, Note, NoteReply, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
@@ -564,6 +567,9 @@ impl AppTool for ReadTimeline {
         Some(render_notes(&out.notes))
     }
 }
+
+#[path = "nostr_tools/open.rs"]
+pub mod open;
 
 #[cfg(test)]
 #[path = "nostr_tools/tests.rs"]

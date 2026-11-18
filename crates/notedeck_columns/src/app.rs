@@ -1141,6 +1141,25 @@ impl notedeck::App for Damus {
         crate::nostr_tools::tools()
     }
 
+    /// The nostr navigation tools (`nd nostr open-profile|open-thread|open-hashtag`),
+    /// which the same toolset offers as Navigate (see [`nostr_tools::open`](crate::nostr_tools::open)).
+    fn ui_tools(&self) -> Vec<notedeck::ToolSpec> {
+        crate::nostr_tools::open::specs()
+    }
+
+    /// Run a navigation tool: its answer is the click's
+    /// [`AppAction::Note`](notedeck::AppAction::Note), which the chrome routes
+    /// next, switching to Columns.
+    fn call_ui_tool(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> notedeck::ToolOutcome {
+        crate::nostr_tools::open::call(ctx, name, args)
+            .unwrap_or_else(|| notedeck::ToolOutcome::Error(format!("unknown tool '{name}'")))
+    }
+
     #[profiling::function]
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         render_damus(self, ctx, ui)

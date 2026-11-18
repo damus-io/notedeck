@@ -6136,6 +6136,7 @@ dependencies = [
 name = "notedeck_columns"
 version = "0.11.0-beta.1"
 dependencies = [
+ "agentium-core",
  "base64 0.22.1",
  "bech32",
  "bitflags 2.13.2",

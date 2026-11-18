@@ -24,7 +24,7 @@
 //! A [UI tool](crate::tool::ToolKind::Ui) acts on the window: it opens a pane, moves a
 //! cursor or routes a column. Most are a key binding's action and have no
 //! command line, so no toolset reaches them. One that an app puts on the
-//! `nd` surface (`nd nostr open …`) has been made for a caller outside the
+//! `nd` surface (`nd nostr open-thread`) has been made for a caller outside the
 //! window, and its toolset offers it like any other `nd <app>` command. It
 //! is [`Navigate`](Capability::Navigate) unless its spec declares a class,
 //! so it runs unasked. A UI tool that changes data has to declare that

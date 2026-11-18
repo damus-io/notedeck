@@ -367,3 +367,43 @@ fn the_tools_are_model_callable_reads_under_nd_nostr() {
         assert_eq!(spec.capability_class(), notedeck::tool::Capability::Observe);
     }
 }
+
+/// A spec naming the `nostr` app is offered the reads and the opens, all
+/// unasked: a read is Observe, an open is Navigate. This is the catalog
+/// built from the specs Columns registers, not from stand-ins.
+#[test]
+fn a_nostr_toolset_offers_the_reads_and_the_opens_unasked() {
+    use agentium_core::agent_spec::{AgentSpec, Approval, Catalog};
+    use notedeck::tool::Capability;
+
+    let spec: AgentSpec = serde_json::from_value(json!({
+        "slug": "nostr",
+        "model": { "provider": "anthropic", "model": "claude-sonnet-5-5" },
+        "prompt": "Look around nostr.",
+        "toolsets": [{ "kind": "notedeck", "apps": ["nostr"] }],
+        "budget": { "max_steps": 10 }
+    }))
+    .expect("spec");
+    let data: Vec<ToolSpec> = tools().iter().map(|t| t.spec().clone()).collect();
+    let ui = open::specs();
+    let catalog = Catalog::build(&spec, data.iter().chain(&ui)).expect("catalog");
+
+    let offered: Vec<_> = catalog.tools().iter().map(|t| t.spec.name()).collect();
+    assert_eq!(
+        offered,
+        [
+            "nostr_get_profile",
+            "nostr_load_thread",
+            "nostr_read_timeline",
+            open::OPEN_PROFILE,
+            open::OPEN_THREAD,
+            open::OPEN_HASHTAG,
+        ]
+    );
+    for tool in catalog.tools() {
+        assert_eq!(tool.approval, Approval::Auto, "{}", tool.spec.name());
+    }
+    for name in [open::OPEN_PROFILE, open::OPEN_THREAD, open::OPEN_HASHTAG] {
+        assert_eq!(catalog.get(name).unwrap().class, Capability::Navigate);
+    }
+}

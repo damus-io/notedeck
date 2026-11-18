@@ -1274,6 +1274,91 @@ mod columns_search_tests {
             "the hashtag's timeline opens"
         );
     }
+
+    /// The nostr open tools, called the way a native-loop agent calls them
+    /// (through the registry, which answers a UI tool with a `CallTool`
+    /// intent that Dave queues for the chrome), switch to Columns and put
+    /// the profile, the note's thread and the hashtag's timeline on top of
+    /// its selected column, as a click on each would.
+    #[tokio::test]
+    async fn the_nostr_open_tools_route_columns_as_a_click_would() {
+        let OpenFixture {
+            _dir,
+            kp,
+            egui_ctx,
+            mut notedeck,
+            mut chrome,
+        } = OpenFixture::new();
+        let update = notedeck::App::take_tool_update(&mut chrome).expect("a first registry");
+        notedeck.apply_tool_update(update);
+        let mut ctx = notedeck.app_context();
+        let ids = ingest(
+            ctx.ndb,
+            &kp,
+            &[SeedNote {
+                kind: 1,
+                content: "a note an agent opens",
+            }],
+        )
+        .await;
+        let columns = chrome
+            .apps
+            .iter()
+            .position(|app| matches!(app, crate::app::NotedeckApp::Columns(_)))
+            .expect("columns in the roster");
+
+        let mut t = 0.0;
+        let mut open =
+            |chrome: &mut Chrome, ctx: &mut AppContext, name: &str, args: serde_json::Value| {
+                let ToolOutcome::Intent(action @ AppAction::CallTool(_)) =
+                    ctx.call_tool(name, &args)
+                else {
+                    panic!("{name} is a UI tool, so the registry answers with a CallTool");
+                };
+                t += 1.0 / 60.0;
+                let mut action = Some(action);
+                frame_at(&egui_ctx, t, |ui| {
+                    if let Some(action) = action.take() {
+                        chrome_handle_app_action(chrome, ctx, action, ui);
+                    }
+                });
+            };
+
+        let npub = kp.pubkey.npub().expect("npub");
+        open(
+            &mut chrome,
+            &mut ctx,
+            notedeck_columns::nostr_tools::open::OPEN_PROFILE,
+            serde_json::json!({ "who": npub }),
+        );
+        assert_eq!(chrome.active, columns as i32, "the open lands in Columns");
+        assert!(
+            matches!(columns_top(&mut chrome, &mut ctx), Route::Timeline(TimelineKind::Profile(pk)) if pk == kp.pubkey),
+            "the profile opens"
+        );
+
+        open(
+            &mut chrome,
+            &mut ctx,
+            notedeck_columns::nostr_tools::open::OPEN_THREAD,
+            serde_json::json!({ "note": ids[0].hex() }),
+        );
+        assert!(
+            matches!(columns_top(&mut chrome, &mut ctx), Route::Thread(sel) if sel.root_id.bytes() == ids[0].bytes()),
+            "the note's thread opens"
+        );
+
+        open(
+            &mut chrome,
+            &mut ctx,
+            notedeck_columns::nostr_tools::open::OPEN_HASHTAG,
+            serde_json::json!({ "hashtag": "#zebra" }),
+        );
+        assert!(
+            matches!(columns_top(&mut chrome, &mut ctx), Route::Timeline(TimelineKind::Hashtag(tags)) if tags == ["zebra"]),
+            "the hashtag's timeline opens"
+        );
+    }
 }
 
 // Routing an `AppAction::CallTool` to the app that owns the tool, and what the
