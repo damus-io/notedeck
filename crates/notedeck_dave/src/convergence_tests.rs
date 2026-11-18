@@ -1085,6 +1085,48 @@ async fn subagent_internal_tools() {
     assert_host_matches_fold(script).await;
 }
 
+/// A native sub-agent's row (the researcher under an `ask_researcher`
+/// call): its steps carry no tool id and no `tool_call` note precedes them,
+/// one failed, and the run fails. The fold still nests each under the row.
+#[tokio::test]
+async fn native_sub_agent_row() {
+    let step = |tool: &str, subject: &str, is_error| {
+        Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
+            tool_name: tool.to_string(),
+            summary: subject.to_string(),
+            output: None,
+            parent_task_id: Some("q".to_string()),
+            file_update: None,
+            tool_use_id: None,
+            description: None,
+            is_error,
+        }))
+    };
+    let mut script = Vec::from(user_turn("validate the idea"));
+    script.extend([
+        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
+            task_id: "q".to_string(),
+            description: "Who sells idea journals?".to_string(),
+            subagent_type: "researcher".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: false,
+            agent_id: None,
+            transcript: Default::default(),
+        })),
+        step("web_search", "idea journal apps", false),
+        step("web_fetch", "https://acme.example", true),
+        Step::Backend(DaveApiResponse::SubagentFailed {
+            task_id: "q".to_string(),
+            error: "stopped before it answered".to_string(),
+        }),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
 /// G2: a tool still running when the turn ends is finalized on the host, and
 /// its made-up result is published so the fold stops its spinner too.
 #[tokio::test]

@@ -33,8 +33,16 @@
 //! starts [waiting](StartedCall::Waiting): the round holds it until the
 //! frame's [`start_waiting`](ToolRound::start_waiting) pass finds it allowed
 //! and starts it there, as a fast answer or a job like any other.
+//!
+//! ## A job can show its progress before it answers
+//!
+//! A long job (a sub-agent's research) [reports](JobCtx::report) what it is
+//! doing as backend responses, over a channel of the round's own: the frame
+//! [drains](ToolRound::next_progress) them each pass and applies them as it
+//! would a backend's, so the row they build shows, and publishes, while the
+//! job is still running. Nothing is shared but the channel.
 
-use crate::messages::PermissionResponse;
+use crate::messages::{DaveApiResponse, PermissionResponse};
 use crate::tools::AppToolCall;
 use crate::{Message, ToolResponse, ToolResponses};
 use notedeck::Waker;
@@ -43,10 +51,54 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use tokio::sync::oneshot;
 
-/// The slow work of one call, run on a thread of its own. It is handed the
-/// round's [`ToolCancel`] and returns the call's answer, or an error for the
-/// model.
-pub(crate) type ToolJob = Box<dyn FnOnce(&ToolCancel) -> Result<ToolResponses, String> + Send>;
+/// The slow work of one call, run on a thread of its own. It is handed its
+/// [`JobCtx`] (the round's stop, and where it reports progress) and returns
+/// the call's answer, or an error for the model.
+pub(crate) type ToolJob = Box<dyn FnOnce(&JobCtx) -> Result<ToolResponses, String> + Send>;
+
+/// What a running job is handed: the round's [`ToolCancel`], the id of the
+/// call it answers, and where it reports progress for the frame to show
+/// before its answer lands (see the module docs).
+pub(crate) struct JobCtx {
+    cancel: ToolCancel,
+    call_id: String,
+    progress: mpsc::Sender<DaveApiResponse>,
+    waker: Waker,
+}
+
+impl JobCtx {
+    /// The round's stop: a long job checks it between steps.
+    pub(crate) fn cancel(&self) -> &ToolCancel {
+        &self.cancel
+    }
+
+    /// The id the model gave the call this job answers, which names what
+    /// the job reports (a sub-agent's row is keyed by it).
+    pub(crate) fn call_id(&self) -> &str {
+        &self.call_id
+    }
+
+    /// Report `progress`, applied on the frame as a backend's response would
+    /// be, and wake the frame to show it. Dropped once the round is gone.
+    pub(crate) fn report(&self, progress: DaveApiResponse) {
+        if self.progress.send(progress).is_ok() {
+            self.waker.wake();
+        }
+    }
+
+    /// A context for a job run outside any round, call `call_id`, stopped by
+    /// `cancel`: what it reports goes nowhere.
+    #[cfg(test)]
+    pub(crate) fn detached(call_id: &str, cancel: ToolCancel) -> Self {
+        let (progress, _) = mpsc::channel();
+        Self {
+            cancel,
+            call_id: call_id.to_owned(),
+            progress,
+            waker: Waker::noop(),
+        }
+    }
+}
 
 /// How one call of a round started.
 pub(crate) enum StartedCall {
@@ -208,6 +260,18 @@ pub(crate) struct ToolRound {
     /// Where a started job's answer goes; kept for the jobs the frame starts
     /// later.
     tx: mpsc::Sender<Landed>,
+    /// What the jobs have reported and the frame hasn't shown yet.
+    progress: mpsc::Receiver<DaveApiResponse>,
+    /// Handed to each job, in its [`JobCtx`].
+    progress_tx: mpsc::Sender<DaveApiResponse>,
+}
+
+/// Where a job started by the round sends what it has to say.
+struct JobSinks<'a> {
+    cancel: &'a ToolCancel,
+    landed: &'a mpsc::Sender<Landed>,
+    progress: &'a mpsc::Sender<DaveApiResponse>,
+    waker: &'a Waker,
 }
 
 impl ToolRound {
@@ -216,31 +280,41 @@ impl ToolRound {
     /// `waker` when its answer is in.
     pub(crate) fn start(calls: Vec<RoundCall>, waker: &Waker) -> Self {
         let (tx, landed) = mpsc::channel();
+        let (progress_tx, progress) = mpsc::channel();
         let cancel = ToolCancel::default();
+        let sinks = JobSinks {
+            cancel: &cancel,
+            landed: &tx,
+            progress: &progress_tx,
+            waker,
+        };
         let mut ids = Vec::with_capacity(calls.len());
         let mut answers = Vec::with_capacity(calls.len());
         let mut outstanding = 0;
         let mut waiting = Vec::new();
 
         for (index, call) in calls.into_iter().enumerate() {
-            ids.push(call.id);
             let job = match call.started {
                 StartedCall::Done(response) => {
+                    ids.push(call.id);
                     answers.push(Some(*response));
                     continue;
                 }
-                StartedCall::Waiting(call) => {
+                StartedCall::Waiting(waiting_call) => {
+                    ids.push(call.id);
                     answers.push(None);
                     outstanding += 1;
                     waiting.push(Parked {
                         index,
-                        waiting: call,
+                        waiting: waiting_call,
                     });
                     continue;
                 }
                 StartedCall::Pending(job) => job,
             };
-            match spawn_job(index, job, &cancel, &tx, waker) {
+            let spawned = spawn_job(index, call.id.clone(), job, &sinks);
+            ids.push(call.id);
+            match spawned {
                 Ok(()) => {
                     answers.push(None);
                     outstanding += 1;
@@ -268,6 +342,8 @@ impl ToolRound {
             turn_over: false,
             waiting,
             tx,
+            progress,
+            progress_tx,
         }
     }
 
@@ -311,7 +387,14 @@ impl ToolRound {
         match started {
             StartedCall::Done(response) => self.answer(index, *response),
             StartedCall::Pending(job) => {
-                if let Err(err) = spawn_job(index, job, &self.cancel, &self.tx, &self.waker) {
+                let sinks = JobSinks {
+                    cancel: &self.cancel,
+                    landed: &self.tx,
+                    progress: &self.progress_tx,
+                    waker: &self.waker,
+                };
+                let call_id = self.ids[index].clone();
+                if let Err(err) = spawn_job(index, call_id, job, &sinks) {
                     self.answer(
                         index,
                         ToolResponses::Error(format!("no thread to run the tool on: {err}")),
@@ -349,6 +432,14 @@ impl ToolRound {
     /// Whether the backend has ended its turn (see [`end_turn`](Self::end_turn)).
     pub(crate) fn turn_over(&self) -> bool {
         self.turn_over
+    }
+
+    /// The next thing a job reported that the frame hasn't shown yet (see
+    /// [`JobCtx::report`]). A job reports before it answers, so once
+    /// [`poll`](Self::poll) has seen a call's answer, everything that call
+    /// reported is here to drain.
+    pub(crate) fn next_progress(&mut self) -> Option<DaveApiResponse> {
+        self.progress.try_recv().ok()
     }
 
     /// Collect the answers that have landed, and say whether the round is
@@ -415,22 +506,26 @@ fn verdict(answer: Result<PermissionResponse, oneshot::error::TryRecvError>) -> 
     }
 }
 
-/// Run `job` on a thread of its own, sending its answer back as call
-/// `index` and waking the frame loop.
+/// Run `job`, the answer to call `call_id`, on a thread of its own, sending
+/// its answer back as call `index` and waking the frame loop.
 fn spawn_job(
     index: usize,
+    call_id: String,
     job: ToolJob,
-    cancel: &ToolCancel,
-    tx: &mpsc::Sender<Landed>,
-    waker: &Waker,
+    sinks: &JobSinks<'_>,
 ) -> std::io::Result<()> {
-    let cancel = cancel.clone();
-    let tx = tx.clone();
-    let waker = waker.clone();
+    let ctx = JobCtx {
+        cancel: sinks.cancel.clone(),
+        call_id,
+        progress: sinks.progress.clone(),
+        waker: sinks.waker.clone(),
+    };
+    let tx = sinks.landed.clone();
+    let waker = sinks.waker.clone();
     std::thread::Builder::new()
         .name("dave-tool".to_owned())
         .spawn(move || {
-            let response = match catch_unwind(AssertUnwindSafe(|| job(&cancel))) {
+            let response = match catch_unwind(AssertUnwindSafe(|| job(&ctx))) {
                 Ok(Ok(response)) => response,
                 Ok(Err(err)) => ToolResponses::Error(err),
                 Err(_) => ToolResponses::Error("the tool panicked".to_owned()),
@@ -539,12 +634,12 @@ mod tests {
         // Held until the test is done, so the job's own answer can't land
         // first and be kept.
         let (_hold, held) = mpsc::channel::<()>();
-        let job: ToolJob = Box::new(move |cancel| {
+        let job: ToolJob = Box::new(move |ctx| {
             let deadline = Instant::now() + Duration::from_secs(5);
-            while !cancel.is_cancelled() && Instant::now() < deadline {
+            while !ctx.cancel().is_cancelled() && Instant::now() < deadline {
                 std::thread::yield_now();
             }
-            let _ = saw_tx.send(cancel.is_cancelled());
+            let _ = saw_tx.send(ctx.cancel().is_cancelled());
             let _ = held.recv();
             Err("stopped".to_owned())
         });
@@ -611,12 +706,12 @@ mod tests {
     #[test]
     fn dropping_a_round_cancels_its_jobs() {
         let (saw_tx, saw_cancel) = mpsc::channel();
-        let job: ToolJob = Box::new(move |cancel| {
+        let job: ToolJob = Box::new(move |ctx| {
             let deadline = Instant::now() + Duration::from_secs(5);
-            while !cancel.is_cancelled() && Instant::now() < deadline {
+            while !ctx.cancel().is_cancelled() && Instant::now() < deadline {
                 std::thread::yield_now();
             }
-            let _ = saw_tx.send(cancel.is_cancelled());
+            let _ = saw_tx.send(ctx.cancel().is_cancelled());
             Ok(ToolResponses::PresentNotes(0))
         });
         let round = ToolRound::start(

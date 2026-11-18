@@ -721,7 +721,8 @@ fn handle_tool_calls(
             session.id
         );
         stale.cancel();
-        let answered = stale.into_answers();
+        let session_id = session.id;
+        let answered = close_round(session, session_id, stale, host);
         for response in answered.responses {
             session.insert_turn_content(response);
         }
@@ -904,6 +905,9 @@ fn withdraw_unanswered(session: &mut session::ChatSession, ids: &[uuid::Uuid], h
 /// turn. The answers go into the chat in call order, the model is asked to
 /// go on unless the round was cancelled, and the turn the round held open
 /// ends. Returns whether it did, so the caller counts the turn as ended.
+///
+/// Every pass, done or not, shows what the round's jobs have reported
+/// meanwhile ([`apply_round_progress`]).
 pub(crate) fn finish_tool_round(
     session: &mut session::ChatSession,
     session_id: SessionId,
@@ -914,7 +918,12 @@ pub(crate) fn finish_tool_round(
     let Some(round) = session.tool_round.as_mut() else {
         return false;
     };
-    if !round.turn_over() || !round.poll() {
+    // Polled before the progress is drained: a job reports before it
+    // answers, so an answer seen here has all its progress in the channel.
+    let answered = round.poll();
+    let turn_over = round.turn_over();
+    apply_round_progress(session, session_id, host);
+    if !turn_over || !answered {
         return false;
     }
     let Some(round) = session.tool_round.take() else {
@@ -924,7 +933,7 @@ pub(crate) fn finish_tool_round(
         responses,
         cancelled,
         unanswered,
-    } = round.into_answers();
+    } = close_round(session, session_id, round, host);
     for response in responses {
         session.insert_turn_content(response);
     }
@@ -935,6 +944,65 @@ pub(crate) fn finish_tool_round(
     handle_stream_end(session, session_id, host, needs_send, needs_compact);
     true
 }
+
+/// Apply what the session's round's jobs have reported and the frame hasn't
+/// shown yet (a sub-agent's row and its steps), as a backend's own responses
+/// are applied: shown, and published for remote observers.
+fn apply_round_progress(
+    session: &mut session::ChatSession,
+    session_id: SessionId,
+    host: &HostCtx<'_>,
+) {
+    let ctx = ApplyCtx {
+        host,
+        persistent_stream: false,
+    };
+    while let Some(progress) = session
+        .tool_round
+        .as_mut()
+        .and_then(ToolRound::next_progress)
+    {
+        apply_response(session, session_id, progress, &ctx);
+    }
+}
+
+/// End `round`, taken off the session: show the last of what its jobs
+/// reported, collect its answers, and fail the sub-agent row of any call
+/// whose job never finished it (the round was stopped, or the job died), so
+/// no row spins on after its call has been answered.
+fn close_round(
+    session: &mut session::ChatSession,
+    session_id: SessionId,
+    mut round: ToolRound,
+    host: &HostCtx<'_>,
+) -> AnsweredRound {
+    let ctx = ApplyCtx {
+        host,
+        persistent_stream: false,
+    };
+    while let Some(progress) = round.next_progress() {
+        apply_response(session, session_id, progress, &ctx);
+    }
+    let answered = round.into_answers();
+    for response in &answered.responses {
+        let Message::ToolResponse(response) = response else {
+            continue;
+        };
+        if !session.subagent_running(response.id()) {
+            continue;
+        }
+        let stopped = DaveApiResponse::SubagentFailed {
+            task_id: response.id().to_owned(),
+            error: UNFINISHED_SUBAGENT.to_owned(),
+        };
+        apply_response(session, session_id, stopped, &ctx);
+    }
+    answered
+}
+
+/// Why a sub-agent row whose call was answered without it is failed (see
+/// [`close_round`]).
+const UNFINISHED_SUBAGENT: &str = "stopped before it answered";
 
 /// End the turn the backend just finished, unless Dave is still running its
 /// tool calls: then the round holds the turn open, and
@@ -2443,6 +2511,16 @@ mod tests {
                         other => format!("{}: {other:?}", r.id()),
                     },
                     Message::User(u) => format!("user: {}", u.text),
+                    Message::Subagent(info) => format!(
+                        "subagent {} {:?}: {}",
+                        info.task_id,
+                        info.status,
+                        info.tool_results
+                            .iter()
+                            .map(|t| format!("{} {}", t.tool_name, t.summary))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                     other => format!("{other:?}"),
                 })
                 .collect()
@@ -2595,12 +2673,12 @@ mod tests {
             // Held until the test is done, so the job's own answer can't
             // land before the drain and be kept.
             let (_hold, held) = mpsc::channel::<()>();
-            let job: ToolJob = Box::new(move |cancel| {
+            let job: ToolJob = Box::new(move |ctx| {
                 let deadline = Instant::now() + Duration::from_secs(5);
-                while !cancel.is_cancelled() && Instant::now() < deadline {
+                while !ctx.cancel().is_cancelled() && Instant::now() < deadline {
                     std::thread::yield_now();
                 }
-                let _ = saw_tx.send(cancel.is_cancelled());
+                let _ = saw_tx.send(ctx.cancel().is_cancelled());
                 let _ = held.recv();
                 Err("stopped".into())
             });
@@ -2635,6 +2713,221 @@ mod tests {
             assert!(!test.dave.session_manager.get(sid).unwrap().is_dispatched());
             assert_ne!(status(&mut test, sid), AgentStatus::Working);
             assert_eq!(saw_cancel.recv_timeout(Duration::from_secs(5)), Ok(true));
+        }
+
+        /// The researcher's run shows under its `ask_researcher` call while
+        /// it runs: a sub-agent row, each search and fetch as it lands, and
+        /// the summary when it answers. A scripted child stands in for the
+        /// model, so the row is built by the real child loop and round.
+        mod researcher_row {
+            use super::*;
+            use crate::sub_agent::{run_child, ChildModel, ChildReply, ChildRow, ChildStep};
+            use crate::tool_round::block_on_own_runtime;
+            use crate::tools::{AppToolCall, AppToolResponse};
+            use agentium_core::agent_spec::pricing::Meter;
+            use agentium_core::agent_spec::web::{WEB_FETCH, WEB_SEARCH};
+            use agentium_core::agent_spec::{AgentSpec, Catalog};
+            use serde_json::{json, Value};
+
+            const QUESTION: &str = "Who sells idea journals?";
+            const SUMMARY: &str = "Acme — pricing: $9/mo";
+
+            /// A child model that replies from a script.
+            struct Script(std::collections::VecDeque<ChildReply>);
+
+            impl ChildModel for Script {
+                async fn reply(
+                    &mut self,
+                    _chat: &[Message],
+                    _with_tools: bool,
+                ) -> Result<ChildReply, String> {
+                    self.0
+                        .pop_front()
+                        .ok_or_else(|| "script ran out".to_owned())
+                }
+            }
+
+            fn web_call(id: &str, name: &str, args: Value) -> ToolCall {
+                ToolCall::new(
+                    id.into(),
+                    ToolCalls::App(AppToolCall {
+                        name: name.into(),
+                        args,
+                    }),
+                )
+            }
+
+            /// Call `q`, answered by the researcher spec's child loop on a
+            /// script that searches, fetches, then answers. The fetch waits
+            /// for `go`, so the test sees the row mid-run.
+            fn researcher_call(go: mpsc::Receiver<()>) -> RoundCall {
+                let job: ToolJob = Box::new(move |ctx| {
+                    let spec = AgentSpec::from_json(include_str!(
+                        "../../agentium-core/src/agent_spec/builtin/researcher.json"
+                    ))
+                    .unwrap();
+                    let catalog = Catalog::build(&spec, &[]).unwrap();
+                    let row = ChildRow::start(ctx, &spec.slug, QUESTION);
+                    let script = vec![
+                        ChildReply::Calls(vec![web_call(
+                            "s",
+                            WEB_SEARCH,
+                            json!({ "query": "idea journal apps" }),
+                        )]),
+                        ChildReply::Calls(vec![web_call(
+                            "f",
+                            WEB_FETCH,
+                            json!({ "url": "https://acme.example" }),
+                        )]),
+                        ChildReply::Answer(SUMMARY.into()),
+                    ];
+                    let result = block_on_own_runtime(async {
+                        let mut web = |call: AppToolCall| {
+                            if call.name == WEB_FETCH {
+                                let _ = go.recv();
+                            }
+                            std::future::ready(Ok(json!({ "ok": true })))
+                        };
+                        let mut steps = |step: ChildStep<'_>| row.step(step);
+                        Ok(run_child(
+                            &spec,
+                            &catalog,
+                            QUESTION,
+                            &mut Script(script.into()),
+                            &mut web,
+                            &Meter::default(),
+                            &mut steps,
+                        )
+                        .await)
+                    })?;
+                    row.finish(&result);
+                    Ok(ToolResponses::App(AppToolResponse {
+                        tool: "ask_researcher".into(),
+                        value: json!({ "summary": result? }),
+                    }))
+                });
+                RoundCall {
+                    id: "q".into(),
+                    started: StartedCall::Pending(job),
+                }
+            }
+
+            /// The session's sub-agent row, if it has one.
+            fn row(test: &crate::tests::TestDave, sid: SessionId) -> Option<SubagentInfo> {
+                let session = test.dave.session_manager.get(sid).unwrap();
+                session.chat.iter().find_map(|m| match m {
+                    Message::Subagent(info) => Some(info.clone()),
+                    _ => None,
+                })
+            }
+
+            /// How many notes the session has published.
+            fn published(test: &crate::tests::TestDave, sid: SessionId) -> usize {
+                let session = test.dave.session_manager.get(sid).unwrap();
+                session.agentic.as_ref().unwrap().ledger.own().len()
+            }
+
+            /// Drain until the row has `steps` steps, failing after a few
+            /// seconds.
+            fn drain_until_steps(test: &mut crate::tests::TestDave, sid: SessionId, steps: usize) {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while row(test, sid).is_none_or(|r| r.tool_results.len() < steps) {
+                    assert!(Instant::now() < deadline, "the row never got its steps");
+                    let parts = test.parts();
+                    parts.dave.process_events(&parts.host);
+                    std::thread::yield_now();
+                }
+            }
+
+            /// The row shows running with its first step while the child
+            /// works, then completed with every step and the summary, under
+            /// the call and above its answer; each transition publishes.
+            #[test]
+            fn the_childs_steps_and_summary_land_as_a_row_under_its_call() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn();
+                let before = published(&test, sid);
+                let (go, wait) = mpsc::channel();
+                hand_round(&mut test, sid, vec![researcher_call(wait)]);
+                drop(stream);
+
+                drain_until_steps(&mut test, sid, 1);
+                let running = row(&test, sid).unwrap();
+                assert_eq!(running.status, SubagentStatus::Running);
+                assert_eq!(running.subagent_type, "researcher");
+                assert_eq!(running.description, QUESTION);
+                assert_eq!(
+                    rows(&mut test, sid),
+                    [
+                        "calls[q]",
+                        "subagent q Running: web_search idea journal apps"
+                    ]
+                );
+                assert_eq!(status(&mut test, sid), AgentStatus::Working);
+                // Published while the child runs: spawned, and its search.
+                assert_eq!(published(&test, sid) - before, 2);
+                let mid_run = published(&test, sid);
+
+                go.send(()).unwrap();
+                drain_until_send(&mut test, sid);
+                let rows = rows(&mut test, sid);
+                assert_eq!(rows.len(), 3, "{rows:?}");
+                assert_eq!(rows[0], "calls[q]");
+                assert_eq!(
+                    rows[1],
+                    "subagent q Completed: web_search idea journal apps, \
+                     web_fetch https://acme.example"
+                );
+                assert!(rows[2].starts_with("q: App("), "{rows:?}");
+                assert_eq!(row(&test, sid).unwrap().output, SUMMARY);
+                // The fetch and the completion, at least (the turn's own
+                // end publishes too).
+                assert!(published(&test, sid) - mid_run >= 2);
+            }
+
+            /// A run stopped mid-research can't end its own row, so the
+            /// round's end fails it: no row spins on after its call is
+            /// answered.
+            #[test]
+            fn a_stopped_runs_row_fails_with_its_round() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn();
+                // Held until the test is done, so the child can't finish
+                // before the stop.
+                let (_go, wait) = mpsc::channel();
+                hand_round(&mut test, sid, vec![researcher_call(wait)]);
+                drop(stream);
+                drain_until_steps(&mut test, sid, 1);
+
+                let backend = crate::get_backend(&test.dave.backends, BackendType::OpenAI);
+                crate::update::execute_interrupt(
+                    &test.dave.session_manager,
+                    backend,
+                    &egui::Context::default(),
+                );
+                let parts = test.parts();
+                parts.dave.process_events(&parts.host);
+
+                let stopped = row(&test, sid).unwrap();
+                assert_eq!(stopped.status, SubagentStatus::Failed);
+                assert_eq!(stopped.output, UNFINISHED_SUBAGENT);
+                assert_eq!(
+                    rows(&mut test, sid),
+                    [
+                        "calls[q]".to_owned(),
+                        "subagent q Failed: web_search idea journal apps".to_owned(),
+                        format!("q: {CANCELLED}")
+                    ]
+                );
+            }
         }
 
         /// The Notedeck toolset in the native loop: a session under an
@@ -2694,7 +2987,11 @@ mod tests {
             fn answers(test: &mut crate::tests::TestDave, sid: SessionId) -> Vec<String> {
                 rows(test, sid)
                     .into_iter()
-                    .filter(|r| !r.starts_with("calls[") && !r.starts_with("PermissionRequest"))
+                    .filter(|r| {
+                        !r.starts_with("calls[")
+                            && !r.starts_with("PermissionRequest")
+                            && !r.starts_with("subagent ")
+                    })
                     .collect()
             }
 
@@ -3107,6 +3404,13 @@ mod tests {
                 assert!(
                     answers[0].starts_with("q: the researcher's model failed"),
                     "{answers:?}"
+                );
+                assert!(
+                    rows(&mut test, sid)
+                        .iter()
+                        .any(|r| r == "subagent q Failed: "),
+                    "the failed run shows as a failed row: {:?}",
+                    rows(&mut test, sid)
                 );
             }
 

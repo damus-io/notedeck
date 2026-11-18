@@ -25,6 +25,14 @@
 //! The child runs as one [`ToolJob`] of the parent's round, on its own
 //! thread with its own runtime: it never touches the frame, and the
 //! parent's stop reaches it through the round's [`ToolCancel`].
+//!
+//! While it runs, the user watches it in a sub-agent row under the
+//! `ask_researcher` call ([`ChildRow`]): each search and fetch as it lands,
+//! then the summary. The row is built from the responses a backend's own
+//! subagent sends (spawned, a tool result per step, completed or failed),
+//! [reported](JobCtx::report) over the round's channel, so the frame shows
+//! and publishes it the way it does Claude's Task subagents. The parent's
+//! model still gets the summary and nothing else.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -33,7 +41,7 @@ use std::time::Duration;
 
 use agentium_core::agent_spec::pricing::{self, Cost, Meter, Rate, Usage};
 use agentium_core::agent_spec::provider::{self, Endpoint};
-use agentium_core::agent_spec::web::ASK_RESEARCHER;
+use agentium_core::agent_spec::web::{ASK_RESEARCHER, WEB_FETCH, WEB_SEARCH};
 use agentium_core::agent_spec::{AgentSpec, Approval, Catalog, ToolSource};
 use agentium_core::config::BackendProfile;
 use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequest};
@@ -42,7 +50,8 @@ use nostrdb::{Ndb, Transaction};
 use serde_json::{json, Value};
 
 use crate::backend::{finish_tool_call, message_to_api, openai_config, tool_to_api, SPENT_CENTS};
-use crate::tool_round::{block_on_own_runtime, ToolCancel, ToolJob};
+use crate::messages::{DaveApiResponse, ExecutedTool, SubagentInfo, SubagentStatus};
+use crate::tool_round::{block_on_own_runtime, JobCtx, ToolCancel, ToolJob};
 use crate::tools::{AppToolCall, AppToolResponse, PartialToolCall, Tool, ToolCall, ToolCalls};
 use crate::web_tools::WebClient;
 use crate::{Message, ToolResponse, ToolResponses};
@@ -137,10 +146,14 @@ impl SubAgent {
 
     /// The job that answers `question`: the child loop, on the round's
     /// thread. `ndb` renders the child's tool answers for its model.
+    ///
+    /// The run shows as a sub-agent row under the call ([`ChildRow`]).
     pub(crate) fn job(self: &Arc<Self>, question: String, ndb: Ndb) -> ToolJob {
         let agent = Arc::clone(self);
-        Box::new(move |cancel| {
-            let Answered { result, spent } = agent.answer(&question, &ndb, cancel);
+        Box::new(move |ctx| {
+            let row = ChildRow::start(ctx, agent.slug(), &question);
+            let Answered { result, spent } = agent.answer(&question, &ndb, ctx.cancel(), &row);
+            row.finish(&result);
             let mut value = match result {
                 Ok(summary) => json!({ "researcher": agent.slug(), "summary": summary }),
                 // A child that spent nothing failed for free: a plain error.
@@ -159,8 +172,9 @@ impl SubAgent {
         })
     }
 
-    /// Run the child loop on a runtime of its own until it answers.
-    fn answer(&self, question: &str, ndb: &Ndb, cancel: &ToolCancel) -> Answered {
+    /// Run the child loop on a runtime of its own until it answers, showing
+    /// each step on `row`.
+    fn answer(&self, question: &str, ndb: &Ndb, cancel: &ToolCancel, row: &ChildRow) -> Answered {
         let meter = Meter::default();
         let result = block_on_own_runtime(async {
             let mut model = OpenAiChild {
@@ -177,6 +191,7 @@ impl SubAgent {
                 let web = &web;
                 async move { web.call(&call).await }
             };
+            let mut steps = |step: ChildStep<'_>| row.step(step);
             let run = run_child(
                 &self.spec,
                 &self.catalog,
@@ -184,6 +199,7 @@ impl SubAgent {
                 &mut model,
                 &mut tools,
                 &meter,
+                &mut steps,
             );
             bounded(run, self.spec.budget.timeout_secs, cancel).await
         });
@@ -223,6 +239,104 @@ async fn bounded(
             timeout_secs.unwrap_or_default()
         )),
     }
+}
+
+/// The sub-agent row a child's run builds under the parent's
+/// `ask_researcher` call, keyed by that call's id. It reports the responses
+/// a backend's own subagent would send (see the module docs): spawned when
+/// the run starts, a tool result per step, then completed with the summary
+/// or failed with why. The frame applies them, which shows the row and
+/// publishes it for remote observers.
+///
+/// A run that never finishes (its round was stopped first, or it panicked)
+/// leaves the row running; the frame fails it when the round ends.
+pub(crate) struct ChildRow<'a> {
+    ctx: &'a JobCtx,
+}
+
+/// The longest a question shows as its row's description: the row is one
+/// line, and the whole question is in the parent's call above it.
+const ROW_QUESTION_CHARS: usize = 80;
+
+impl<'a> ChildRow<'a> {
+    /// Show the row for sub-agent `slug` asked `question`, running.
+    pub(crate) fn start(ctx: &'a JobCtx, slug: &str, question: &str) -> Self {
+        ctx.report(DaveApiResponse::SubagentSpawned(SubagentInfo {
+            task_id: ctx.call_id().to_owned(),
+            description: headline(question, ROW_QUESTION_CHARS),
+            subagent_type: slug.to_owned(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: false,
+            agent_id: None,
+            transcript: Default::default(),
+        }));
+        Self { ctx }
+    }
+
+    /// Add a finished step to the row: what the tool was asked, and whether
+    /// it failed.
+    pub(crate) fn step(&self, step: ChildStep<'_>) {
+        self.ctx.report(DaveApiResponse::ToolResult(ExecutedTool {
+            tool_name: step.call.tool_name().to_owned(),
+            summary: step_subject(step.call),
+            output: None,
+            parent_task_id: Some(self.ctx.call_id().to_owned()),
+            file_update: None,
+            tool_use_id: None,
+            description: None,
+            is_error: matches!(step.response, ToolResponses::Error(_)),
+        }));
+    }
+
+    /// End the row: completed with the summary, or failed with why.
+    pub(crate) fn finish(&self, result: &Result<String, String>) {
+        let task_id = self.ctx.call_id().to_owned();
+        self.ctx.report(match result {
+            Ok(summary) => DaveApiResponse::SubagentCompleted {
+                task_id,
+                result: summary.clone(),
+            },
+            Err(error) => DaveApiResponse::SubagentFailed {
+                task_id,
+                error: error.clone(),
+            },
+        });
+    }
+}
+
+/// `text`'s first line, cut to `max` chars with an ellipsis.
+fn headline(text: &str, max: usize) -> String {
+    let line = text.trim().lines().next().unwrap_or_default();
+    match line.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_owned(),
+    }
+}
+
+/// What a step was asked, as its row's summary: a search's query, a fetch's
+/// URL, or the arguments of anything else.
+fn step_subject(call: &ToolCalls) -> String {
+    let ToolCalls::App(app) = call else {
+        return call.arguments();
+    };
+    let key = match app.name.as_str() {
+        WEB_SEARCH => "query",
+        WEB_FETCH => "url",
+        _ => return app.args.to_string(),
+    };
+    match app.args.get(key).and_then(Value::as_str) {
+        Some(subject) => subject.to_owned(),
+        None => app.args.to_string(),
+    }
+}
+
+/// One finished step of the child's: a tool call and its answer.
+pub(crate) struct ChildStep<'a> {
+    pub(crate) call: &'a ToolCalls,
+    pub(crate) response: &'a ToolResponses,
 }
 
 /// One reply of the child's model.
@@ -267,6 +381,8 @@ where
 /// (what the model's replies cost) reaches `spec.budget.max_cost_cents`, a
 /// reply's tool calls aren't run and the child fails. A call of a gated
 /// tool answers an error: there is nobody in a sub-agent to ask.
+///
+/// Each call, once answered, goes to `steps`, for the parent's row.
 pub(crate) async fn run_child(
     spec: &AgentSpec,
     catalog: &Catalog,
@@ -274,6 +390,7 @@ pub(crate) async fn run_child(
     model: &mut impl ChildModel,
     tools: &mut impl ChildTools,
     meter: &Meter,
+    steps: &mut impl FnMut(ChildStep<'_>),
 ) -> Result<String, String> {
     let mut chat = vec![
         Message::System(spec.prompt.as_str().into()),
@@ -296,6 +413,10 @@ pub(crate) async fn run_child(
         chat.push(Message::ToolCalls(calls.clone()));
         for call in calls {
             let response = run_call(catalog, call.calls(), tools).await;
+            steps(ChildStep {
+                call: call.calls(),
+                response: &response,
+            });
             chat.push(Message::ToolResponse(ToolResponse::new(
                 call.id().to_owned(),
                 response,
@@ -529,6 +650,7 @@ mod tests {
         ]
         .into();
         let mut calls = Vec::new();
+        let mut steps = Vec::new();
         let summary = run_child(
             &spec,
             &catalog,
@@ -536,11 +658,27 @@ mod tests {
             &mut model,
             &mut web(&mut calls),
             &Meter::default(),
+            &mut |step: ChildStep<'_>| {
+                let failed = matches!(step.response, ToolResponses::Error(_));
+                steps.push(format!(
+                    "{} {} failed={failed}",
+                    step.call.tool_name(),
+                    step_subject(step.call)
+                ));
+            },
         )
         .await
         .unwrap();
 
         assert_eq!(summary, "Acme — pricing: $9/mo");
+        assert_eq!(
+            steps,
+            [
+                "web_search idea journal apps failed=false",
+                "web_fetch https://acme.example failed=false"
+            ],
+            "each step is reported, in order, with what it was asked"
+        );
         assert_eq!(
             calls,
             [
@@ -577,6 +715,7 @@ mod tests {
             &mut model,
             &mut web(&mut calls),
             &Meter::default(),
+            &mut |_| {},
         )
         .await
         .unwrap();
@@ -599,6 +738,7 @@ mod tests {
             &mut model,
             &mut web(&mut calls),
             &Meter::default(),
+            &mut |_| {},
         )
         .await
         .unwrap_err();
@@ -630,6 +770,7 @@ mod tests {
             &mut model,
             &mut web(&mut calls),
             &meter,
+            &mut |_| {},
         )
         .await
         .unwrap_err();
@@ -660,6 +801,7 @@ mod tests {
             &mut model,
             &mut web(&mut calls),
             &Meter::default(),
+            &mut |_| {},
         )
         .await
         .unwrap();
@@ -676,6 +818,18 @@ mod tests {
         );
     }
 
+    /// A row's description is the question's first line, cut short; the
+    /// whole question is in the call above the row.
+    #[test]
+    fn a_rows_description_is_the_questions_headline() {
+        assert_eq!(
+            headline("  Who sells idea journals?\nAnd for how much?", 80),
+            "Who sells idea journals?"
+        );
+        assert_eq!(headline("abcdef", 3), "abc…");
+        assert_eq!(headline("abc", 3), "abc");
+    }
+
     /// An empty answer is an error, not a blank summary for the parent.
     #[tokio::test]
     async fn an_empty_answer_is_an_error() {
@@ -689,7 +843,8 @@ mod tests {
             "q",
             &mut model,
             &mut web(&mut calls),
-            &Meter::default()
+            &Meter::default(),
+            &mut |_| {}
         )
         .await
         .is_err());
@@ -806,7 +961,7 @@ mod tests {
         let agent = Arc::new(SubAgent::new(researcher(), endpoint, None).unwrap());
         let ndb_testing::TempNdb { dir: _dir, ndb } = ndb_testing::TempNdb::new();
         let job = agent.job("Who sells idea journals?".into(), ndb);
-        let answer = job(&ToolCancel::default()).unwrap();
+        let answer = job(&JobCtx::detached("c1", ToolCancel::default())).unwrap();
 
         let ToolResponses::App(app) = answer else {
             panic!("an app answer: {answer:?}");
@@ -838,7 +993,8 @@ mod tests {
             one_completion_on("claude-haiku-5-5", "Acme.", Some(usage));
         let agent = Arc::new(SubAgent::new(researcher(), endpoint, None).unwrap());
         let ndb_testing::TempNdb { dir: _dir, ndb } = ndb_testing::TempNdb::new();
-        let answer = agent.job("q".into(), ndb)(&ToolCancel::default()).unwrap();
+        let ctx = JobCtx::detached("c1", ToolCancel::default());
+        let answer = agent.job("q".into(), ndb)(&ctx).unwrap();
         server.join().unwrap();
 
         let ToolResponses::App(app) = answer else {

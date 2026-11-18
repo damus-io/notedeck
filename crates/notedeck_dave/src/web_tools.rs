@@ -150,12 +150,12 @@ impl WebClient {
 /// The job that runs the web tool `call` off the frame, searching
 /// `search_url`; the round's stop ends it.
 pub(crate) fn job(call: AppToolCall, search_url: Option<String>) -> ToolJob {
-    Box::new(move |cancel| {
+    Box::new(move |ctx| {
         let value = block_on_own_runtime(async {
             let web = WebClient::new(search_url);
             tokio::select! {
                 value = web.call(&call) => value,
-                () = cancel.cancelled() => Err(CANCELLED.to_owned()),
+                () = ctx.cancel().cancelled() => Err(CANCELLED.to_owned()),
             }
         })?;
         Ok(ToolResponses::App(AppToolResponse {

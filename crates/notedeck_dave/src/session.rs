@@ -1279,6 +1279,16 @@ impl ChatSession {
         }
     }
 
+    /// Whether the subagent row `task_id` is still running.
+    pub fn subagent_running(&self, task_id: &str) -> bool {
+        self.turn_rows.subagent(task_id).is_some_and(|idx| {
+            matches!(
+                self.chat.get(idx),
+                Some(Message::Subagent(info)) if info.status == SubagentStatus::Running
+            )
+        })
+    }
+
     /// Whether any background subagent is still running.
     ///
     /// A background subagent (`run_in_background`) keeps executing after the
