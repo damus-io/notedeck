@@ -990,39 +990,44 @@ pub(crate) fn handle_remote_permission_response(
     let cancel_turn = decoded.cancel_turn;
     let allowed = decoded.response_type == crate::messages::PermissionResponseType::Allowed;
 
-    if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
-        session.insert_permission_reply(message.as_deref());
-        let response = if allowed {
-            PermissionResponse::Allow { message }
-        } else if cancel_turn {
-            PermissionResponse::Cancel {
-                reason: message.unwrap_or_else(|| messages::DEFAULT_REMOTE_EXIT_REASON.to_string()),
-            }
-        } else {
-            PermissionResponse::Deny {
-                reason: message.unwrap_or_else(|| messages::DEFAULT_REMOTE_DENY_REASON.to_string()),
-            }
-        };
-        for msg in session.chat.iter_mut() {
-            if let Message::PermissionRequest(req) = msg {
-                if req.id == perm_id {
-                    req.response = Some(decoded.response_type);
-                    req.auto_accepted = decoded.auto_accepted;
-                    break;
-                }
-            }
+    if !agentic.permissions.pending.contains_key(&perm_id) {
+        return;
+    }
+    let response = if allowed {
+        PermissionResponse::Allow {
+            message: message.clone(),
         }
-
-        if sender.send(response).is_err() {
-            tracing::warn!("failed to send remote permission response for {}", perm_id);
-        } else {
-            tracing::info!(
-                "remote permission response for {}: {}",
-                perm_id,
-                if allowed { "allowed" } else { "denied" }
-            );
+    } else if cancel_turn {
+        PermissionResponse::Cancel {
+            reason: message
+                .clone()
+                .unwrap_or_else(|| messages::DEFAULT_REMOTE_EXIT_REASON.to_string()),
+        }
+    } else {
+        PermissionResponse::Deny {
+            reason: message
+                .clone()
+                .unwrap_or_else(|| messages::DEFAULT_REMOTE_DENY_REASON.to_string()),
+        }
+    };
+    // Through the tracker, so a waiter that reads its answer on the host's
+    // pass (the native tool loop) is woken.
+    agentic.permissions.answer(perm_id, response);
+    session.insert_permission_reply(message.as_deref());
+    for msg in session.chat.iter_mut() {
+        if let Message::PermissionRequest(req) = msg {
+            if req.id == perm_id {
+                req.response = Some(decoded.response_type);
+                req.auto_accepted = decoded.auto_accepted;
+                break;
+            }
         }
     }
+    tracing::info!(
+        "remote permission response for {}: {}",
+        perm_id,
+        if allowed { "allowed" } else { "denied" }
+    );
 }
 
 /// Handle a remote set-issue command (see

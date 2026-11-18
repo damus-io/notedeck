@@ -680,26 +680,84 @@ pub(crate) fn publish_auto_accept_response(
     ndb: &nostrdb::Ndb,
     sk: &[u8; 32],
 ) {
+    let response = OwnResponse {
+        allowed: true,
+        message: None,
+        cancel_turn: false,
+        auto_accepted: true,
+        desc: "auto-accept response event",
+    };
+    publish_own_response(session, perm_id, &response, ndb, sk);
+}
+
+/// Why a withdrawn request reads denied (see [`publish_withdrawn_response`]).
+pub(crate) const WITHDRAWN_REASON: &str =
+    "Withdrawn: the turn was stopped before this was answered.";
+
+/// Publish the cancel a local session gives its own request when the turn
+/// that asked it was stopped first (see
+/// [`PermissionTracker::withdraw`](crate::session::PermissionTracker::withdraw)),
+/// so observers, a restart and the CLI show it closed rather than waiting on
+/// an answer nobody reads.
+pub(crate) fn publish_withdrawn_response(
+    session: &mut ChatSession,
+    perm_id: uuid::Uuid,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) {
+    let response = OwnResponse {
+        allowed: false,
+        message: Some(WITHDRAWN_REASON),
+        cancel_turn: true,
+        auto_accepted: false,
+        desc: "withdrawn permission response event",
+    };
+    publish_own_response(session, perm_id, &response, ndb, sk);
+}
+
+/// A `permission_response` a local session publishes to its own request,
+/// with no user click behind it.
+struct OwnResponse<'a> {
+    allowed: bool,
+    message: Option<&'a str>,
+    cancel_turn: bool,
+    auto_accepted: bool,
+    /// What the event is, for the log.
+    desc: &'a str,
+}
+
+/// Publish `response` to the session's request `perm_id`. Skipped when the
+/// request's note id was never recorded: there is no note to answer.
+fn publish_own_response(
+    session: &mut ChatSession,
+    perm_id: uuid::Uuid,
+    response: &OwnResponse<'_>,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+) {
     let Some(agentic) = session.agentic.as_mut() else {
         return;
     };
     let Some(request_note_id) = agentic.permissions.request_note_ids.get(&perm_id).copied() else {
-        tracing::warn!("auto-accepted {perm_id} has no published request; not publishing");
+        tracing::warn!(
+            "{perm_id} has no published request; not publishing its {}",
+            response.desc
+        );
         return;
     };
     let sid = agentic.event_session_id().to_string();
     let built = session_events::build_permission_response_event(
         &perm_id,
         &request_note_id,
-        true,
-        None,
-        false,
-        true,
+        response.allowed,
+        response.message,
+        response.cancel_turn,
+        response.auto_accepted,
         &sid,
         &mut agentic.live_threading,
         sk,
     );
-    ingest_session_event(agentic, built, "auto-accept response event", ndb, sk);
+    ingest_session_event(agentic, built, response.desc, ndb, sk);
 }
 
 /// Update every session's status, then publish the auto-accept responses for

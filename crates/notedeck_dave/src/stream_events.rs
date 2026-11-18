@@ -8,13 +8,13 @@ use crate::backend::{AiBackend, BackendType};
 use crate::backend_profiles::{missing_profile_error, BackendProfiles};
 use crate::publish::{
     build_user_send_event, ingest_live_event, ingest_live_event_within,
-    publish_auto_accept_response, publish_permission_request, record_dispatch, record_published,
-    Ingest, Place,
+    publish_auto_accept_response, publish_permission_request, publish_withdrawn_response,
+    record_dispatch, record_published, Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
 use crate::spec_runner::{SessionBackends, SpecDeps, SpecRunners};
 use crate::tool_round::{
-    AnsweredRound, CallRunner, Gate, RoundCall, StartedCall, ToolRound, WaitingCall,
+    AnsweredRound, AskedGate, CallRunner, Gate, RoundCall, StartedCall, ToolRound, WaitingCall,
 };
 use crate::tools::{AppToolCall, Tool};
 use crate::{
@@ -721,9 +721,11 @@ fn handle_tool_calls(
             session.id
         );
         stale.cancel();
-        for response in stale.into_answers().responses {
+        let answered = stale.into_answers();
+        for response in answered.responses {
             session.insert_turn_content(response);
         }
+        withdraw_unanswered(session, &answered.unanswered, host);
     }
     // Route through `insert_turn_content` so a message queued during this turn
     // stays the trailing run and is redispatched afterwards.
@@ -797,7 +799,7 @@ fn start_app_call(
     let gate = match approval {
         Approval::Auto => Gate::Open,
         Approval::Gated => match ask_permission(session, call, host) {
-            Some(answer) => Gate::Asked(answer),
+            Some(asked) => Gate::Asked(asked),
             None => {
                 return StartedCall::Done(Box::new(ToolResponses::Error(format!(
                     "'{}' needs the user's approval, and this session can't ask for it",
@@ -848,21 +850,25 @@ fn sub_agent_job(
 
 /// Show a permission request for the app tool call `call`, as a backend's
 /// would be shown (published for remote clients, answered from the
-/// session's runtime allowlist when it covers the tool), and hand back where
-/// the answer arrives. `None` for a session with nowhere to keep the
-/// request: only an agentic session can be asked.
+/// session's runtime allowlist when it covers the tool), and hand back the
+/// request's id and where its answer arrives. `None` for a session with
+/// nowhere to keep the request: only an agentic session can be asked.
+///
+/// The round reads the answer on the frame, not by awaiting it, so the
+/// session's permissions are set to wake the host when one is answered: a
+/// click or a remote reply then brings the frame that starts the call.
 fn ask_permission(
     session: &mut session::ChatSession,
     call: &AppToolCall,
     host: &HostCtx<'_>,
-) -> Option<tokio::sync::oneshot::Receiver<PermissionResponse>> {
-    session.agentic.as_ref()?;
+) -> Option<AskedGate> {
+    let agentic = session.agentic.as_mut()?;
+    let waker = host.waker.clone();
+    agentic.permissions.wake_on_answer(move || waker.wake());
     let (response_tx, answer) = tokio::sync::oneshot::channel();
-    let request = messages::PermissionRequest::pending(
-        uuid::Uuid::new_v4(),
-        call.name.clone(),
-        call.args.clone(),
-    );
+    let perm_id = uuid::Uuid::new_v4();
+    let request =
+        messages::PermissionRequest::pending(perm_id, call.name.clone(), call.args.clone());
     handle_permission_request(
         session,
         messages::PendingPermission {
@@ -872,7 +878,25 @@ fn ask_permission(
         &host.secret_key,
         host.ndb,
     );
-    Some(answer)
+    Some(AskedGate { perm_id, answer })
+}
+
+/// Withdraw the permission requests a round ended without reading (see
+/// [`AnsweredRound::unanswered`]): each stops counting as pending, so the
+/// ended turn doesn't sit in NeedsInput, its row reads denied, and the
+/// withdrawal is published so observers stop offering to answer it.
+fn withdraw_unanswered(session: &mut session::ChatSession, ids: &[uuid::Uuid], host: &HostCtx<'_>) {
+    for &id in ids {
+        let Some(agentic) = session.agentic.as_mut() else {
+            return;
+        };
+        if !agentic.permissions.withdraw(&mut session.chat, id) {
+            continue;
+        }
+        if let Some(sk) = host.sk() {
+            publish_withdrawn_response(session, id, host.ndb, sk);
+        }
+    }
 }
 
 /// Finish the session's round of tool calls if it is done: every call is
@@ -899,10 +923,12 @@ pub(crate) fn finish_tool_round(
     let AnsweredRound {
         responses,
         cancelled,
+        unanswered,
     } = round.into_answers();
     for response in responses {
         session.insert_turn_content(response);
     }
+    withdraw_unanswered(session, &unanswered, host);
     if !cancelled {
         needs_send.insert(session_id);
     }
@@ -2823,6 +2849,140 @@ mod tests {
                         "m: The user denied this call: not that column"
                     ]
                 );
+            }
+
+            /// Send the model a round of gated moves, one per id in `ids`,
+            /// end the stream and drain once: each call's request is shown
+            /// and waits for the user.
+            fn ask_moves(
+                test: &mut crate::tests::TestDave,
+                stream: mpsc::Sender<DaveApiResponse>,
+                ids: &[&str],
+            ) {
+                let calls = ids
+                    .iter()
+                    .map(|id| app_call(id, "headway_move_card"))
+                    .collect();
+                stream.send(DaveApiResponse::ToolCalls(calls)).unwrap();
+                drop(stream);
+                let parts = test.parts();
+                parts.dave.process_events(&parts.host);
+            }
+
+            /// The session's permission requests, in chat order.
+            fn requests(
+                test: &crate::tests::TestDave,
+                sid: SessionId,
+            ) -> Vec<crate::messages::PermissionRequest> {
+                let session = test.dave.session_manager.get(sid).unwrap();
+                session
+                    .chat
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::PermissionRequest(r) => Some(r.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            }
+
+            /// Assert the session's turn ended with no request left open:
+            /// nothing pending, not NeedsInput, and every row answered.
+            fn assert_no_request_open(test: &mut crate::tests::TestDave, sid: SessionId) {
+                let session = test.dave.session_manager.get(sid).unwrap();
+                assert!(session.tool_round.is_none(), "the round finished");
+                assert!(!session.is_dispatched(), "the turn ended");
+                assert!(!session.has_pending_permissions());
+                assert_ne!(status(test, sid), AgentStatus::NeedsInput);
+                for request in requests(test, sid) {
+                    assert_eq!(
+                        request.response,
+                        Some(crate::messages::PermissionResponseType::Denied),
+                        "{} reads closed",
+                        request.id
+                    );
+                }
+            }
+
+            /// Stop with a request open withdraws it: the ended turn isn't
+            /// left in NeedsInput on a request nobody will read, and the
+            /// call answers cancelled.
+            #[test]
+            fn stop_with_a_request_open_withdraws_it() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn_under(Some(headway_tools()));
+                ask_moves(&mut test, stream, &["m"]);
+                assert_eq!(status(&mut test, sid), AgentStatus::NeedsInput);
+
+                let backend = crate::get_backend(&test.dave.backends, BackendType::OpenAI);
+                crate::update::execute_interrupt(
+                    &test.dave.session_manager,
+                    backend,
+                    &egui::Context::default(),
+                );
+                let parts = test.parts();
+                let result = parts.dave.process_events(&parts.host);
+                assert!(!result.needs_send.contains(&sid));
+                assert_eq!(answers(&mut test, sid), [format!("m: {CANCELLED}")]);
+                assert_no_request_open(&mut test, sid);
+            }
+
+            /// "Stop" on one of two requests withdraws the other.
+            #[test]
+            fn a_stop_answer_withdraws_the_other_request() {
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn_under(Some(headway_tools()));
+                ask_moves(&mut test, stream, &["a", "b"]);
+                let first = requests(&test, sid)[0].id;
+                crate::update::handle_permission_response(
+                    &mut test.dave.session_manager,
+                    first,
+                    PermissionResponse::Cancel {
+                        reason: "enough".into(),
+                    },
+                );
+                test.dave
+                    .start_app_tool_calls(|_| panic!("a stopped round starts nothing"));
+                let parts = test.parts();
+                let result = parts.dave.process_events(&parts.host);
+                assert!(!result.needs_send.contains(&sid));
+                assert_eq!(requests(&test, sid).len(), 2);
+                assert_no_request_open(&mut test, sid);
+            }
+
+            /// Answering a request wakes the host, so the frame that starts
+            /// the call comes without waiting on other input.
+            #[test]
+            fn an_answer_wakes_the_host() {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn_under(Some(headway_tools()));
+                let wakes = Arc::new(AtomicUsize::new(0));
+                let counted = Arc::clone(&wakes);
+                test.waker = Waker::new(move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                });
+                ask_moves(&mut test, stream, &["m"]);
+                let id = request_id(&test, sid);
+
+                let before = wakes.load(Ordering::SeqCst);
+                crate::update::handle_permission_response(
+                    &mut test.dave.session_manager,
+                    id,
+                    PermissionResponse::Allow { message: None },
+                );
+                assert_eq!(wakes.load(Ordering::SeqCst), before + 1);
             }
 
             /// The butler's tools: headway, and a researcher sub-agent whose

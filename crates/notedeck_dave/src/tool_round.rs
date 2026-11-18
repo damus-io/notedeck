@@ -87,7 +87,16 @@ pub(crate) enum Gate {
     /// Nothing: its approval is auto, so the next frame starts it.
     Open,
     /// The user's answer to the permission request shown for it.
-    Asked(oneshot::Receiver<PermissionResponse>),
+    Asked(AskedGate),
+}
+
+/// A call's open permission request: which request it is, and where its
+/// answer arrives.
+pub(crate) struct AskedGate {
+    /// The request's id, so a round that ends before the answer can say
+    /// which requests nobody will read (see [`AnsweredRound::unanswered`]).
+    pub(crate) perm_id: uuid::Uuid,
+    pub(crate) answer: oneshot::Receiver<PermissionResponse>,
 }
 
 /// What the round does with a waiting call this pass.
@@ -167,6 +176,11 @@ pub(crate) struct AnsweredRound {
     pub(crate) responses: Vec<Message>,
     /// The round was cancelled, so the model isn't asked to go on.
     pub(crate) cancelled: bool,
+    /// The permission requests of the calls still waiting on the user when
+    /// the round ended (a cancelled round's): nobody reads their answers
+    /// now, so the session withdraws them. One answered just before the
+    /// round ended may be among them, and withdrawing it changes nothing.
+    pub(crate) unanswered: Vec<uuid::Uuid>,
 }
 
 /// What a cancelled call answers.
@@ -267,7 +281,7 @@ impl ToolRound {
         while i < self.waiting.len() && !self.cancel.is_cancelled() {
             let verdict = match &mut self.waiting[i].waiting.gate {
                 Gate::Open => Verdict::Start,
-                Gate::Asked(answer) => verdict(answer.try_recv()),
+                Gate::Asked(asked) => verdict(asked.answer.try_recv()),
             };
             if matches!(verdict, Verdict::Wait) {
                 i += 1;
@@ -351,6 +365,14 @@ impl ToolRound {
     /// answers [`CANCELLED`].
     pub(crate) fn into_answers(mut self) -> AnsweredRound {
         let cancelled = self.cancel.is_cancelled();
+        let unanswered = self
+            .waiting
+            .iter()
+            .filter_map(|parked| match &parked.waiting.gate {
+                Gate::Asked(asked) => Some(asked.perm_id),
+                Gate::Open => None,
+            })
+            .collect();
         let answers = std::mem::take(&mut self.answers);
         let responses = std::mem::take(&mut self.ids)
             .into_iter()
@@ -363,6 +385,7 @@ impl ToolRound {
         AnsweredRound {
             responses,
             cancelled,
+            unanswered,
         }
     }
 }
@@ -622,6 +645,14 @@ mod tests {
         }
     }
 
+    /// A gate on a fresh permission request, answered on `answer`.
+    fn ask(answer: oneshot::Receiver<PermissionResponse>) -> Gate {
+        Gate::Asked(AskedGate {
+            perm_id: uuid::Uuid::new_v4(),
+            answer,
+        })
+    }
+
     /// What the frame's start pass runs here: a job off the frame for
     /// `tool_slow`, an answer on the spot for anything else.
     fn start(call: &AppToolCall) -> StartedCall {
@@ -640,7 +671,7 @@ mod tests {
             vec![
                 waiting("fast", Gate::Open),
                 waiting("slow", Gate::Open),
-                waiting("asked", Gate::Asked(asked)),
+                waiting("asked", ask(asked)),
             ],
             &Waker::noop(),
         );
@@ -684,7 +715,7 @@ mod tests {
                         name: "ask_researcher".to_owned(),
                         args: serde_json::json!({ "question": "who?" }),
                     },
-                    gate: Gate::Asked(asked),
+                    gate: ask(asked),
                     runner: CallRunner::Job(Box::new(|_| Ok(ToolResponses::PresentNotes(7)))),
                 }),
             }],
@@ -709,10 +740,7 @@ mod tests {
         let (stop, asked) = oneshot::channel();
         let (dropped, never) = oneshot::channel::<PermissionResponse>();
         let mut round = ToolRound::start(
-            vec![
-                waiting("gone", Gate::Asked(never)),
-                waiting("stop", Gate::Asked(asked)),
-            ],
+            vec![waiting("gone", ask(never)), waiting("stop", ask(asked))],
             &Waker::noop(),
         );
         drop(dropped);
@@ -727,5 +755,44 @@ mod tests {
         let rows = rows(&answered);
         assert!(rows[0].starts_with("gone=Error(\"The permission request was dropped"));
         assert_eq!(rows[1], format!("stop=Error({CANCELLED:?})"));
+    }
+
+    /// "Stop" on one of two requests ends the round with the other still
+    /// open: the round names it, so the session can withdraw the request
+    /// nobody will read. An answered request isn't named.
+    #[test]
+    fn a_cancelled_round_names_its_unanswered_requests() {
+        let (stop, stopped) = oneshot::channel();
+        let (_open, open) = oneshot::channel::<PermissionResponse>();
+        let left = uuid::Uuid::new_v4();
+        let mut round = ToolRound::start(
+            vec![
+                waiting("stop", ask(stopped)),
+                RoundCall {
+                    id: "left".to_owned(),
+                    started: StartedCall::Waiting(WaitingCall {
+                        call: AppToolCall {
+                            name: "tool_left".to_owned(),
+                            args: serde_json::json!({}),
+                        },
+                        gate: Gate::Asked(AskedGate {
+                            perm_id: left,
+                            answer: open,
+                        }),
+                        runner: CallRunner::Registry,
+                    }),
+                },
+            ],
+            &Waker::noop(),
+        );
+        stop.send(PermissionResponse::Cancel {
+            reason: "enough".into(),
+        })
+        .unwrap();
+        round.start_waiting(&mut |_| panic!("nothing runs"));
+        assert!(round.poll());
+        let answered = round.into_answers();
+        assert!(answered.cancelled);
+        assert_eq!(answered.unanswered, [left]);
     }
 }

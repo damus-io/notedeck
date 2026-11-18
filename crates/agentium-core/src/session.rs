@@ -8,6 +8,7 @@ use crate::messages::{
     AnswerSummary, Message, PermissionDecision, PermissionResponse, PermissionResponseType,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -27,6 +28,10 @@ pub struct PermissionTracker {
     /// reconstructed on load, so a remote session rebuilt purely from ndb keeps
     /// the expanded-by-default behaviour for auto-accepted rows.
     pub responded: HashMap<Uuid, PermissionDecision>,
+    /// Asks the host for another pass once a local request is answered, for
+    /// a waiter that reads its answer on the host's own pass rather than
+    /// awaiting it (see [`wake_on_answer`](Self::wake_on_answer)).
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl PermissionTracker {
@@ -35,7 +40,57 @@ impl PermissionTracker {
             pending: HashMap::new(),
             request_note_ids: HashMap::new(),
             responded: HashMap::new(),
+            wake: None,
         }
+    }
+
+    /// Call `wake` each time a local request is answered
+    /// ([`answer`](Self::answer)).
+    ///
+    /// A backend that awaits its oneshot is woken by the send itself. A
+    /// waiter that polls its receiver once per host pass, as Dave's native
+    /// tool loop does, would otherwise read the answer only when something
+    /// else happened to bring the next pass. Replaces any earlier callback.
+    pub fn wake_on_answer(&mut self, wake: impl Fn() + Send + Sync + 'static) {
+        self.wake = Some(Arc::new(wake));
+    }
+
+    /// Send `response` to the local request `request_id`'s waiter and wake
+    /// the host (see [`wake_on_answer`](Self::wake_on_answer)). Returns
+    /// whether the request was still pending: only the first answer counts.
+    pub fn answer(&mut self, request_id: Uuid, response: PermissionResponse) -> bool {
+        let Some(sender) = self.pending.remove(&request_id) else {
+            return false;
+        };
+        if sender.send(response).is_err() {
+            tracing::error!(
+                "failed to send permission response for request {}",
+                request_id
+            );
+        }
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+        true
+    }
+
+    /// Withdraw the local request `request_id`, whose waiter has gone (the
+    /// turn that asked was stopped): drop its sender so it no longer counts
+    /// as pending, and mark its chat row denied so nothing offers to answer
+    /// it. Returns whether it was still pending; an answered request is left
+    /// as it is.
+    pub fn withdraw(&mut self, chat: &mut [Message], request_id: Uuid) -> bool {
+        if self.pending.remove(&request_id).is_none() {
+            return false;
+        }
+        let row = chat.iter_mut().find_map(|msg| match msg {
+            Message::PermissionRequest(req) if req.id == request_id => Some(req),
+            _ => None,
+        });
+        if let Some(req) = row {
+            req.response.get_or_insert(PermissionResponseType::Denied);
+        }
+        true
     }
 
     /// Whether there are unresolved local permission requests.
@@ -79,14 +134,7 @@ impl PermissionTracker {
                 },
             );
         } else if let Some(response) = oneshot_response {
-            if let Some(sender) = self.pending.remove(&request_id) {
-                if sender.send(response).is_err() {
-                    tracing::error!(
-                        "failed to send permission response for request {}",
-                        request_id
-                    );
-                }
-            } else {
+            if !self.answer(request_id, response) {
                 tracing::warn!("no pending permission found for request {}", request_id);
             }
         }
@@ -114,5 +162,87 @@ impl PermissionTracker {
 impl Default for PermissionTracker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::PermissionRequest;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A tracker with one pending request, `id`, and the request's waiter.
+    struct Asked {
+        tracker: PermissionTracker,
+        id: Uuid,
+        rx: oneshot::Receiver<PermissionResponse>,
+    }
+
+    /// [`Asked`], its request shown in `chat`.
+    fn asked(chat: &mut Vec<Message>) -> Asked {
+        let mut tracker = PermissionTracker::new();
+        let id = Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+        tracker.pending.insert(id, tx);
+        chat.push(Message::PermissionRequest(PermissionRequest::pending(
+            id,
+            "headway_move_card".into(),
+            serde_json::json!({}),
+        )));
+        Asked { tracker, id, rx }
+    }
+
+    /// Answering a request wakes the host once, and only the first answer
+    /// counts.
+    #[test]
+    fn an_answer_wakes_the_host() {
+        let mut chat = Vec::new();
+        let Asked {
+            mut tracker,
+            id,
+            mut rx,
+        } = asked(&mut chat);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        tracker.wake_on_answer(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+
+        tracker.resolve(
+            &mut chat,
+            id,
+            PermissionResponseType::Allowed,
+            None,
+            false,
+            Some(PermissionResponse::Allow { message: None }),
+        );
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PermissionResponse::Allow { .. })
+        ));
+        assert!(!tracker.answer(id, PermissionResponse::Allow { message: None }));
+        assert_eq!(wakes.load(Ordering::SeqCst), 1, "no second wake");
+    }
+
+    /// A withdrawn request stops counting as pending and its row reads
+    /// denied; withdrawing it again changes nothing.
+    #[test]
+    fn a_withdrawn_request_is_no_longer_pending() {
+        let mut chat = Vec::new();
+        let Asked {
+            mut tracker,
+            id,
+            rx,
+        } = asked(&mut chat);
+        drop(rx);
+
+        assert!(tracker.withdraw(&mut chat, id));
+        assert!(!tracker.has_pending());
+        assert!(matches!(
+            &chat[0],
+            Message::PermissionRequest(req) if req.response == Some(PermissionResponseType::Denied)
+        ));
+        assert!(!tracker.withdraw(&mut chat, id));
     }
 }
