@@ -13,6 +13,32 @@
 //! `MutateSharedRepo` is impossible under review containment because the
 //! repository's `.git` is mounted read-only there, which the kernel enforces
 //! rather than a parse of a shell string.
+//!
+//! ## The session's permission mode
+//!
+//! A native-loop session runs in one of dave's permission modes (Manual,
+//! Plan, Accept Edits, Auto, Bypass: the Ctrl+M cycle), and
+//! [`Policy::resolve_in`] reads it the way Claude Code does, so a coder on
+//! the host runs at full power and the mode, not a sandbox, decides what
+//! asks:
+//!
+//! | mode | what changes |
+//! |---|---|
+//! | Manual | nothing: the table and the spec's policy |
+//! | Accept Edits, Auto | `MutateWorkspace` runs unasked in-process and on the host |
+//! | Plan | every write (`MutateWorkspace`, `MutateSharedRepo`, `ActAsUser`) is refused |
+//! | Bypass | every call that may run, runs unasked |
+//!
+//! **Auto relaxes exactly what Accept Edits does.** Claude Code's auto mode
+//! puts each remaining call to a classifier; the native loop has none, and
+//! Auto is the mode a new session starts in, so `Egress`, `ActAsUser` and
+//! `MutateSharedRepo` keep asking under it rather than running unread.
+//!
+//! The mode relaxes the table, not the spec: a spec's tighten still wins, so
+//! a spec that gates its edits keeps asking under Accept Edits. Plan and
+//! Bypass are caps on the result, since Plan means no writes whatever the
+//! spec widened, and Bypass means no asking whatever it tightened (as
+//! everywhere in dave). Impossible stays impossible under every mode.
 
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +99,69 @@ pub enum Approval {
     /// Never runs, and the model is told so. Structural where the table says
     /// it, so no widening lifts it.
     Impossible,
+}
+
+/// A session's permission mode, as approval reads it (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SessionMode {
+    /// Ask for everything the table and the spec gate.
+    Manual,
+    /// Read and research only: every write is refused.
+    Plan,
+    /// Edits to the workspace run unasked.
+    AcceptEdits,
+    /// As [`AcceptEdits`](Self::AcceptEdits) for the native loop, which has
+    /// no classifier to put the rest to.
+    Auto,
+    /// Nothing asks.
+    Bypass,
+}
+
+impl SessionMode {
+    /// Every mode, in the order dave's UI cycles them, bypass last.
+    pub const ALL: [SessionMode; 5] = [
+        SessionMode::Manual,
+        SessionMode::Plan,
+        SessionMode::AcceptEdits,
+        SessionMode::Auto,
+        SessionMode::Bypass,
+    ];
+
+    /// The mode a canonical wire spelling names (see
+    /// [`PERMISSION_MODES`](crate::permission_mode::PERMISSION_MODES)), or
+    /// `None` for one this build doesn't know.
+    pub fn from_wire(mode: &str) -> Option<Self> {
+        match mode {
+            "default" => Some(Self::Manual),
+            "plan" => Some(Self::Plan),
+            "accept_edits" => Some(Self::AcceptEdits),
+            "auto" => Some(Self::Auto),
+            "bypass" => Some(Self::Bypass),
+            _ => None,
+        }
+    }
+
+    /// The table's cell under this mode: Accept Edits and Auto relax a gated
+    /// `MutateWorkspace` in-process or on the host, and nothing else.
+    fn relax(self, class: Capability, containment: Containment, cell: Approval) -> Approval {
+        let edits_unasked = matches!(self, Self::AcceptEdits | Self::Auto)
+            && class == Capability::MutateWorkspace
+            && matches!(containment, Containment::InProcess | Containment::Host);
+        if edits_unasked && cell == Approval::Gated {
+            return Approval::Auto;
+        }
+        cell
+    }
+
+    /// The final word on `approval`, after the spec's policy: Plan refuses
+    /// every write and Bypass asks for nothing; impossible stays impossible.
+    fn cap(self, class: Capability, approval: Approval) -> Approval {
+        match self {
+            Self::Plan if class.writes() => Approval::Impossible,
+            Self::Bypass if approval == Approval::Gated => Approval::Auto,
+            _ => approval,
+        }
+    }
 }
 
 /// The table's cell for `class` under `containment`, before any spec
@@ -182,16 +271,34 @@ impl Policy {
     /// The approval for the tool `tool` of class `class` under
     /// `containment`: the table's cell, then any widen naming the tool
     /// (which can't lift an `impossible` cell), then every matching tighten.
+    /// This is [`resolve_in`](Self::resolve_in) under
+    /// [`SessionMode::Manual`], which changes nothing.
     pub fn resolve(&self, tool: &str, class: Capability, containment: Containment) -> Approval {
+        self.resolve_in(tool, class, containment, SessionMode::Manual)
+    }
+
+    /// [`resolve`](Self::resolve) in a session running in `mode`: the mode
+    /// relaxes the table's cell before the policy reads it, and has the
+    /// last word after (see the module docs).
+    pub fn resolve_in(
+        &self,
+        tool: &str,
+        class: Capability,
+        containment: Containment,
+        mode: SessionMode,
+    ) -> Approval {
         let base = base_approval(class, containment);
+        let cell = mode.relax(class, containment, base);
         let widened = match self.widen.iter().rfind(|w| w.tool == tool) {
             Some(w) if base != Approval::Impossible => w.to,
-            _ => base,
+            _ => cell,
         };
-        self.tighten
+        let tightened = self
+            .tighten
             .iter()
             .filter(|t| t.tool.as_deref() == Some(tool) || t.class == Some(class))
-            .fold(widened, |approval, t| approval.max(t.to))
+            .fold(widened, |approval, t| approval.max(t.to));
+        mode.cap(class, tightened)
     }
 }
 
@@ -419,5 +526,128 @@ mod tests {
             );
         }
         assert_eq!(Containment::from_tag_str("guest"), None);
+    }
+
+    /// The empty policy under `mode`, for a tool of `class` in
+    /// `containment`.
+    fn in_mode(class: Capability, containment: Containment, mode: SessionMode) -> Approval {
+        Policy::default().resolve_in("t", class, containment, mode)
+    }
+
+    /// Manual changes nothing: `resolve` and `resolve_in(Manual)` agree on
+    /// every cell, so a session that never set a mode asks as before.
+    #[test]
+    fn manual_mode_is_the_table() {
+        for class in Capability::ALL {
+            for containment in Containment::ALL {
+                assert_eq!(
+                    in_mode(class, containment, SessionMode::Manual),
+                    base_approval(class, containment)
+                );
+            }
+        }
+    }
+
+    /// Accept Edits and Auto relax exactly one gate: a workspace edit
+    /// in-process or on the host. Publishing as the user, the network and
+    /// the shared repository keep asking under both.
+    #[test]
+    fn accept_edits_and_auto_relax_only_host_edits() {
+        for mode in [SessionMode::AcceptEdits, SessionMode::Auto] {
+            for class in Capability::ALL {
+                for containment in Containment::ALL {
+                    let cell = base_approval(class, containment);
+                    let relaxed =
+                        class == MutateWorkspace && matches!(containment, InProcess | Host);
+                    let want = if relaxed { Auto } else { cell };
+                    assert_eq!(
+                        in_mode(class, containment, mode),
+                        want,
+                        "{class:?} x {containment:?} under {mode:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Plan refuses every write wherever it runs, even one the spec
+    /// widened, and leaves reads and research alone.
+    #[test]
+    fn plan_refuses_every_write() {
+        for class in Capability::ALL {
+            for containment in Containment::ALL {
+                let want = if class.writes() {
+                    Impossible
+                } else {
+                    base_approval(class, containment)
+                };
+                assert_eq!(in_mode(class, containment, SessionMode::Plan), want);
+            }
+        }
+        let widened = Policy {
+            widen: vec![widen("headway_comment_card", Auto)],
+            tighten: vec![],
+        };
+        assert_eq!(
+            widened.resolve_in(
+                "headway_comment_card",
+                ActAsUser,
+                InProcess,
+                SessionMode::Plan
+            ),
+            Impossible
+        );
+    }
+
+    /// Bypass asks for nothing, but impossible stays impossible.
+    #[test]
+    fn bypass_asks_for_nothing_and_lifts_no_impossible() {
+        for class in Capability::ALL {
+            for containment in Containment::ALL {
+                let want = match base_approval(class, containment) {
+                    Impossible => Impossible,
+                    _ => Auto,
+                };
+                assert_eq!(in_mode(class, containment, SessionMode::Bypass), want);
+            }
+        }
+    }
+
+    /// The mode relaxes the table, not the spec: a spec that gates its
+    /// edits keeps asking under Accept Edits, and one that makes them
+    /// impossible keeps them so.
+    #[test]
+    fn a_spec_tighten_beats_the_mode() {
+        let gated = Policy {
+            widen: vec![],
+            tighten: vec![tighten_class(MutateWorkspace, Gated)],
+        };
+        let refused = Policy {
+            widen: vec![],
+            tighten: vec![tighten_tool("Bash", Impossible)],
+        };
+        for mode in [SessionMode::AcceptEdits, SessionMode::Auto] {
+            assert_eq!(gated.resolve_in("Edit", MutateWorkspace, Host, mode), Gated);
+            assert_eq!(
+                refused.resolve_in("Bash", MutateWorkspace, Host, mode),
+                Impossible
+            );
+        }
+        assert_eq!(
+            refused.resolve_in("Bash", MutateWorkspace, Host, SessionMode::Bypass),
+            Impossible
+        );
+    }
+
+    /// Every canonical wire spelling names a mode, and the cycle's order is
+    /// the wire's.
+    #[test]
+    fn every_wire_mode_has_a_session_mode() {
+        let modes: Vec<_> = crate::permission_mode::PERMISSION_MODES
+            .iter()
+            .map(|m| SessionMode::from_wire(m).expect("known mode"))
+            .collect();
+        assert_eq!(modes, SessionMode::ALL);
+        assert_eq!(SessionMode::from_wire("manual"), None);
     }
 }

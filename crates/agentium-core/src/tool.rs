@@ -307,6 +307,16 @@ impl Capability {
         Capability::ActAsUser,
         Capability::Egress,
     ];
+
+    /// Whether a call of this class changes something: the workspace, the
+    /// shared repository, or what is published as the user. What plan mode
+    /// refuses. Egress only reads, though what it sends can leak.
+    pub fn writes(self) -> bool {
+        matches!(
+            self,
+            Capability::MutateWorkspace | Capability::MutateSharedRepo | Capability::ActAsUser
+        )
+    }
 }
 
 /// How a client shows a streaming tool's events (see

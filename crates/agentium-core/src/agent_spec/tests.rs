@@ -133,35 +133,51 @@ fn reviewer_observes_and_can_change_nothing() {
     assert_eq!(reviewer.approval(notedeck, &comment_card()), Impossible);
 }
 
+/// The coder as shipped runs on the host at full power, like Claude Code:
+/// the table gates its edits and commits, and the session's permission mode
+/// decides what actually asks.
 #[test]
-fn coder_edits_and_runs_unasked_in_the_guest_but_cannot_commit() {
+fn the_coder_runs_on_the_host_and_the_mode_decides() {
     let coder = spec(CODER);
     let coding = toolset(&coder, ToolsetKind::Coding);
-    assert_eq!(coding.containment(), Containment::SandboxedReview);
+    assert_eq!(coding.containment(), Containment::Host);
     assert_eq!(coder.approval(coding, &read()), Auto);
-    assert_eq!(coder.approval(coding, &edit()), Auto);
-    assert_eq!(coder.approval(coding, &bash()), Auto);
-    assert_eq!(coder.approval(coding, &git_commit()), Impossible);
+    assert_eq!(coder.approval(coding, &edit()), Gated);
+    assert_eq!(coder.approval(coding, &git_commit()), Gated);
     assert_eq!(
         coder.session_tags(),
         SessionSpecTags {
             spec: "coder",
-            containment: Containment::SandboxedReview,
+            containment: Containment::Host,
         }
     );
+
+    let edit_in = |mode| {
+        coder
+            .policy
+            .resolve_in("Edit", Capability::MutateWorkspace, Containment::Host, mode)
+    };
+    assert_eq!(edit_in(SessionMode::Manual), Gated);
+    assert_eq!(edit_in(SessionMode::AcceptEdits), Auto);
+    assert_eq!(edit_in(SessionMode::Auto), Auto);
+    assert_eq!(edit_in(SessionMode::Plan), Impossible);
 }
 
-/// The same coder run on the host has to ask for every edit: containment,
-/// not the spec, is what relaxed it.
+/// The same coder in a review guest edits and runs unasked but can't
+/// commit: there, containment is what relaxed it.
 #[test]
-fn the_coder_on_the_host_asks_for_every_edit() {
+fn the_coder_in_a_guest_edits_unasked_but_cannot_commit() {
     let mut coder = spec(CODER);
     coder.toolsets = vec![Toolset::Coding {
-        runner: Runner::LocalExecutor,
+        runner: Runner::Microsandbox {
+            git: SandboxGit::ReadOnly,
+        },
     }];
     let coding = toolset(&coder, ToolsetKind::Coding);
-    assert_eq!(coder.approval(coding, &edit()), Gated);
-    assert_eq!(coder.approval(coding, &git_commit()), Gated);
+    assert_eq!(coding.containment(), Containment::SandboxedReview);
+    assert_eq!(coder.approval(coding, &edit()), Auto);
+    assert_eq!(coder.approval(coding, &bash()), Auto);
+    assert_eq!(coder.approval(coding, &git_commit()), Impossible);
 }
 
 #[test]
@@ -248,6 +264,11 @@ fn a_host_shell_beside_private_boards_is_refused() {
 #[test]
 fn a_guest_shell_beside_private_boards_is_refused() {
     let mut coder = spec(CODER);
+    coder.toolsets = vec![Toolset::Coding {
+        runner: Runner::Microsandbox {
+            git: SandboxGit::ReadOnly,
+        },
+    }];
     coder.toolsets.push(Toolset::Notedeck {
         apps: vec!["headway".into()],
     });
@@ -263,11 +284,13 @@ fn a_guest_shell_beside_private_boards_is_refused() {
 fn a_coder_alone_keeps_its_shell() {
     let mut coder = spec(CODER);
     coder.validate().unwrap();
+    assert!(coder.reaches_network(&coder.toolsets[0]));
     coder.toolsets = vec![Toolset::Coding {
-        runner: Runner::LocalExecutor,
+        runner: Runner::Microsandbox {
+            git: SandboxGit::ReadOnly,
+        },
     }];
     coder.validate().unwrap();
-    assert!(coder.reaches_network(&coder.toolsets[0]));
 }
 
 #[test]

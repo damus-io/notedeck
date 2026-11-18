@@ -22,7 +22,7 @@ use crate::{
     DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId, SessionInfo,
     SubagentInfo, ToolCall, ToolCalls, ToolResponses,
 };
-use agentium_core::agent_spec::{Approval, ToolSource};
+use agentium_core::agent_spec::{Approval, SessionMode, ToolSource};
 use nostrdb::Transaction;
 use nostrdb_net::KeypairUnowned;
 use notedeck::{AppContext, Waker};
@@ -766,9 +766,11 @@ fn start_call(
 }
 
 /// Start the app tool call `call` as its approval in the session's spec
-/// says: an auto call waits only for the frame, a gated one shows a
-/// permission request and waits for the answer too. A tool the session's
-/// spec doesn't offer never runs, whatever the model asked.
+/// says, under the session's permission mode ([`session_mode`]): an auto
+/// call waits only for the frame, a gated one shows a permission request
+/// and waits for the answer too. A tool the session's spec doesn't offer
+/// never runs, whatever the model asked, and a write in plan mode is
+/// refused with the reason.
 ///
 /// Who runs it follows the tool's [`ToolSource`]: an app tool waits for the
 /// frame, which alone reaches the registry; a web tool or a sub-agent's
@@ -785,7 +787,10 @@ fn start_app_call(
     let Some(tool) = tools.catalog.get(&call.name) else {
         return not_offered(call);
     };
-    let approval = tool.approval;
+    let mode = session_mode(session);
+    let Some(approval) = tools.catalog.approval_in(&call.name, mode) else {
+        return not_offered(call);
+    };
     let runner = match &tool.source {
         ToolSource::App => CallRunner::Registry,
         ToolSource::Web => CallRunner::Job(crate::web_tools::job(
@@ -808,6 +813,7 @@ fn start_app_call(
                 ))))
             }
         },
+        Approval::Impossible if mode == SessionMode::Plan => return refused_in_plan(call),
         Approval::Impossible => return not_offered(call),
     };
     match (gate, runner) {
@@ -819,6 +825,25 @@ fn start_app_call(
             runner,
         }),
     }
+}
+
+/// The session's permission mode (the Ctrl+M cycle), as the native loop's
+/// approval reads it: a coder on the host runs as Claude Code would, edits
+/// unasked under Accept Edits or Auto, nothing written in Plan. A session
+/// that isn't agentic has no mode and reads as Manual.
+fn session_mode(session: &session::ChatSession) -> SessionMode {
+    let wire = session::permission_mode_to_str(session.permission_mode());
+    SessionMode::from_wire(wire).unwrap_or(SessionMode::Manual)
+}
+
+/// What a write called in plan mode answers: the model is told why, so it
+/// can describe the change instead.
+fn refused_in_plan(call: &AppToolCall) -> StartedCall {
+    StartedCall::Done(Box::new(ToolResponses::Error(format!(
+        "'{}' changes things, and this session is in plan mode: describe the change \
+         instead; it can run once the user leaves plan mode",
+        call.name
+    ))))
 }
 
 /// What a call of a tool the session's spec doesn't offer answers.
@@ -2939,6 +2964,8 @@ mod tests {
             use crate::native_tools::SpecTools;
             use crate::tools::{AppToolCall, AppToolResponse};
             use agentium_core::agent_spec::AgentSpec;
+            use agentium_core::tool::Capability;
+            use claude_agent_sdk_rs::PermissionMode;
             use notedeck::ToolSpec;
             use serde_json::json;
 
@@ -3413,6 +3440,131 @@ mod tests {
                     "the failed run shows as a failed row: {:?}",
                     rows(&mut test, sid)
                 );
+            }
+
+            /// What became of a call: shown as a permission request, run
+            /// through the registry, or answered with this error.
+            #[derive(Debug, PartialEq)]
+            enum Outcome {
+                Asked,
+                Ran,
+                Refused(String),
+            }
+
+            /// Call `name` once in a session running in `mode`, under a
+            /// spec whose headway also has a workspace edit (gated by the
+            /// table in-process), and say what became of it.
+            fn call_in_mode(mode: PermissionMode, name: &str) -> Outcome {
+                let spec = AgentSpec::from_json(
+                    r#"{
+                      "slug": "coder",
+                      "model": { "provider": "anthropic", "model": "claude-opus-5-5" },
+                      "prompt": "Tidy the board.",
+                      "toolsets": [{ "kind": "notedeck", "apps": ["headway"] }],
+                      "budget": { "max_steps": 10 }
+                    }"#,
+                )
+                .unwrap();
+                let host = [
+                    ToolSpec::new("headway_tidy", "Tidy the local board.", vec![])
+                        .capability(Capability::MutateWorkspace)
+                        .command(&["headway", "tidy"]),
+                    ToolSpec::new("headway_move_card", "Move a card.", vec![])
+                        .command(&["headway", "move"]),
+                ];
+                let tools =
+                    SpecTools::for_spec(&spec, &host, |_| unreachable!("no sub-agent"), None)
+                        .unwrap();
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn_under(Some(tools));
+                let session = test.dave.session_manager.get_mut(sid).unwrap();
+                session.agentic.as_mut().unwrap().permission_mode = mode;
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![app_call("w", name)]))
+                    .unwrap();
+                drop(stream);
+                {
+                    let parts = test.parts();
+                    parts.dave.process_events(&parts.host);
+                }
+                let mut ran = false;
+                test.dave.start_app_tool_calls(|call| {
+                    ran = true;
+                    three_cards(call)
+                });
+                let asked = rows(&mut test, sid)
+                    .iter()
+                    .any(|r| r.starts_with("PermissionRequest"));
+                if asked {
+                    assert!(!ran, "a gated call waits for its answer");
+                    return Outcome::Asked;
+                }
+                if ran {
+                    return Outcome::Ran;
+                }
+                let parts = test.parts();
+                parts.dave.process_events(&parts.host);
+                let answers = answers(&mut test, sid);
+                assert_eq!(answers.len(), 1, "{answers:?}");
+                Outcome::Refused(answers[0].clone())
+            }
+
+            /// The same gated workspace edit asks in Manual, runs unasked
+            /// under Accept Edits, Auto and Bypass, and is refused in Plan
+            /// with the reason.
+            #[test]
+            fn a_workspace_edit_follows_the_permission_mode() {
+                assert_eq!(
+                    call_in_mode(PermissionMode::Default, "headway_tidy"),
+                    Outcome::Asked
+                );
+                for mode in [
+                    PermissionMode::AcceptEdits,
+                    PermissionMode::Auto,
+                    PermissionMode::BypassPermissions,
+                ] {
+                    assert_eq!(call_in_mode(mode, "headway_tidy"), Outcome::Ran, "{mode:?}");
+                }
+                let Outcome::Refused(why) = call_in_mode(PermissionMode::Plan, "headway_tidy")
+                else {
+                    panic!("plan mode refuses the edit");
+                };
+                assert!(
+                    why.starts_with(
+                        "w: 'headway_tidy' changes things, and this session is in plan mode"
+                    ),
+                    "{why}"
+                );
+            }
+
+            /// Publishing as the user keeps asking under Accept Edits and
+            /// Auto (Auto has no classifier here), runs under Bypass, and is
+            /// refused in Plan.
+            #[test]
+            fn a_signed_write_asks_unless_bypassed() {
+                for mode in [
+                    PermissionMode::Default,
+                    PermissionMode::AcceptEdits,
+                    PermissionMode::Auto,
+                ] {
+                    assert_eq!(
+                        call_in_mode(mode, "headway_move_card"),
+                        Outcome::Asked,
+                        "{mode:?}"
+                    );
+                }
+                assert_eq!(
+                    call_in_mode(PermissionMode::BypassPermissions, "headway_move_card"),
+                    Outcome::Ran
+                );
+                assert!(matches!(
+                    call_in_mode(PermissionMode::Plan, "headway_move_card"),
+                    Outcome::Refused(_)
+                ));
             }
 
             /// A session under no spec runs no app tool, whatever the model

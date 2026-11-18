@@ -60,7 +60,9 @@ use serde::{Deserialize, Serialize};
 use crate::config::validate_slug;
 use crate::tool::{Capability, ToolSpec};
 pub use catalog::{Catalog, CatalogError, CatalogTool, ToolSource};
-pub use policy::{base_approval, Approval, Containment, Policy, PolicyError, Tighten, Widen};
+pub use policy::{
+    base_approval, Approval, Containment, Policy, PolicyError, SessionMode, Tighten, Widen,
+};
 
 /// The kind-31988 tag naming the spec a session runs under: `["agent-spec",
 /// <slug>]`. Separate from the `backend` tag, so an old reader still sees the

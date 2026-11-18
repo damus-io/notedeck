@@ -29,8 +29,8 @@
 use std::collections::HashMap;
 
 use super::web;
-use super::{AgentSpec, Approval, Toolset, ToolsetKind};
-use crate::tool::{ToolKind, ToolSpec};
+use super::{AgentSpec, Approval, Containment, Policy, SessionMode, Toolset, ToolsetKind};
+use crate::tool::{Capability, ToolKind, ToolSpec};
 use crate::tools::Tool;
 
 /// One tool the agent may call.
@@ -38,9 +38,15 @@ use crate::tools::Tool;
 pub struct CatalogTool {
     /// What the model is shown.
     pub spec: ToolSpec,
-    /// What a call needs: [`Approval::Auto`] or [`Approval::Gated`]. An
-    /// impossible tool is never offered.
+    /// What a call needs in a [`Manual`](SessionMode::Manual) session:
+    /// [`Approval::Auto`] or [`Approval::Gated`]. An impossible tool is
+    /// never offered. A call in a session reads
+    /// [`Catalog::approval_in`] instead, which follows the session's mode.
     pub approval: Approval,
+    /// What a call of it may do: the table's row.
+    pub class: Capability,
+    /// Where it runs: the table's column.
+    pub containment: Containment,
     /// Who runs a call of it.
     pub source: ToolSource,
 }
@@ -64,6 +70,8 @@ pub enum ToolSource {
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     tools: Vec<CatalogTool>,
+    /// The spec's policy, for resolving a call under the session's mode.
+    policy: Policy,
 }
 
 /// Why a spec's [`Catalog`] can't be built.
@@ -138,12 +146,27 @@ impl Catalog {
                 tool: tool.to_owned(),
             });
         }
-        Ok(Self { tools })
+        Ok(Self {
+            tools,
+            policy: spec.policy.clone(),
+        })
     }
 
     /// The tool offered as `name`.
     pub fn get(&self, name: &str) -> Option<&CatalogTool> {
         self.tools.iter().find(|t| t.spec.name() == name)
+    }
+
+    /// What a call of the tool offered as `name` needs in a session running
+    /// in `mode` (see [`Policy::resolve_in`]): Plan can make it
+    /// [`Approval::Impossible`], which the caller tells the model rather
+    /// than calling it not offered. `None` for a tool not offered.
+    pub fn approval_in(&self, name: &str, mode: SessionMode) -> Option<Approval> {
+        let tool = self.get(name)?;
+        Some(
+            self.policy
+                .resolve_in(name, tool.class, tool.containment, mode),
+        )
     }
 
     /// Every offered tool.
@@ -180,6 +203,8 @@ impl Offering<'_> {
         let approval = self.spec.approval(toolset, &tool);
         if approval != Approval::Impossible {
             self.tools.push(CatalogTool {
+                class: tool.capability_class(),
+                containment: toolset.containment(),
                 spec: tool,
                 approval,
                 source,
