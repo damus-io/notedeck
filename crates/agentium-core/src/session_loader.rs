@@ -1076,6 +1076,13 @@ pub struct SessionState {
     /// `butler`, never the spec itself, which is local config. Absent for a
     /// session that runs under none, and on states written before specs.
     pub agent_spec: Option<String>,
+    /// Where the session's tools run (`containment` tag,
+    /// [`CONTAINMENT_TAG`](crate::agent_spec::CONTAINMENT_TAG)): beside the
+    /// spec rather than in the `backend` tag, so a reader that doesn't know
+    /// the spec still learns whether its tools ran on the host or in a
+    /// sandbox. Absent for a session under no spec, on states written
+    /// before it was recorded, and for a spelling this build doesn't know.
+    pub containment: Option<crate::agent_spec::Containment>,
     pub created_at: u64,
     /// Real CLI session ID when the d-tag is a provisional UUID.
     /// Present only for sessions created via spawn commands.
@@ -1167,6 +1174,8 @@ impl SessionState {
             agent_spec: get_tag_value(note, crate::agent_spec::SPEC_TAG)
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
+            containment: get_tag_value(note, crate::agent_spec::CONTAINMENT_TAG)
+                .and_then(crate::agent_spec::Containment::from_tag_str),
             created_at: note.created_at(),
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
             spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
@@ -2310,6 +2319,7 @@ mod tests {
             relation: Default::default(),
             profile: None,
             agent_spec: None,
+            containment: None,
         }
     }
 
@@ -3892,6 +3902,7 @@ mod tests {
             relation: Default::default(),
             profile: None,
             agent_spec: None,
+            containment: None,
         };
 
         // Two individually-ordered lists, as the live and deleted loads arrive.
@@ -3987,6 +3998,7 @@ mod tests {
             relation: crate::session_events::SessionRelation::Successor,
             profile: Some("hydra".to_string()),
             agent_spec: Some("butler".to_string()),
+            containment: Some(crate::agent_spec::Containment::Host),
         };
         let event = state.build_event(&sk).unwrap().to_event_json();
         let filter = Filter::new()
@@ -4003,6 +4015,52 @@ mod tests {
             serde_json::to_value(&parsed).unwrap(),
             serde_json::to_value(&state).unwrap(),
         );
+    }
+
+    /// A `containment` spelling this build doesn't know reads as unknown
+    /// (`None`), never as some default containment, and a state with none
+    /// writes no tag.
+    #[tokio::test]
+    async fn an_unknown_containment_reads_as_none() {
+        let sk = test_secret_key();
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let state = SessionState {
+            claude_session_id: "plain".to_string(),
+            ..Default::default()
+        };
+        let plain = state.build_event(&sk).unwrap().to_event_json();
+        assert!(
+            !plain.contains("\"containment\""),
+            "no containment tag on a session under no spec: {plain}"
+        );
+
+        let note = NoteBuilder::new()
+            .kind(crate::session_events::AI_SESSION_STATE_KIND)
+            .content("")
+            .options(NoteBuildOptions::default())
+            .created_at(1_770_000_000)
+            .start_tag()
+            .tag_str("d")
+            .tag_str("future")
+            .start_tag()
+            .tag_str(crate::agent_spec::CONTAINMENT_TAG)
+            .tag_str("teleported")
+            .sign(&sk)
+            .build()
+            .unwrap();
+        let future = format!("[\"EVENT\", {}]", note.json().unwrap());
+        let filter = Filter::new()
+            .kinds([crate::session_events::AI_SESSION_STATE_KIND as u64])
+            .build();
+        ingest_all(&ndb, &filter, &[future]).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let results = ndb.query(&txn, &[filter], 1).unwrap();
+        let note = &results.first().expect("the state landed").note;
+        let parsed = SessionState::from_note(note, None).expect("parses");
+        assert_eq!(parsed.containment, None);
     }
 
     /// A state written before backend profiles existed (no `profile` tag)

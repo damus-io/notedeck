@@ -200,6 +200,7 @@ pub(crate) fn session_state_snapshot(
         model: session.details.requested_model.clone(),
         profile: session.details.profile.clone(),
         agent_spec: session.details.agent_spec.clone(),
+        containment: session.details.containment,
         created_at,
         cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
         spawn_id: session.spawn_id.clone(),

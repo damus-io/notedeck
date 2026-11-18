@@ -13,6 +13,7 @@ use crate::messages::{CliState, McpServerStatus, SessionInfo, WaitingOn};
 use crate::session::SessionDetails;
 use crate::ui::badge::{BadgeVariant, StatusBadge};
 use crate::ui::dave::permission_mode_badge;
+use agentium_core::agent_spec::Containment;
 use claude_agent_sdk_rs::PermissionMode;
 use notedeck::{tr, tr_plural, Localization};
 use notedeck_ui::app_images;
@@ -46,6 +47,33 @@ pub struct SessionFacts<'a> {
     pub chat: &'a [crate::Message],
     /// The allowlist and recorded decisions the Permissions card reads.
     pub permissions: Option<super::PermissionFacts<'a>>,
+}
+
+/// Where a spec session's tools run, in words, for the Overview's
+/// "Tools run" row.
+fn containment_label(containment: Containment, i18n: &mut Localization) -> String {
+    match containment {
+        Containment::InProcess => tr!(
+            i18n,
+            "In notedeck",
+            "Dave session inspector: the agent's tools run inside notedeck's own process"
+        ),
+        Containment::Host => tr!(
+            i18n,
+            "On this machine",
+            "Dave session inspector: the agent's tools run on the host with the user's own files and network, not sandboxed"
+        ),
+        Containment::SandboxedReview => tr!(
+            i18n,
+            "Sandboxed, git read-only",
+            "Dave session inspector: the agent's tools run in a microVM sandbox that can't write the repository's git history"
+        ),
+        Containment::SandboxedCommit => tr!(
+            i18n,
+            "Sandboxed, can commit",
+            "Dave session inspector: the agent's tools run in a microVM sandbox that may commit to the repository"
+        ),
+    }
 }
 
 /// The Overview card's body.
@@ -157,6 +185,15 @@ fn facts_rows_ui(
             &tr!(i18n, "Agent spec", "Dave session inspector overview row: the agent spec (e.g. butler) whose model, prompt and tools the session runs under"),
         );
         mono_ui(ui, spec);
+        ui.end_row();
+    }
+
+    if let Some(containment) = facts.details.and_then(|d| d.containment) {
+        key_ui(
+            ui,
+            &tr!(i18n, "Tools run", "Dave session inspector overview row: where an agent spec session's tools run (in notedeck, on the host, or in a sandbox)"),
+        );
+        value_ui(ui, &containment_label(containment, i18n));
         ui.end_row();
     }
 

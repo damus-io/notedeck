@@ -541,6 +541,9 @@ in__duration_8099 = {"["}íñ {$duration}{"]"}
 # Dave session inspector subagents: a background subagent still running
 in_background_6d05 = {"["}íñ bàçkgróúñd{"]"}
 
+# Dave session inspector: the agent's tools run inside notedeck's own process
+In_notedeck_4801 = {"["}Íñ ñótédéçk{"]"}
+
 # Title for individual user column
 Individual_b776 = {"["}Íñdívídúàl{"]"}
 
@@ -859,6 +862,9 @@ On_7aa8 = {"["}Óñ{"]"}
 # Setting to turn on sorting replies so that the newest are shown first
 On_f412 = {"["}Óñ{"]"}
 
+# Dave session inspector: the agent's tools run on the host with the user's own files and network, not sandboxed
+On_this_machine_5678 = {"["}Óñ thís màçhíñé{"]"}
+
 # Column title for finding users to follow
 Onboarding_4a25 = {"["}Óñbóàrdíñg{"]"}
 
@@ -1092,6 +1098,12 @@ running_b4b9 = {"["}rúññíñg{"]"}
 
 # Heading for support section
 Running_into_a_bug_1796 = {"["}Rúññíñg íñtó à búg?{"]"}
+
+# Dave session inspector: the agent's tools run in a microVM sandbox that may commit to the repository
+Sandboxed__can_commit_6a8f = {"["}Sàñdbóxéd, çàñ çómmít{"]"}
+
+# Dave session inspector: the agent's tools run in a microVM sandbox that can't write the repository's git history
+Sandboxed__git_read-only_011e = {"["}Sàñdbóxéd, gít réàd-óñly{"]"}
 
 # Label for satoshis (Bitcoin unit) for custom zap amount input field
 SATS_45d7 = {"["}SÀTS{"]"}
@@ -1341,6 +1353,9 @@ tokens__tokens_61fd = {"["}{$tokens} tókéñs{"]"}
 
 # Dave session inspector subagents: tokens a subagent has used
 tokens__tokens_d3b5 = {"["}{$tokens} tókéñs{"]"}
+
+# Dave session inspector overview row: where an agent spec session's tools run (in notedeck, on the host, or in a sandbox)
+Tools_run_7819 = {"["}Tóóls rúñ{"]"}
 
 # Cmd-K bar: the prompt chip of Dave's transcript search, before the query
 Transcripts_d904 = {"["}Tràñsçrípts{"]"}

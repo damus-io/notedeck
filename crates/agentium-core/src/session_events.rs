@@ -1650,6 +1650,14 @@ pub fn build_session_state_event(
             .tag_str(crate::agent_spec::SPEC_TAG)
             .tag_str(spec);
     }
+    // Where its tools run, as its own tag too: an old reader still sees
+    // `backend=openai` and simply doesn't learn whether it was sandboxed.
+    if let Some(containment) = state.containment {
+        builder = builder
+            .start_tag()
+            .tag_str(crate::agent_spec::CONTAINMENT_TAG)
+            .tag_str(containment.as_str());
+    }
 
     // Real Claude CLI session ID for backend --resume.
     // Empty string means the backend hasn't started yet.

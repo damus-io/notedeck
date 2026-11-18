@@ -1245,6 +1245,7 @@ fn hydrate_session_from_state(
     // And the spec it runs under, so its next turn goes to the spec's loop
     // with the spec's tools rather than the host's default backend.
     session.details.agent_spec = state.agent_spec.clone();
+    session.details.containment = state.containment;
     session.details.parent_session = state.parent_session.clone();
     session.details.relation = state.relation;
     session.spawn_id = state.spawn_id.clone();
@@ -1389,6 +1390,7 @@ mod tests {
             relation: session_events::SessionRelation::Successor,
             profile: Some("hydra".to_string()),
             agent_spec: None,
+            containment: None,
         }
     }
 

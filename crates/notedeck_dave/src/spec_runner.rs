@@ -12,6 +12,7 @@
 //!                                        ▼
 //!   OpenAiBackend::for_endpoint(..).with_system_prompt(..).with_budget(..)
 //!   session.spec_tools = runner.tools   ─▶ dispatch_turn on runner.backend
+//!   session.details.containment = spec.containment()   (kind-31988 ["containment", ..])
 //! ```
 //!
 //! A runner is built the first time a session under its spec dispatches,
@@ -527,6 +528,24 @@ mod tests {
         backend.interrupt_session("dave-session-x".into(), run.test.waker.clone());
         assert_eq!(run.runner.interrupts.load(Ordering::SeqCst), 1);
         assert_eq!(run.host.interrupts.load(Ordering::SeqCst), 0);
+    }
+
+    /// A turn on a spec's runner records where the spec's tools run on the
+    /// session, and its kind-31988 state carries it as its own tag beside
+    /// the spec's slug (headway:dave/forest-squeeze-manage).
+    #[test]
+    fn a_spec_turn_records_where_its_tools_run() {
+        use agentium_core::agent_spec::Containment;
+
+        let run = send_under("butler");
+        let session = run.test.dave.session_manager.get(run.sid).unwrap();
+        assert_eq!(session.details.containment, Some(Containment::InProcess));
+
+        let state =
+            crate::publish::session_state_snapshot(session, "working".into(), "h".into(), 1)
+                .expect("an agentic session");
+        assert_eq!(state.agent_spec.as_deref(), Some("butler"));
+        assert_eq!(state.containment, Some(Containment::InProcess));
     }
 
     /// Another device's stop and mode change of a butler session (kind-1988

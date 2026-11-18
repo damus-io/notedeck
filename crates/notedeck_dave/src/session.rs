@@ -1,3 +1,4 @@
+use agentium_core::agent_spec::Containment;
 use agentium_core::session_events::SessionRelation;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -196,6 +197,13 @@ pub struct SessionDetails {
     /// spec. Set when the session is created and fixed for its life, like
     /// `profile`; a slug this host has no spec for fails every turn.
     pub agent_spec: Option<String>,
+    /// Where the spec's tools run (in notedeck, on the host, in a
+    /// sandbox), taken from the spec each time a turn dispatches on its
+    /// runner, so it names where the last turn actually ran. Synced through
+    /// kind-31988 state as its own `containment` tag, which is how a remote
+    /// observer, who has no copy of the spec, learns it. `None` under no
+    /// spec, and before a spec session's first turn.
+    pub containment: Option<Containment>,
     /// Model currently reported by the backend for display.
     ///
     /// This may differ from `requested_model` if the backend resolved an alias
@@ -871,6 +879,7 @@ impl ChatSession {
                 requested_model: None,
                 profile: None,
                 agent_spec: None,
+                containment: None,
                 model: None,
             },
             backend_type,
@@ -962,6 +971,7 @@ impl ChatSession {
                 requested_model: None,
                 profile: None,
                 agent_spec: None,
+                containment: None,
                 model: None,
             },
             backend_type,

@@ -1542,6 +1542,9 @@ pub(crate) fn dispatch_spec_turn(
     // Every turn, not only the first: a restored session starts without
     // them, and the runner's are the ones its calls are checked against.
     session.spec_tools = Some(runner.tools.clone());
+    // Where this turn's tools run, from the spec the runner was built from,
+    // for the session's `containment` tag.
+    session.details.containment = Some(runner.built_from.spec.containment());
     dispatch_turn(session, runner.backend.as_ref(), ctx);
 }
 
