@@ -1,0 +1,17 @@
+{
+  "slug": "reviewer",
+  "model": { "provider": "anthropic", "model": "claude-opus-5-5" },
+  "prompt": "Review the change in this worktree against its headway card. Report findings; change nothing.",
+  "toolsets": [
+    { "kind": "coding", "runner": { "kind": "local_executor" } },
+    { "kind": "notedeck", "apps": ["headway"] }
+  ],
+  "policy": {
+    "tighten": [
+      { "class": "mutate_workspace", "to": "impossible" },
+      { "class": "mutate_shared_repo", "to": "impossible" },
+      { "class": "act_as_user", "to": "impossible" }
+    ]
+  },
+  "budget": { "max_steps": 60, "timeout_secs": 1200 }
+}

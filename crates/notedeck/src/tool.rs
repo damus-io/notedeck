@@ -52,7 +52,7 @@ use crate::{Accounts, AppAction, AppId, DataPath, ExplicitPublishApi, NoteCache}
 /// share it. notedeck re-exports it here so `notedeck::tool::ToolSpec` (and the
 /// crate-root `notedeck::ToolSpec`) keep resolving for the browser-level tool
 /// machinery below, which builds specs from these types.
-pub use agentium_core::tool::{StreamMode, ToolArg, ToolArgType, ToolKind, ToolSpec};
+pub use agentium_core::tool::{Capability, StreamMode, ToolArg, ToolArgType, ToolKind, ToolSpec};
 
 /// The canonical [`QueryCall`] — the single nostrdb query tool — is likewise
 /// owned by the engine and re-exported here, so `notedeck::tool::QueryCall`

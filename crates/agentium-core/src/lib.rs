@@ -11,6 +11,7 @@
 //! the full extraction plan; this is the scaffold with the pure protocol
 //! modules moved over.
 
+pub mod agent_spec;
 pub mod cli;
 pub mod config;
 pub mod engine;
@@ -35,4 +36,4 @@ mod util;
 pub mod wordid;
 
 pub use engine::{Engine, EngineError, SendOptions, SessionWatch};
-pub use tool::{ToolArg, ToolArgType, ToolSpec};
+pub use tool::{Capability, ToolArg, ToolArgType, ToolSpec};

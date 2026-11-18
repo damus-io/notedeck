@@ -10,6 +10,7 @@
 //! lets a single [`ToolSpec`] build an OpenAI `FunctionObject` or an MCP
 //! `tools/list` entry.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The JSON type of a tool argument, as advertised in the tool's schema.
@@ -267,6 +268,47 @@ pub enum ToolKind {
     Ui,
 }
 
+/// What a tool may do: the row of the approval table
+/// ([`crate::agent_spec::policy::base_approval`]).
+///
+/// It answers "what can this call change?", independent of where the tool
+/// runs. Where it runs is the [`Containment`](crate::agent_spec::Containment)
+/// column; approval is a function of both. Ordered from least to most reach,
+/// though the table, not this order, decides approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// Reads, changing nothing: Read, Grep, a board or card query.
+    Observe,
+    /// Moves the user's view without changing data: open a column, present
+    /// notes.
+    Navigate,
+    /// Changes the working tree the agent was given: Write, Edit, Bash, build
+    /// output.
+    MutateWorkspace,
+    /// Changes repository state shared beyond the working tree: commit,
+    /// rebase, branch, gc, push.
+    MutateSharedRepo,
+    /// Publishes something signed as the user: a post, a reply, a zap, a
+    /// headway comment or card edit.
+    ActAsUser,
+    /// Reaches the network outside notedeck: web search, URL fetch. The
+    /// exfiltration path, so it never relaxes with containment.
+    Egress,
+}
+
+impl Capability {
+    /// Every class, in table order.
+    pub const ALL: [Capability; 6] = [
+        Capability::Observe,
+        Capability::Navigate,
+        Capability::MutateWorkspace,
+        Capability::MutateSharedRepo,
+        Capability::ActAsUser,
+        Capability::Egress,
+    ];
+}
+
 /// How a client shows a streaming tool's events (see
 /// [`ToolSpec::streams`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +353,9 @@ pub struct ToolSpec {
     /// How its events are shown, for a tool that streams (see
     /// [`streams`](ToolSpec::streams)); `None` for one that answers once.
     streams: Option<StreamMode>,
+    /// The capability class it declared (see
+    /// [`capability`](ToolSpec::capability)); `None` derives one.
+    capability: Option<Capability>,
 }
 
 impl ToolSpec {
@@ -329,6 +374,7 @@ impl ToolSpec {
             comment_signer: false,
             starts_app: false,
             streams: None,
+            capability: None,
         }
     }
 
@@ -420,6 +466,35 @@ impl ToolSpec {
     /// [`streams`](Self::streams)).
     pub fn stream_mode(&self) -> Option<StreamMode> {
         self.streams
+    }
+
+    /// Declare what the tool may do, for an agent's approval table. Needed
+    /// only where the derived class (see
+    /// [`capability_class`](Self::capability_class)) is wrong: a coding tool
+    /// that edits files, a web fetch, a git commit.
+    pub fn capability(mut self, class: Capability) -> Self {
+        self.capability = Some(class);
+        self
+    }
+
+    /// What the tool may do. The declared class when there is one, else one
+    /// derived from what the spec already says: a
+    /// [`read_only`](Self::read_only) tool observes, a [`ToolKind::Ui`] tool
+    /// navigates, and any other data tool acts as the user, since an app's
+    /// data tool writes nostr notes signed by the account. The derivation
+    /// fails toward the gated rows: an undeclared writer is never taken for
+    /// a reader.
+    pub fn capability_class(&self) -> Capability {
+        if let Some(class) = self.capability {
+            return class;
+        }
+        if self.read_only {
+            return Capability::Observe;
+        }
+        match self.kind {
+            ToolKind::Ui => Capability::Navigate,
+            ToolKind::Data => Capability::ActAsUser,
+        }
     }
 
     /// Whether a call starts its app (see [`starts_app`](Self::starts_app)).
@@ -607,6 +682,30 @@ fn insert_cli_keys(props: &mut serde_json::Map<String, Value>, arg: &ToolArg, sl
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The derived class follows what the spec already says, and a declared
+    /// class wins over it.
+    #[test]
+    fn capability_class_derives_from_the_spec_and_a_declaration_wins() {
+        let read = ToolSpec::new("t_show", "Show.", vec![]).read_only();
+        assert_eq!(read.capability_class(), Capability::Observe);
+
+        let nav = ToolSpec::new("t_open", "Open.", vec![]).ui();
+        assert_eq!(nav.capability_class(), Capability::Navigate);
+
+        let write = ToolSpec::new("t_comment", "Comment.", vec![]);
+        assert_eq!(write.capability_class(), Capability::ActAsUser);
+
+        let fetch = ToolSpec::new("web_fetch", "Fetch.", vec![]).capability(Capability::Egress);
+        assert_eq!(fetch.capability_class(), Capability::Egress);
+
+        // A declaration beats read_only too: a search that reaches the
+        // network is egress even though it changes nothing.
+        let search = ToolSpec::new("web_search", "Search.", vec![])
+            .read_only()
+            .capability(Capability::Egress);
+        assert_eq!(search.capability_class(), Capability::Egress);
+    }
 
     /// A tool with a command line writes its argument order and each
     /// argument's command-line keys; a default lands as `default` beside the

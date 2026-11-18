@@ -1,0 +1,9 @@
+{
+  "slug": "coder",
+  "model": { "provider": "anthropic", "model": "claude-opus-5-5" },
+  "prompt": "Implement the headway card in this worktree and leave the change for review.",
+  "toolsets": [
+    { "kind": "coding", "runner": { "kind": "microsandbox", "git": "read_only" } }
+  ],
+  "budget": { "max_steps": 200, "max_cost_cents": 1000, "timeout_secs": 3600 }
+}

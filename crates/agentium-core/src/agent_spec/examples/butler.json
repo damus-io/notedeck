@@ -1,0 +1,19 @@
+{
+  "slug": "butler",
+  "model": { "provider": "anthropic", "model": "claude-sonnet-5-5" },
+  "prompt": "You are the butler. Validate the idea in the transcript and fill in the idea template on its headway card.",
+  "toolsets": [
+    { "kind": "notedeck", "apps": ["headway", "notebook"] },
+    { "kind": "sub_agent", "spec": "researcher" }
+  ],
+  "policy": {
+    "widen": [
+      {
+        "tool": "headway_comment_card",
+        "to": "auto",
+        "why": "the butler's findings are its comments; every other write stays gated"
+      }
+    ]
+  },
+  "budget": { "max_steps": 40, "max_cost_cents": 200, "timeout_secs": 900 }
+}

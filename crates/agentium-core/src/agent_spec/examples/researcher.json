@@ -1,0 +1,21 @@
+{
+  "slug": "researcher",
+  "model": { "provider": "anthropic", "model": "claude-haiku-5-5" },
+  "prompt": "Answer the research question from the web. Return only a summary in the fixed competitor fields.",
+  "toolsets": [{ "kind": "web" }],
+  "policy": {
+    "widen": [
+      {
+        "tool": "web_search",
+        "to": "auto",
+        "why": "holds no private data, so what it can send out is the question it was given"
+      },
+      {
+        "tool": "web_fetch",
+        "to": "auto",
+        "why": "holds no private data, so what it can send out is the question it was given"
+      }
+    ]
+  },
+  "budget": { "max_steps": 20, "timeout_secs": 300 }
+}
