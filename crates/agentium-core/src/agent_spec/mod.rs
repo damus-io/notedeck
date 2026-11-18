@@ -38,6 +38,7 @@
 //! summary.
 
 pub mod policy;
+pub mod provider;
 #[cfg(test)]
 mod tests;
 
@@ -80,8 +81,10 @@ pub struct AgentSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRef {
-    /// The provider's slug in the user's provider config, which holds the
-    /// endpoint and the credential. A spec never carries a secret.
+    /// The provider's slug: an OpenAI backend profile of the account's, or a
+    /// built-in (`openai`, `anthropic`, `ollama`), either of which holds the
+    /// endpoint and the credential. A spec never carries a secret;
+    /// [`provider::resolve`] finds them.
     pub provider: String,
     /// The model id the provider knows it by.
     pub model: String,

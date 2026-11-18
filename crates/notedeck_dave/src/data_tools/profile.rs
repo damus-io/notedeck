@@ -2,8 +2,9 @@
 //! secret, and remove one — so `nd agentium profile …` is what
 //! `nd agentium profile …` was.
 //!
-//! A backend profile is a named env overlay on the Claude backend, one
-//! account-wide kind-31992 event per profile (see
+//! A backend profile is a named env overlay on a backend (the Claude harness,
+//! or an OpenAI-compatible provider for the native loop), one account-wide
+//! kind-31992 event per profile (see
 //! [`agentium_core::config::BackendProfile`]). Reads answer from nostrdb
 //! alone; writes build the next revision and publish it PNS-wrapped through
 //! an embedded engine, as the run-config tools do ([`super::control`]).
@@ -17,8 +18,8 @@ use std::collections::BTreeMap;
 
 use agentium_core::cli::config::replacing;
 use agentium_core::cli::profile::{
-    check_secret_name, parse_secret_value, render_list, render_published, render_show, set_profile,
-    take_profile, EnvAssign, ProfileEdit, ProfileJson,
+    check_secret_name, parse_backend, parse_secret_value, render_list, render_published,
+    render_show, set_profile, take_profile, EnvAssign, ProfileEdit, ProfileJson,
 };
 use agentium_core::cli::term::now_secs;
 use agentium_core::config::{validate_slug, BackendProfile};
@@ -217,6 +218,8 @@ struct SetArgs {
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
+    backend: Option<String>,
+    #[serde(default)]
     model: Vec<String>,
     #[serde(default)]
     default_model: Option<String>,
@@ -239,6 +242,7 @@ impl AppTool for ProfileSet {
             vec![
                 slug_arg(),
                 ToolArg::new("label", ToolArgType::String, "What the backend picker calls it. Defaults to the slug for a new profile."),
+                ToolArg::new("backend", ToolArgType::String, "`claude` (the default for a new profile): an env overlay on the Claude harness, offered in the backend picker. `openai`: an OpenAI-compatible provider an agent spec names as `model.provider`, its endpoint in OPENAI_BASE_URL and its key in OPENAI_API_KEY."),
                 ToolArg::new("model", ToolArgType::Strings, "A model id the picker offers, in order; replaces the whole list."),
                 ToolArg::new("default_model", ToolArgType::String, "The model a new session starts on; one of `model`. \"\" clears it."),
                 ToolArg::new("config_dir", ToolArgType::String, "The Claude config dir (`CLAUDE_CONFIG_DIR`) its sessions use. \"\" clears it, sharing ~/.claude."),
@@ -255,6 +259,7 @@ impl AppTool for ProfileSet {
         let slug = checked_slug(&args.slug)?.to_owned();
         let edit = ProfileEdit {
             label: args.label,
+            backend: args.backend.as_deref().map(parse_backend).transpose()?,
             models: args.model,
             default_model: args.default_model,
             config_dir: args.config_dir,

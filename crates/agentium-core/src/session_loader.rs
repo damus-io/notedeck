@@ -4280,6 +4280,73 @@ mod tests {
         assert_eq!(loaded["work"].updated_at, 2000);
     }
 
+    /// A kind-31992 note for `slug` carrying `backend` as its `backend` tag,
+    /// or no such tag at all, as a build before the tag had values wrote.
+    fn profile_note_with_backend(
+        slug: &str,
+        backend: Option<&str>,
+        created_at: u64,
+    ) -> crate::session_events::BuiltEvent {
+        use crate::config::AI_BACKEND_PROFILE_KIND;
+        use crate::session_events::{finalize_built_event, init_note_builder};
+        let mut builder = init_note_builder(AI_BACKEND_PROFILE_KIND, "", Some(created_at));
+        builder = builder.start_tag().tag_str("d").tag_str(slug);
+        if let Some(backend) = backend {
+            builder = builder.start_tag().tag_str("backend").tag_str(backend);
+        }
+        builder = builder
+            .start_tag()
+            .tag_str("env")
+            .tag_str("OPENAI_BASE_URL=https://llm.example/v1");
+        finalize_built_event(
+            builder,
+            &crate::test_support::TEST_SECKEY,
+            AI_BACKEND_PROFILE_KIND,
+        )
+        .unwrap()
+    }
+
+    /// Profiles of both backends share the kind and load side by side, each
+    /// keeping its backend; a note with no `backend` tag is a Claude profile,
+    /// and one naming a backend this build doesn't know is skipped.
+    #[tokio::test]
+    async fn backend_profiles_load_with_their_backend() {
+        use crate::config::{BackendProfile, ProfileBackend};
+        use crate::session_events::build_backend_profile_event_at;
+        use crate::test_support::TEST_SECKEY;
+        let db = pns_ndb();
+        let mut local = BackendProfile::for_backend(ProfileBackend::OpenAi, "local", "Local");
+        local
+            .env
+            .insert("OPENAI_BASE_URL".into(), "http://127.0.0.1:8080/v1".into());
+        local
+            .env
+            .insert("OPENAI_API_KEY".into(), HYDRA_TOKEN.into());
+        local.default_model = Some("qwen3".into());
+
+        for built in [
+            build_backend_profile_event_at(&hydra_profile(), Some(2000), &TEST_SECKEY).unwrap(),
+            build_backend_profile_event_at(&local, Some(2000), &TEST_SECKEY).unwrap(),
+            profile_note_with_backend("old", None, 2000),
+            profile_note_with_backend("future", Some("gemini"), 2000),
+        ] {
+            pns_ingest(&db.ndb, &built).await;
+        }
+
+        let txn = Transaction::new(&db.ndb).unwrap();
+        let loaded = load_backend_profiles_from_ndb(&db.ndb, &txn, &pubkey_of(&TEST_SECKEY));
+        assert_eq!(loaded.keys().collect::<Vec<_>>(), ["hydra", "local", "old"]);
+        assert_eq!(loaded["hydra"].backend, ProfileBackend::Claude);
+        assert_eq!(loaded["old"].backend, ProfileBackend::Claude);
+        assert_eq!(
+            loaded["local"],
+            BackendProfile {
+                updated_at: 2000,
+                ..local
+            }
+        );
+    }
+
     /// An invalid profile never reaches the wire.
     #[test]
     fn backend_profile_builder_rejects_invalid_names() {

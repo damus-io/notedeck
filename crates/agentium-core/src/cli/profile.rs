@@ -2,10 +2,11 @@
 //! applies, how a secret value is checked, and the text and JSON each
 //! subcommand prints.
 //!
-//! A backend profile is a named env overlay on the Claude backend (the
-//! endpoint, credentials and models a session runs against), stored as one
-//! account-wide kind-31992 event per profile (d-tag = slug), only ever
-//! published PNS-wrapped. See [`BackendProfile`].
+//! A backend profile is a named env overlay on a backend (the endpoint,
+//! credentials and models a session runs against): the Claude harness, or an
+//! OpenAI-compatible provider for the native loop (`--backend openai`). It is
+//! stored as one account-wide kind-31992 event per profile (d-tag = slug),
+//! only ever published PNS-wrapped. See [`BackendProfile`].
 //!
 //! Every write is a whole-profile replace: read the newest revision, change
 //! it, publish the result as the next revision. A secret value is never
@@ -18,7 +19,7 @@ use serde::Serialize;
 
 use super::term::{paint, relative_time, SGR_BOLD};
 use crate::config::{
-    is_secret_var, validate_env_name, BackendProfile, RedactedValue, BACKEND_PROFILE_BACKEND,
+    is_secret_var, validate_env_name, BackendProfile, ProfileBackend, RedactedValue,
 };
 
 /// What `profile set` changes. Each field left `None`/empty keeps the
@@ -26,6 +27,9 @@ use crate::config::{
 #[derive(Default)]
 pub struct ProfileEdit {
     pub label: Option<String>,
+    /// `--backend`: which loop the profile configures. A new profile is a
+    /// Claude one unless this says otherwise.
+    pub backend: Option<ProfileBackend>,
     /// Replaces the whole model list when non-empty (`--model`, repeatable).
     pub models: Vec<String>,
     /// `Some("")` clears it.
@@ -42,6 +46,7 @@ impl ProfileEdit {
     /// Whether the edit would change nothing at all.
     pub fn is_empty(&self) -> bool {
         self.label.is_none()
+            && self.backend.is_none()
             && self.models.is_empty()
             && self.default_model.is_none()
             && self.config_dir.is_none()
@@ -116,6 +121,14 @@ pub fn parse_secret_value(name: &str, raw: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+/// Parse a `--backend` value: `claude` or `openai`.
+pub fn parse_backend(arg: &str) -> Result<ProfileBackend, String> {
+    ProfileBackend::from_tag(arg).ok_or_else(|| {
+        let known = ProfileBackend::ALL.map(ProfileBackend::as_tag).join(", ");
+        format!("unknown backend {arg:?}: use one of {known}")
+    })
+}
+
 /// The error for a slug with no profile, naming the commands that help.
 pub fn no_such_profile(slug: &str) -> String {
     format!(
@@ -146,8 +159,8 @@ pub fn set_profile(
         Some(profile) => {
             if edit.is_empty() {
                 return Err(format!(
-                    "nothing to change on profile '{slug}' — pass --label, --model, \
-                     --default-model, --config-dir, --env or --unset"
+                    "nothing to change on profile '{slug}' — pass --label, --backend, \
+                     --model, --default-model, --config-dir, --env or --unset"
                 ));
             }
             ("updated", profile)
@@ -173,6 +186,9 @@ pub fn apply_edit(profile: &mut BackendProfile, edit: ProfileEdit) -> Result<(),
             return Err("--label needs a non-empty value".into());
         }
         profile.label = label.to_string();
+    }
+    if let Some(backend) = edit.backend {
+        profile.backend = backend;
     }
     if !edit.models.is_empty() {
         profile.models = edit.models;
@@ -213,7 +229,7 @@ pub fn apply_edit(profile: &mut BackendProfile, edit: ProfileEdit) -> Result<(),
 pub struct ProfileJson<'a> {
     slug: &'a str,
     label: &'a str,
-    backend: &'static str,
+    backend: ProfileBackend,
     models: &'a [String],
     default_model: Option<&'a str>,
     config_dir: Option<&'a str>,
@@ -235,7 +251,7 @@ impl<'a> ProfileJson<'a> {
         ProfileJson {
             slug: &p.slug,
             label: &p.label,
-            backend: BACKEND_PROFILE_BACKEND,
+            backend: p.backend,
             models: &p.models,
             default_model: p.default_model.as_deref(),
             config_dir: p.config_dir.as_deref(),
@@ -273,7 +289,7 @@ pub fn render_list<'p>(
             out.push('\n');
         }
         out.push_str(&paint(color, SGR_BOLD, &p.slug));
-        out.push_str(&format!("  {}  ({BACKEND_PROFILE_BACKEND})\n", p.label));
+        out.push_str(&format!("  {}  ({})\n", p.label, p.backend));
         out.push_str(&format!("  models  {}\n", models_line(p, "*")));
         let names = p.env.keys().map(String::as_str).collect::<Vec<_>>();
         let names = if names.is_empty() {
@@ -314,7 +330,7 @@ pub fn render_show(p: &BackendProfile, now: u64) -> String {
     let mut out = String::new();
     out.push_str(&field("slug", &p.slug));
     out.push_str(&field("label", &p.label));
-    out.push_str(&field("backend", BACKEND_PROFILE_BACKEND));
+    out.push_str(&field("backend", p.backend.as_tag()));
     out.push_str(&field("models", &models_line(p, " (default)")));
     let config_dir = p.config_dir.as_deref().unwrap_or("(shares ~/.claude)");
     out.push_str(&field("config dir", config_dir));
@@ -504,6 +520,29 @@ mod tests {
             },
         );
         assert!(err.is_err(), "unsetting a var the profile lacks is refused");
+    }
+
+    #[test]
+    fn backend_is_set_by_name_and_shown() {
+        assert_eq!(parse_backend("openai"), Ok(ProfileBackend::OpenAi));
+        let err = parse_backend("gemini").unwrap_err();
+        assert!(err.contains("claude, openai"), "{err}");
+
+        let created = set_profile(
+            "local",
+            None,
+            ProfileEdit {
+                backend: Some(ProfileBackend::OpenAi),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(created.profile.backend, ProfileBackend::OpenAi);
+        let p = created.profile;
+        assert!(render_list(std::iter::once(&p), false).starts_with("local  local  (openai)\n"));
+        assert!(render_show(&p, 0).contains("backend     openai\n"));
+        let json = serde_json::to_value(ProfileJson::new(&p)).unwrap();
+        assert_eq!(json["backend"], "openai");
     }
 
     #[test]

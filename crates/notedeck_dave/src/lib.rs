@@ -1095,7 +1095,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn create_or_pick_backend(&mut self, cwd: PathBuf, target_host: Option<String>) {
         let entries = ui::backend_picker::picker_entries(
             &self.available_backends,
-            self.backend_profiles.iter(),
+            self.backend_profiles.claude_profiles(),
         );
         tracing::info!(
             "create_or_pick_backend: {} picker rows over backends {:?} target_host={:?}",
@@ -1140,7 +1140,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let config_dir = choice
                 .profile
                 .as_deref()
-                .and_then(|slug| self.backend_profiles.get(slug))
+                .and_then(|slug| self.backend_profiles.claude(slug))
                 .and_then(|p| p.config_dir.as_deref())
                 .map(PathBuf::from);
             let resumable = discover_sessions(&cwd, config_dir.as_deref());

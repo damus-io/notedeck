@@ -5,8 +5,8 @@
 //! Events are threaded using NIP-10 `e` tags with root/reply markers.
 
 use crate::config::{
-    validate_env_name, validate_slug, BackendProfile, RunConfig, AI_BACKEND_PROFILE_KIND,
-    AI_RUN_CONFIG_KIND, BACKEND_PROFILE_BACKEND,
+    validate_env_name, validate_slug, BackendProfile, ProfileBackend, RunConfig,
+    AI_BACKEND_PROFILE_KIND, AI_RUN_CONFIG_KIND,
 };
 use crate::session_jsonl::{self, ContentBlock, JsonlLine};
 use nostrdb::{NoteBuildOptions, NoteBuilder};
@@ -2211,7 +2211,7 @@ pub fn build_backend_profile_event_at(
     builder = builder
         .start_tag()
         .tag_str("backend")
-        .tag_str(BACKEND_PROFILE_BACKEND);
+        .tag_str(profile.backend.as_tag());
     builder = builder.start_tag().tag_str("label").tag_str(&profile.label);
     for (name, value) in &profile.env {
         let var = format!("{name}={value}");
@@ -2249,11 +2249,9 @@ pub fn build_backend_profile_delete_event_at(
     validate_slug(slug).map_err(|e| EventBuildError::Build(e.to_string()))?;
     let mut builder = init_note_builder(AI_BACKEND_PROFILE_KIND, "", created_at);
 
+    // No `backend` tag: a slug names one profile whatever its backend, and
+    // the tombstone removes it either way.
     builder = builder.start_tag().tag_str("d").tag_str(slug);
-    builder = builder
-        .start_tag()
-        .tag_str("backend")
-        .tag_str(BACKEND_PROFILE_BACKEND);
     builder = builder.start_tag().tag_str("deleted").tag_str("true");
 
     finalize_built_event(builder, secret_key, AI_BACKEND_PROFILE_KIND)
@@ -2264,20 +2262,22 @@ pub fn build_backend_profile_delete_event_at(
 /// its `created_at`.
 ///
 /// `None` for a tombstone ([`is_backend_profile_deleted`]), a slug that doesn't
-/// validate, or a profile for a backend other than Claude (one this build
-/// can't run). A malformed `env` tag is skipped rather than failing the whole
-/// profile; a missing label falls back to the slug.
+/// validate, or a `backend` this build doesn't know (one it can't run). No
+/// `backend` tag reads as Claude, the only backend older builds wrote. A
+/// malformed `env` tag is skipped rather than failing the whole profile; a
+/// missing label falls back to the slug.
 pub fn backend_profile_from_note(note: &nostrdb::Note) -> Option<BackendProfile> {
     if is_backend_profile_deleted(note) {
         return None;
     }
-    if get_tag_value(note, "backend").is_some_and(|b| b != BACKEND_PROFILE_BACKEND) {
-        return None;
-    }
+    let backend = match get_tag_value(note, "backend") {
+        None => ProfileBackend::Claude,
+        Some(tag) => ProfileBackend::from_tag(tag)?,
+    };
     let slug = get_tag_value(note, "d")?;
     validate_slug(slug).ok()?;
 
-    let mut profile = BackendProfile::new(slug, slug);
+    let mut profile = BackendProfile::for_backend(backend, slug, slug);
     profile.updated_at = note.created_at();
     for tag in note.tags() {
         let (Some(name), Some(value)) = (tag.get_str(0), tag.get_str(1)) else {

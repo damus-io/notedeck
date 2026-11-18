@@ -1171,7 +1171,7 @@ pub(crate) fn dispatch_turn(
     let session_id = format!("dave-session-{}", session.id);
     let profile = match session.details.profile.as_deref() {
         None => None,
-        Some(slug) => match ctx.profiles.get(slug) {
+        Some(slug) => match ctx.profiles.claude(slug) {
             Some(profile) => Some(profile),
             None => {
                 let error = missing_profile_error(slug, &session.details.hostname);

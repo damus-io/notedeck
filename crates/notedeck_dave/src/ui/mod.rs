@@ -167,7 +167,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     // turns then fail, and the slug is what `agentium profile set` takes).
     let profile_label = session.details.profile.as_deref().map(|slug| {
         backend_profiles
-            .get(slug)
+            .claude(slug)
             .map_or(slug, |profile| profile.label.as_str())
     });
 

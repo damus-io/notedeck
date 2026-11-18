@@ -55,18 +55,70 @@ impl RunConfig {
 /// published PNS-wrapped: the inner note carries the profile's secrets.
 pub const AI_BACKEND_PROFILE_KIND: u32 = 31992;
 
-/// The backend every profile overlays for now; carried as the event's
-/// `backend` tag so profiles for other backends can come later.
-pub const BACKEND_PROFILE_BACKEND: &str = "claude";
+/// Which loop a [`BackendProfile`] configures, carried as its event's
+/// `backend` tag.
+///
+/// Both kinds share the kind-31992 record and its slug namespace, because
+/// they are the same thing for two clients: an endpoint and a credential,
+/// given as env vars, stored PNS-encrypted and shown redacted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileBackend {
+    /// An env overlay on the Claude Code harness (`ANTHROPIC_BASE_URL`,
+    /// `ANTHROPIC_AUTH_TOKEN`, …). A note with no `backend` tag is one of
+    /// these: every profile written before the tag had another value.
+    #[default]
+    Claude,
+    /// A provider for the native agentic loop: an OpenAI-compatible endpoint
+    /// in [`OPENAI_BASE_URL_VAR`] and its key in [`OPENAI_API_KEY_VAR`]. An
+    /// agent spec names one by slug (`model.provider`); see
+    /// [`crate::agent_spec::provider`].
+    #[serde(rename = "openai")]
+    OpenAi,
+}
+
+impl ProfileBackend {
+    /// Every backend, in picker order.
+    pub const ALL: [ProfileBackend; 2] = [ProfileBackend::Claude, ProfileBackend::OpenAi];
+
+    /// The event's `backend` tag value.
+    pub fn as_tag(self) -> &'static str {
+        match self {
+            ProfileBackend::Claude => "claude",
+            ProfileBackend::OpenAi => "openai",
+        }
+    }
+
+    /// The backend a `backend` tag value names, if this build knows it.
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|b| b.as_tag() == tag)
+    }
+}
+
+impl std::fmt::Display for ProfileBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_tag())
+    }
+}
+
+/// The env var an [`OpenAi`](ProfileBackend::OpenAi) profile names its
+/// endpoint in, as the OpenAI SDKs spell it. Absent means OpenAI's own.
+pub const OPENAI_BASE_URL_VAR: &str = "OPENAI_BASE_URL";
+
+/// The env var an [`OpenAi`](ProfileBackend::OpenAi) profile keeps its API key
+/// in, as the OpenAI SDKs spell it. Absent or `""` sends no key, as a local
+/// endpoint (Ollama) wants.
+pub const OPENAI_API_KEY_VAR: &str = "OPENAI_API_KEY";
 
 /// The longest slug [`validate_slug`] accepts. Below 64 so a slug can never be
 /// a 64-char hex string, which nostrdb would store as a 32-byte id that
 /// `get_str` cannot read back.
 pub const MAX_SLUG_LEN: usize = 63;
 
-/// A named env overlay on the Claude backend: the endpoint, credentials and
-/// models a session runs against, e.g. a work backend that speaks the
-/// Anthropic API.
+/// A named env overlay on a backend: the endpoint, credentials and models a
+/// session runs against, e.g. a work backend that speaks the Anthropic API
+/// (a [`Claude`](ProfileBackend::Claude) profile), or an OpenAI-compatible
+/// provider for the native loop (an [`OpenAi`](ProfileBackend::OpenAi) one).
 ///
 /// `Debug` is written by hand and masks every value whose variable name looks
 /// secret ([`is_secret_var`]); the UI and CLI print through
@@ -78,6 +130,8 @@ pub struct BackendProfile {
     pub slug: String,
     /// Picker text, e.g. "Hydra".
     pub label: String,
+    /// Which loop the profile configures.
+    pub backend: ProfileBackend,
     /// Env vars the session subprocess gets. A `""` value means *remove* the
     /// variable from the inherited environment.
     pub env: BTreeMap<String, String>,
@@ -86,7 +140,7 @@ pub struct BackendProfile {
     /// The model a new session starts on, if not the backend's own default.
     pub default_model: Option<String>,
     /// Claude config dir for the session (exported as `CLAUDE_CONFIG_DIR`).
-    /// `None` shares the user's `~/.claude`.
+    /// `None` shares the user's `~/.claude`. Only a Claude profile uses it.
     pub config_dir: Option<String>,
     /// `created_at` of the revision this was read from (0 if unpublished).
     pub updated_at: u64,
@@ -187,13 +241,31 @@ impl std::fmt::Debug for RedactedValue<'_> {
 }
 
 impl BackendProfile {
-    /// An empty profile named `slug`, labelled `label`.
+    /// An empty Claude profile named `slug`, labelled `label`.
     pub fn new(slug: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             slug: slug.into(),
             label: label.into(),
             ..Default::default()
         }
+    }
+
+    /// An empty profile for `backend`, named `slug` and labelled `label`.
+    pub fn for_backend(
+        backend: ProfileBackend,
+        slug: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            backend,
+            ..Self::new(slug, label)
+        }
+    }
+
+    /// Whether this is an env overlay on the Claude harness, the only kind
+    /// the backend picker offers and a Claude session may run under.
+    pub fn is_claude(&self) -> bool {
+        self.backend == ProfileBackend::Claude
     }
 
     /// Check the slug and every env var name, as publishing requires.
@@ -231,6 +303,7 @@ impl std::fmt::Debug for BackendProfile {
         f.debug_struct("BackendProfile")
             .field("slug", &self.slug)
             .field("label", &self.label)
+            .field("backend", &self.backend)
             .field("env", &Env(self))
             .field("models", &self.models)
             .field("default_model", &self.default_model)
@@ -281,6 +354,15 @@ mod tests {
         // A plain substring match over-masks, on purpose: a context-size knob
         // is hidden rather than risk showing a real token.
         assert!(is_secret_var("CLAUDE_CODE_MAX_CONTEXT_TOKENS"));
+    }
+
+    #[test]
+    fn backend_tags_round_trip() {
+        for backend in ProfileBackend::ALL {
+            assert_eq!(ProfileBackend::from_tag(backend.as_tag()), Some(backend));
+        }
+        assert_eq!(ProfileBackend::from_tag("gemini"), None);
+        assert_eq!(ProfileBackend::default(), ProfileBackend::Claude);
     }
 
     #[test]

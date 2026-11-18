@@ -2,6 +2,7 @@ use crate::backend::traits::{AiBackend, ResponseStream};
 use crate::messages::DaveApiResponse;
 use crate::tools::{PartialToolCall, Tool, ToolCall, ToolCalls, ToolResponses};
 use crate::Message;
+use agentium_core::agent_spec::provider::Endpoint;
 use agentium_core::agent_spec::Budget;
 use async_openai::{config::OpenAIConfig, types::*, Client};
 use claude_agent_sdk_rs::PermissionMode;
@@ -28,6 +29,8 @@ pub struct OpenAiBackend {
     ndb: Ndb,
     /// Most rounds of tool calls in one run.
     max_steps: u32,
+    /// The model a request goes out on when its session names none.
+    default_model: String,
     /// Each session's current run's stop flag, keyed by the backend session
     /// id. A new run replaces its session's entry; the stop it holds reaches
     /// every request of the run, including one already in flight.
@@ -42,7 +45,19 @@ impl OpenAiBackend {
             client,
             ndb,
             max_steps: Budget::DEFAULT_MAX_STEPS,
+            default_model: DEFAULT_MODEL.to_owned(),
             runs: DashMap::new(),
+        }
+    }
+
+    /// A backend that sends every request to `endpoint` (an agent spec's
+    /// provider, resolved by
+    /// [`provider::resolve`](agentium_core::agent_spec::provider::resolve)),
+    /// on its model unless a session names another.
+    pub fn for_endpoint(endpoint: &Endpoint, ndb: Ndb) -> Self {
+        Self {
+            default_model: endpoint.model.clone(),
+            ..Self::new(Client::with_config(openai_config(endpoint)), ndb)
         }
     }
 
@@ -67,6 +82,23 @@ impl OpenAiBackend {
         self.runs.insert(session_id.to_owned(), stop);
         rx
     }
+}
+
+/// The model a request goes out on when neither its session nor the
+/// backend's endpoint names one.
+const DEFAULT_MODEL: &str = "gpt-4.1-mini";
+
+/// The client config that sends requests to `endpoint`: its base URL, and its
+/// key as the bearer token.
+///
+/// The key is always set, to `""` when the endpoint has none, because
+/// `OpenAIConfig::new` fills it from the process's `OPENAI_API_KEY`: left
+/// alone, a keyless provider (a local model, a work proxy) would be sent the
+/// user's own OpenAI key.
+pub fn openai_config(endpoint: &Endpoint) -> OpenAIConfig {
+    OpenAIConfig::new()
+        .with_api_base(endpoint.base_url.as_str())
+        .with_api_key(endpoint.api_key.as_deref().unwrap_or(""))
 }
 
 impl AiBackend for OpenAiBackend {
@@ -108,7 +140,7 @@ impl AiBackend for OpenAiBackend {
         };
 
         let request = CreateChatCompletionRequest {
-            model: model.unwrap_or_else(|| "gpt-4.1-mini".to_string()),
+            model: model.unwrap_or_else(|| self.default_model.clone()),
             stream: Some(true),
             messages: api_messages,
             tools: Some(tools.values().map(tool_to_api).collect()),
@@ -607,6 +639,73 @@ mod tests {
                 _ => "something else".to_string(),
             })
             .collect()
+    }
+
+    /// The head of the first request that reaches `listener`, up to the end
+    /// of its body, read on a thread; the connection is then dropped.
+    fn first_request(listener: std::net::TcpListener) -> std::thread::JoinHandle<String> {
+        use std::io::Read;
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            // The body is JSON naming the model; stop once its last brace is in.
+            while !String::from_utf8_lossy(&seen).trim_end().ends_with('}') {
+                let n = conn.read(&mut buf).unwrap();
+                assert!(n > 0, "the connection closed before the body arrived");
+                seen.extend_from_slice(&buf[..n]);
+            }
+            String::from_utf8_lossy(&seen).into_owned()
+        })
+    }
+
+    #[tokio::test]
+    async fn a_backend_for_an_endpoint_sends_its_url_key_and_model() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = Endpoint {
+            provider: "local".into(),
+            base_url: format!("http://{}/v9", listener.local_addr().unwrap()),
+            api_key: Some("sk-provider".into()),
+            model: "qwen3".into(),
+        };
+        let seen = first_request(listener);
+        let backend = OpenAiBackend::for_endpoint(&endpoint, ndb.clone());
+
+        let stream = request(&backend, run_of(0));
+        let request = tokio::task::spawn_blocking(move || seen.join().unwrap())
+            .await
+            .unwrap();
+        stream.task.unwrap().abort();
+
+        let lower = request.to_ascii_lowercase();
+        assert!(
+            request.starts_with("POST /v9/chat/completions "),
+            "{request}"
+        );
+        assert!(
+            lower.contains("authorization: bearer sk-provider\r\n"),
+            "{request}"
+        );
+        assert!(request.contains(r#""model":"qwen3""#), "{request}");
+    }
+
+    #[test]
+    fn a_keyless_endpoint_sends_no_key_not_the_envs() {
+        use async_openai::config::Config;
+        let endpoint = Endpoint {
+            provider: "ollama".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            api_key: None,
+            model: "qwen3".into(),
+        };
+        // Whatever OPENAI_API_KEY this process has, the config doesn't take
+        // it. (Only a box with the var set can tell the difference: on one
+        // without, the env's key is empty too.)
+        let headers = openai_config(&endpoint).headers();
+        assert_eq!(headers["authorization"], "Bearer ");
     }
 
     #[tokio::test]

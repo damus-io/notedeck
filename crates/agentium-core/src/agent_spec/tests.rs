@@ -222,3 +222,17 @@ fn validate_rejects_malformed_specs() {
         SpecError::Policy { .. }
     ));
 }
+
+/// Every example spec's model resolves to the built-in Anthropic endpoint
+/// with no profile on the account, given the key in the env.
+#[test]
+fn example_models_resolve_to_a_builtin_provider() {
+    let env = |var: &str| (var == "ANTHROPIC_API_KEY").then(|| "sk-ant".to_string());
+    for json in [BUTLER, RESEARCHER, REVIEWER, CODER] {
+        let spec = spec(json);
+        let endpoint = provider::resolve(&spec.model, &Default::default(), env)
+            .unwrap_or_else(|e| panic!("{}: {e}", spec.slug));
+        assert_eq!(endpoint.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(endpoint.model, spec.model.model);
+    }
+}
