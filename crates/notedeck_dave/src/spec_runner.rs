@@ -17,7 +17,7 @@
 //! A runner is built the first time a session under its spec dispatches,
 //! and kept: its backend holds each session's run (the stop an interrupt
 //! sends), so every turn, stop and cleanup of the spec's sessions goes to the
-//! same one ([`session_backend`]). A runner that can't be built is never
+//! same one ([`SessionBackends::for_session`]). A runner that can't be built is never
 //! kept: the turn fails with why, and the next turn tries again, so a
 //! provider profile created after the failure is picked up.
 
@@ -139,24 +139,36 @@ fn build(slug: &str, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerError>
     })
 }
 
-/// The backend that runs `session`: its spec's runner's when it runs under
-/// one, else the host's backend of its type (falling back to Remote, as
-/// [`crate::get_backend`] does). A spec session whose runner isn't built yet
-/// has no run to stop or clean up, so the host's backend answers for it.
-pub(crate) fn session_backend<'a>(
-    backends: &'a HashMap<BackendType, Box<dyn AiBackend>>,
-    runners: &'a SpecRunners,
-    session: Option<&ChatSession>,
-) -> &'a dyn AiBackend {
-    let spec_backend = session
-        .and_then(|s| s.details.agent_spec.as_deref())
-        .and_then(|slug| runners.get(slug))
-        .map(|runner| runner.backend.as_ref());
-    if let Some(backend) = spec_backend {
-        return backend;
+/// Every backend a session can run on: the host's, one per [`BackendType`],
+/// and the spec runners'. Call sites that act on a session pick its backend
+/// through [`SessionBackends::for_session`], never by its `BackendType`
+/// alone, so a spec session's stop, mode change, compact and cleanup reach
+/// the runner that holds its run.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionBackends<'a> {
+    /// The host's backends, by type.
+    pub(crate) host: &'a HashMap<BackendType, Box<dyn AiBackend>>,
+    /// The spec runners built so far.
+    pub(crate) runners: &'a SpecRunners,
+}
+
+impl<'a> SessionBackends<'a> {
+    /// The backend that runs `session`: its spec's runner's when it runs
+    /// under one, else the host's backend of its type (falling back to
+    /// Remote, as [`crate::get_backend`] does). A spec session whose runner
+    /// isn't built yet has no run to stop or clean up, so the host's backend
+    /// answers for it.
+    pub(crate) fn for_session(self, session: Option<&ChatSession>) -> &'a dyn AiBackend {
+        let spec_backend = session
+            .and_then(|s| s.details.agent_spec.as_deref())
+            .and_then(|slug| self.runners.get(slug))
+            .map(|runner| runner.backend.as_ref());
+        if let Some(backend) = spec_backend {
+            return backend;
+        }
+        let bt = session.map_or(BackendType::Remote, |s| s.backend_type);
+        crate::get_backend(self.host, bt)
     }
-    let bt = session.map_or(BackendType::Remote, |s| s.backend_type);
-    crate::get_backend(backends, bt)
 }
 
 #[cfg(test)]
@@ -252,9 +264,11 @@ mod tests {
         /// The tool names each turn offered, sorted.
         offered: Mutex<Vec<Vec<String>>>,
         interrupts: AtomicUsize,
+        mode_changes: AtomicUsize,
     }
 
-    /// A backend that records each turn's tools and each interrupt.
+    /// A backend that records each turn's tools, each interrupt and each
+    /// permission-mode change.
     struct Probe(Arc<Seen>);
 
     impl AiBackend for Probe {
@@ -294,6 +308,7 @@ mod tests {
             _mode: claude_agent_sdk_rs::PermissionMode,
             _waker: Waker,
         ) {
+            self.0.mode_changes.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -368,14 +383,68 @@ mod tests {
             "the session's calls are checked against the spec's catalog"
         );
 
-        let backend = session_backend(
-            &run.test.dave.backends,
-            &run.test.dave.spec_runners,
-            run.test.dave.session_manager.get(run.sid),
-        );
+        let backend = SessionBackends {
+            host: &run.test.dave.backends,
+            runners: &run.test.dave.spec_runners,
+        }
+        .for_session(run.test.dave.session_manager.get(run.sid));
         backend.interrupt_session("dave-session-x".into(), run.test.waker.clone());
         assert_eq!(run.runner.interrupts.load(Ordering::SeqCst), 1);
         assert_eq!(run.host.interrupts.load(Ordering::SeqCst), 0);
+    }
+
+    /// Another device's stop and mode change of a butler session (kind-1988
+    /// `interrupt` and `set_permission_mode`, as `nd agentium interrupt`
+    /// sends) reach the butler's runner, which holds the run, and never the
+    /// host's backend of the session's type
+    /// (headway:dave/smile-vote-novel).
+    #[tokio::test]
+    async fn a_remote_stop_of_a_spec_session_reaches_its_runner() {
+        use agentium_core::session_events::{
+            build_interrupt_event, build_set_permission_mode_event, ThreadingState,
+        };
+
+        let mut run = send_under("butler");
+        let test = &mut run.test;
+        test.dave.conversation_action_sub = Some(
+            crate::conversation::subscribe_conversation_events(&test.ndb, test.account)
+                .expect("the action subscription"),
+        );
+        let dtag = test
+            .dave
+            .session_manager
+            .get(run.sid)
+            .and_then(|s| s.agentic.as_ref())
+            .map(|a| a.event_session_id().to_owned())
+            .expect("an agentic session");
+
+        let mut threading = ThreadingState::new();
+        let interrupt = build_interrupt_event(&dtag, &mut threading, &test.sk).unwrap();
+        let mode =
+            build_set_permission_mode_event("plan", &dtag, &mut threading, &test.sk).unwrap();
+        let stored = test
+            .ndb
+            .subscribe(&[nostrdb::Filter::new()
+                .kinds([crate::session_events::AI_CONVERSATION_KIND as u64])
+                .build()])
+            .unwrap();
+        for built in [&interrupt, &mode] {
+            assert!(crate::publish::pns_ingest(
+                &test.ndb,
+                &built.note_json,
+                &test.sk
+            ));
+        }
+        let _ = test.ndb.wait_for_notes(stored, 2).await.unwrap();
+
+        let ndb = test.ndb.clone();
+        let waker = test.waker.clone();
+        test.dave.apply_remote_conversation_actions(&ndb, &waker);
+
+        assert_eq!(run.runner.interrupts.load(Ordering::SeqCst), 1);
+        assert_eq!(run.runner.mode_changes.load(Ordering::SeqCst), 1);
+        assert_eq!(run.host.interrupts.load(Ordering::SeqCst), 0);
+        assert_eq!(run.host.mode_changes.load(Ordering::SeqCst), 0);
     }
 
     /// A session under a spec this host lacks fails its turn with why, and

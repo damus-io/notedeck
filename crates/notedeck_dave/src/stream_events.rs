@@ -12,15 +12,15 @@ use crate::publish::{
     Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
-use crate::spec_runner::{SpecDeps, SpecRunners};
+use crate::spec_runner::{SessionBackends, SpecDeps, SpecRunners};
 use crate::tool_round::{
     AnsweredRound, CallRunner, Gate, RoundCall, StartedCall, ToolRound, WaitingCall,
 };
 use crate::tools::{AppToolCall, Tool};
 use crate::{
-    backend, get_backend, messages, reconcile, secret_key_bytes, session, session_events,
-    session_loader, Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId,
-    SessionInfo, SubagentInfo, ToolCall, ToolCalls, ToolResponses,
+    backend, messages, reconcile, secret_key_bytes, session, session_events, session_loader, Dave,
+    DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId, SessionInfo,
+    SubagentInfo, ToolCall, ToolCalls, ToolResponses,
 };
 use agentium_core::agent_spec::{Approval, ToolSource};
 use nostrdb::Transaction;
@@ -138,11 +138,11 @@ impl Dave {
 
         for session_id in session_ids {
             // Take the receiver out to avoid borrow conflicts
-            let (recvr, backend_type) = {
+            let recvr = {
                 let Some(session) = self.session_manager.get_mut(session_id) else {
                     continue;
                 };
-                (session.incoming_tokens.take(), session.backend_type)
+                session.incoming_tokens.take()
             };
 
             let Some(recvr) = recvr else {
@@ -152,12 +152,14 @@ impl Dave {
             // Persistent-stream backends (Claude) keep one channel for the whole
             // session, so a turn ends via an explicit `QueryComplete` rather than
             // the channel disconnecting. Non-persistent backends end a turn by
-            // dropping the sender (see the disconnect branch below).
-            let persistent_stream = self
-                .backends
-                .get(&backend_type)
-                .map(|b| b.persistent_stream())
-                .unwrap_or(false);
+            // dropping the sender (see the disconnect branch below). A spec
+            // session streams from its runner's backend, whatever its type.
+            let persistent_stream = SessionBackends {
+                host: &self.backends,
+                runners: &self.spec_runners,
+            }
+            .for_session(self.session_manager.get(session_id))
+            .persistent_stream();
             let ctx = ApplyCtx {
                 host,
                 persistent_stream,
@@ -305,7 +307,11 @@ impl Dave {
                 tracing::warn!("Compact: a remote Codex session can't be compacted");
                 return;
             }
-            dispatch_compact_to_backend(&mut self.session_manager, &self.backends, sid, host.waker);
+            let backends = SessionBackends {
+                host: &self.backends,
+                runners: &self.spec_runners,
+            };
+            dispatch_compact_to_backend(&mut self.session_manager, backends, sid, host.waker);
             return;
         }
         if self.add_user_message_for_session(sid, host, COMPACT_COMMAND.to_owned(), Vec::new()) {
@@ -1217,15 +1223,15 @@ const NO_RESPONSE_ERROR: &str = "No response from backend";
 /// live session to compact.
 fn dispatch_compact_to_backend(
     session_manager: &mut session::SessionManager,
-    backends: &HashMap<BackendType, Box<dyn AiBackend>>,
+    backends: SessionBackends<'_>,
     sid: SessionId,
     waker: &Waker,
 ) {
+    let backend = backends.for_session(session_manager.get(sid));
     let Some(session) = session_manager.get_mut(sid) else {
         return;
     };
     let session_id = format!("dave-session-{}", sid);
-    let backend = get_backend(backends, session.backend_type);
     let Some(rx) = backend.compact_session(session_id.clone(), waker.clone()) else {
         tracing::warn!("Compact failed: no backend session for {}", session_id);
         return;
@@ -1237,20 +1243,19 @@ fn dispatch_compact_to_backend(
 /// Dispatch a compact query for a specific session (compact-and-proceed flow).
 pub(crate) fn dispatch_compact_for_session(
     session_manager: &mut session::SessionManager,
-    backends: &HashMap<BackendType, Box<dyn AiBackend>>,
+    backends: SessionBackends<'_>,
     session_id: SessionId,
     waker: &Waker,
 ) {
     let Some(session) = session_manager.get(session_id) else {
         return;
     };
-    let bt = session.backend_type;
+    let backend = backends.for_session(Some(session));
     let backend_session_id = format!("dave-session-{}", session_id);
     tracing::info!(
         "Session {}: dispatching compact for compact-and-proceed",
         session_id
     );
-    let backend = get_backend(backends, bt);
     let persistent = backend.persistent_stream();
     let compact_rx = backend.compact_session(backend_session_id, waker.clone());
     // A non-persistent backend that returned no receiver has no live session to
@@ -2585,7 +2590,7 @@ mod tests {
             }
             assert_eq!(status(&mut test, sid), AgentStatus::Working);
 
-            let backend = get_backend(&test.dave.backends, BackendType::OpenAI);
+            let backend = crate::get_backend(&test.dave.backends, BackendType::OpenAI);
             crate::update::execute_interrupt(
                 &test.dave.session_manager,
                 backend,

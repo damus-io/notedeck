@@ -730,11 +730,11 @@ impl Dave {
                         .map(|s| s.id)
                         .collect();
                     for id in to_delete {
-                        let backend = crate::spec_runner::session_backend(
-                            &self.backends,
-                            &self.spec_runners,
-                            self.session_manager.get(id),
-                        );
+                        let backend = crate::spec_runner::SessionBackends {
+                            host: &self.backends,
+                            runners: &self.spec_runners,
+                        }
+                        .for_session(self.session_manager.get(id));
                         update::delete_session(
                             &mut self.session_manager,
                             &mut self.focus_queue,

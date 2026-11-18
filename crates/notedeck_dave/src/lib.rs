@@ -1072,11 +1072,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             None
         };
 
-        let backend = spec_runner::session_backend(
-            &self.backends,
-            &self.spec_runners,
-            self.session_manager.get(id),
-        );
+        let backend = spec_runner::SessionBackends {
+            host: &self.backends,
+            runners: &self.spec_runners,
+        }
+        .for_session(self.session_manager.get(id));
         let deleted = update::delete_session(
             &mut self.session_manager,
             &mut self.focus_queue,
@@ -1604,18 +1604,7 @@ impl notedeck::App for Dave {
         self.publish_pending_interrupt_commands(ctx);
 
         // Poll for remote conversation actions (permission responses, commands).
-        let applies = self.poll_remote_conversation_actions(ctx.ndb);
-        for apply in applies.mode_changes {
-            get_backend(&self.backends, apply.backend_type).set_permission_mode(
-                apply.backend_sid,
-                apply.mode,
-                waker.clone(),
-            );
-        }
-        for apply in applies.interrupts {
-            get_backend(&self.backends, apply.backend_type)
-                .interrupt_session(apply.backend_sid, waker.clone());
-        }
+        self.apply_remote_conversation_actions(ctx.ndb, waker);
 
         // Poll git status for local agentic sessions
         for session in self.session_manager.iter_mut() {
@@ -1637,10 +1626,15 @@ impl notedeck::App for Dave {
             });
             if let Some(id) = expired {
                 tracing::warn!("pending session {} timed out, removing", id);
+                let backend = spec_runner::SessionBackends {
+                    host: &self.backends,
+                    runners: &self.spec_runners,
+                }
+                .for_session(self.session_manager.get(id));
                 update::delete_session(
                     &mut self.session_manager,
                     &mut self.focus_queue,
-                    get_backend(&self.backends, BackendType::Remote),
+                    backend,
                     &mut self.directory_picker,
                     id,
                 );
@@ -1746,7 +1740,10 @@ impl notedeck::App for Dave {
         for session_id in sessions_needing_compact {
             dispatch_compact_for_session(
                 &mut self.session_manager,
-                &self.backends,
+                spec_runner::SessionBackends {
+                    host: &self.backends,
+                    runners: &self.spec_runners,
+                },
                 session_id,
                 waker,
             );

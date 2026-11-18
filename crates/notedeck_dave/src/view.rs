@@ -651,11 +651,11 @@ impl Dave {
         key_action: KeyAction,
         egui_ctx: &egui::Context,
     ) -> Option<AppAction> {
-        let backend = crate::spec_runner::session_backend(
-            &self.backends,
-            &self.spec_runners,
-            self.session_manager.get_active(),
-        );
+        let backend = crate::spec_runner::SessionBackends {
+            host: &self.backends,
+            runners: &self.spec_runners,
+        }
+        .for_session(self.session_manager.get_active());
         match ui::handle_key_action(
             key_action,
             &mut self.session_manager,
@@ -726,11 +726,11 @@ impl Dave {
 
     /// Handle the Send action, including tentative permission states
     fn handle_send_action(&mut self, ctx: &AppContext, ui: &egui::Ui) {
-        let backend = crate::spec_runner::session_backend(
-            &self.backends,
-            &self.spec_runners,
-            self.session_manager.get_active(),
-        );
+        let backend = crate::spec_runner::SessionBackends {
+            host: &self.backends,
+            runners: &self.spec_runners,
+        }
+        .for_session(self.session_manager.get_active());
         match ui::handle_send_action(&mut self.session_manager, backend, ui.ctx()) {
             SendActionResult::SendMessage => {
                 self.handle_user_send(ctx);
@@ -846,11 +846,11 @@ impl Dave {
             return None;
         }
 
-        let backend = crate::spec_runner::session_backend(
-            &self.backends,
-            &self.spec_runners,
-            self.session_manager.get_active(),
-        );
+        let backend = crate::spec_runner::SessionBackends {
+            host: &self.backends,
+            runners: &self.spec_runners,
+        }
+        .for_session(self.session_manager.get_active());
         match ui::handle_ui_action(
             action,
             &mut self.session_manager,

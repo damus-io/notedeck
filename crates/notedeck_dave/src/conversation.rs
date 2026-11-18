@@ -3,10 +3,10 @@
 //! and the remote permission request/response and mode/interrupt actions
 //! they carry.
 
-use crate::backend::BackendType;
 use crate::note_ledger::{Delivered, Delivery};
 use crate::publish::{ingest_live_event, publish_auto_accept_response};
 use crate::session::{SessionManager, SessionMessage};
+use crate::spec_runner::SessionBackends;
 use crate::stream_events::HostCtx;
 use crate::{
     messages, reconcile, session, session_events, session_loader, Dave, Message,
@@ -18,19 +18,22 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// A permission-mode change decoded from a remote command, to apply on the local
-/// backend. See [`Dave::poll_remote_conversation_actions`].
+/// backend that runs `session` (see
+/// [`SessionBackends::for_session`](crate::spec_runner::SessionBackends::for_session)).
+/// See [`Dave::poll_remote_conversation_actions`].
 pub(crate) struct ModeApply {
+    pub(crate) session: SessionId,
     pub(crate) backend_sid: String,
-    pub(crate) backend_type: BackendType,
     pub(crate) mode: claude_agent_sdk_rs::PermissionMode,
 }
 
-/// An interrupt decoded from a remote command, to apply on the local backend by
-/// aborting the session's in-flight turn. See
+/// An interrupt decoded from a remote command, to apply on the local backend
+/// that runs `session` by aborting its in-flight turn: a spec session's run
+/// lives in its spec runner's backend, not the host's backend of its type. See
 /// [`Dave::poll_remote_conversation_actions`].
 pub(crate) struct InterruptApply {
+    pub(crate) session: SessionId,
     pub(crate) backend_sid: String,
-    pub(crate) backend_type: BackendType,
 }
 
 /// The backend applications a poll of remote conversation actions produces:
@@ -49,8 +52,9 @@ impl Dave {
     /// - `set_permission_mode`: apply mode change locally
     /// - `interrupt`: abort the session's in-flight turn on the local backend
     ///
-    /// Returns the backend applications (mode changes and interrupts) that the
-    /// caller forwards to the local CLI backend.
+    /// Returns the backend applications (mode changes and interrupts) that
+    /// [`Self::apply_remote_conversation_actions`] forwards to each session's
+    /// backend.
     pub(crate) fn poll_remote_conversation_actions(
         &mut self,
         ndb: &nostrdb::Ndb,
@@ -116,8 +120,8 @@ impl Dave {
                     session.state_dirty = true;
 
                     applies.mode_changes.push(ModeApply {
+                        session: session_id,
                         backend_sid: format!("dave-session-{}", session_id),
-                        backend_type: session.backend_type,
                         mode: new_mode,
                     });
 
@@ -132,8 +136,8 @@ impl Dave {
                     // calls Dave runs for the turn are stopped here.
                     session.cancel_tool_round();
                     applies.interrupts.push(InterruptApply {
+                        session: session_id,
                         backend_sid: format!("dave-session-{}", session_id),
-                        backend_type: session.backend_type,
                     });
 
                     tracing::info!("remote command: interrupt session {}", session_id);
@@ -145,6 +149,33 @@ impl Dave {
             }
         }
         applies
+    }
+
+    /// Poll the remote conversation actions and apply their mode changes and
+    /// interrupts on the backend that runs each session: a spec session's
+    /// spec runner, else the host's backend of its type. Picking by
+    /// `BackendType` alone sent a spec session's stop to the host's backend,
+    /// so the spec's run went on to its step cap.
+    pub(crate) fn apply_remote_conversation_actions(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        waker: &notedeck::Waker,
+    ) {
+        let applies = self.poll_remote_conversation_actions(ndb);
+        let backends = SessionBackends {
+            host: &self.backends,
+            runners: &self.spec_runners,
+        };
+        for apply in applies.mode_changes {
+            backends
+                .for_session(self.session_manager.get(apply.session))
+                .set_permission_mode(apply.backend_sid, apply.mode, waker.clone());
+        }
+        for apply in applies.interrupts {
+            backends
+                .for_session(self.session_manager.get(apply.session))
+                .interrupt_session(apply.backend_sid, waker.clone());
+        }
     }
 
     /// Map each session's live-event `d`-tag (its `event_session_id`) to the
@@ -1019,6 +1050,7 @@ pub(crate) fn handle_remote_set_issue(note: &nostrdb::Note, session: &mut sessio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::BackendType;
     use crate::config::AiMode;
     use crate::publish::pns_ingest;
     use crate::session::SessionSource;
