@@ -95,6 +95,7 @@ async fn this_checkout_mounts_at_its_host_path() {
 #[tokio::test]
 #[ignore = "boots a microVM: needs the runtime, KVM or Apple Silicon, network, and the guest build"]
 async fn the_agent_runs_in_the_default_image_with_no_install_step() {
+    use agentium_sandbox::egress::{self, Egress};
     use agentium_sandbox::exec;
     use agentium_sandbox::image::GuestSetup;
     use agentium_sandbox::mounts::{GitAccess, MountPlan};
@@ -113,14 +114,19 @@ async fn the_agent_runs_in_the_default_image_with_no_install_step() {
 
     let name = "agentium-sandbox-agent";
     let started = std::time::Instant::now();
-    let sandbox = setup
-        .apply(plan.apply(Sandbox::builder(name).cpus(1).memory(512).replace()))
+    let egress = Egress::coding();
+    let sandbox = egress
+        .apply(setup.apply(plan.apply(Sandbox::builder(name).cpus(1).memory(512).replace())))
+        .expect("egress policy")
         .create()
         .await
         .expect("guest boots");
     eprintln!("booted with the agent in {:?}", started.elapsed());
 
     let ran = async {
+        let probe = egress.probe_host().expect("coding allowlist has a host");
+        let dns = egress::check_dns(&sandbox, probe).await?;
+        eprintln!("boot DNS check: {dns:?}");
         let client = exec::start(&sandbox, image::AGENT_PATH, &plan.checkout).await?;
         let read = client
             .call(CodingCall::Read(ReadInput {
@@ -150,4 +156,67 @@ async fn the_agent_runs_in_the_default_image_with_no_install_step() {
     assert!(read.contains("[workspace]"), "{read}");
     let git = git.expect("Bash in the guest");
     assert!(git.contains("true"), "{git}");
+}
+
+/// The default allowlist under a real guest: its probe host resolves and
+/// is reachable on 443, a name off the list is NXDOMAIN at once (not the
+/// spike's 70-second hang), and an allowlisted host on another port is
+/// refused. The one-shot form of what `egress`'s unit tests ask the
+/// policy.
+#[tokio::test]
+#[ignore = "boots a microVM: needs the runtime, KVM or Apple Silicon, and network"]
+async fn the_allowlist_resolves_its_hosts_and_refuses_the_rest_fast() {
+    use agentium_sandbox::egress::{self, DnsCheck, Egress};
+    use microsandbox::Sandbox;
+    use std::time::{Duration, Instant};
+
+    let egress = Egress::coding();
+    let name = "agentium-sandbox-egress";
+    let sandbox = egress
+        .apply(
+            Sandbox::builder(name)
+                .image(image::DEFAULT_IMAGE)
+                .cpus(1)
+                .memory(256)
+                .replace(),
+        )
+        .expect("egress policy")
+        .create()
+        .await
+        .expect("guest boots");
+
+    let allowed = egress::check_dns(&sandbox, "github.com").await;
+    let started = Instant::now();
+    let denied = egress::check_dns(&sandbox, "example.com").await;
+    let denied_after = started.elapsed();
+    // git is the one HTTPS client alpine/git is sure to have.
+    let https = sandbox
+        .shell("git ls-remote https://github.com/git/git HEAD")
+        .await;
+    let off_port = sandbox
+        .shell("nc -w 5 github.com 80 </dev/null && echo open || echo refused")
+        .await;
+    let _ = sandbox.stop().await;
+    let _ = Sandbox::remove(name).await;
+
+    assert!(
+        matches!(allowed, Ok(DnsCheck::Resolved { .. })),
+        "{allowed:?}"
+    );
+    assert!(denied.is_err(), "example.com resolved: {denied:?}");
+    assert!(
+        denied_after < Duration::from_secs(5),
+        "a denied lookup took {denied_after:?}"
+    );
+    let https = https.expect("exec");
+    assert!(
+        https.status().success,
+        "git over https: {}",
+        String::from_utf8_lossy(https.stderr_bytes())
+    );
+    let off_port = off_port.expect("exec");
+    assert_eq!(
+        String::from_utf8_lossy(off_port.stdout_bytes()).trim(),
+        "refused"
+    );
 }

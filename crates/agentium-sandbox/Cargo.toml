@@ -37,7 +37,7 @@ description = "Desktop-only microVM sandboxes (microsandbox) for agents notedeck
 default = []
 # Build the microVM runner. On a platform microsandbox can't run on this
 # is a no-op and `availability()` says so.
-microvm = ["dep:microsandbox", "dep:microsandbox-filesystem"]
+microvm = ["dep:microsandbox", "dep:microsandbox-filesystem", "dep:microsandbox-network"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -56,6 +56,11 @@ microsandbox = { version = "=0.6.13", default-features = false, features = ["net
 # Only to switch on its `prebuilt` feature (agentd into OUT_DIR); no code
 # here names it. Must stay at microsandbox's exact version.
 microsandbox-filesystem = { version = "=0.6.13", default-features = false, features = ["prebuilt"], optional = true }
+# Already in the graph through microsandbox's `net`. Named for the policy
+# types microsandbox doesn't re-export (BuildError, and DomainName and
+# Protocol for src/egress.rs's tests asking the built policy about DNS).
+# Must stay at microsandbox's exact version.
+microsandbox-network = { version = "=0.6.13", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

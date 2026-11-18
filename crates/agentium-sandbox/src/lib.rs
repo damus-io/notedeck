@@ -23,6 +23,9 @@
 //! - [`mounts`]: which host directories a guest gets (a checkout and the
 //!   git dir behind it, at the same paths as on the host), and whether the
 //!   shared git state is readonly.
+//! - [`egress`]: where a guest may connect and what it may resolve: a
+//!   short hostname allowlist on HTTPS, everything else denied, and the
+//!   boot check that DNS works under it.
 //! - [`boot`]: boot a guest and run one command in it, the smoke test that
 //!   the whole chain works on a machine.
 //! - [`client`]: the host's end of the tool protocol, one session with the
@@ -31,6 +34,7 @@
 //! - [`exec`]: that session over microsandbox's `exec_stream`.
 
 pub mod client;
+pub mod egress;
 pub mod guest;
 pub mod image;
 pub mod mounts;
@@ -88,6 +92,27 @@ pub enum SandboxError {
     /// rather than emulates, so the guest must match it.
     #[error("no guest architecture for this host")]
     UnsupportedArch,
+    /// An egress allowlist was handed something other than a bare
+    /// hostname: a wildcard, a port, a URL.
+    #[error("not a bare hostname for the egress allowlist: {0:?}")]
+    BadHost(String),
+    /// The guest couldn't resolve a name its egress allowlist permits: DNS
+    /// is blocked by the policy or the host's resolver is unreachable.
+    #[error(
+        "the guest can't resolve {host} ({detail}); a sandbox resolves only the \
+         names on its egress allowlist, so if {host} is on it the host's DNS is \
+         unreachable from the guest"
+    )]
+    DnsUnresolved {
+        /// The name it tried.
+        host: String,
+        /// What the lookup said, or that it timed out.
+        detail: String,
+    },
+    /// microsandbox refused the egress policy we built.
+    #[cfg(microvm)]
+    #[error("egress policy: {0}")]
+    Policy(microsandbox_network::policy::BuildError),
     /// The guest's executor wouldn't open a session: the wrong build, or it
     /// never answered.
     #[error(transparent)]

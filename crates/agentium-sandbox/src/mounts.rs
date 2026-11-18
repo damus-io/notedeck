@@ -47,7 +47,8 @@
 //! exits 0, and only the remote-tracking ref update afterwards fails
 //! (`tests/mounts.rs::push_lands_through_a_readonly_git_dir`). What keeps a
 //! guest from pushing is that it holds no credentials (no `~/.ssh`, no
-//! credential helper) and its egress allowlist, not this module.
+//! credential helper), not this module, and not the egress allowlist
+//! either: [`crate::egress`] lets `github.com` through.
 //!
 //! The writes are real: a bind mount passes straight through to the host,
 //! so the blast radius is this worktree, plus the whole repo's object store

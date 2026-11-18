@@ -201,6 +201,7 @@ dependencies = [
  "libc",
  "microsandbox",
  "microsandbox-filesystem",
+ "microsandbox-network",
  "notedeck-agent-guest",
  "notedeck-agent-proto",
  "serde_json",
