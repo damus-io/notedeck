@@ -6,10 +6,10 @@
 //!   host: session.details.agent_spec = "butler"   (rides kind-31988 too)
 //!
 //! each turn: SpecRunners::get_or_build("butler")
-//!   builtin::find ─▶ AgentSpec ─┬─ model ─▶ BackendProfiles::resolve_provider ─▶ Endpoint
-//!                               ├─ toolsets ─▶ SpecTools (Catalog + researcher)
-//!                               └─ prompt, budget
-//!                                     ▼
+//!   AgentSpecs::find ─▶ AgentSpec ─┬─ model ─▶ BackendProfiles::resolve_provider ─▶ Endpoint
+//!   (account record,               ├─ toolsets ─▶ SpecTools (Catalog + researcher)
+//!    else built-in)                └─ prompt, budget
+//!                                        ▼
 //!   OpenAiBackend::for_endpoint(..).with_system_prompt(..).with_budget(..)
 //!   session.spec_tools = runner.tools   ─▶ dispatch_turn on runner.backend
 //! ```
@@ -20,13 +20,22 @@
 //! same one ([`SessionBackends::for_session`]). A runner that can't be built is never
 //! kept: the turn fails with why, and the next turn tries again, so a
 //! provider profile created after the failure is picked up.
+//!
+//! A runner remembers the specs it was built from ([`BuiltFrom`]). When the
+//! account's record of either (the spec's own, or its sub-agent's) has
+//! changed by the next turn, the runner is rebuilt from the new one, unless
+//! another session under the spec is mid-run: its stop lives in the old
+//! runner's backend, so the old runner stays until the spec's sessions are
+//! idle, and the edit applies on the first turn after.
 
 use std::collections::HashMap;
 
-use agentium_core::agent_spec::{builtin, pricing, provider::ProviderError};
+use agentium_core::agent_spec::record::LookupError;
+use agentium_core::agent_spec::{pricing, provider::ProviderError, AgentSpec, Toolset};
 use nostrdb::Ndb;
 use notedeck::ToolSpec;
 
+use crate::agent_specs::AgentSpecs;
 use crate::backend::OpenAiBackend;
 use crate::backend::{AiBackend, BackendType};
 use crate::backend_profiles::BackendProfiles;
@@ -41,14 +50,39 @@ pub(crate) struct SpecRunner {
     pub(crate) backend: Box<dyn AiBackend>,
     /// What its sessions may call.
     pub(crate) tools: SpecTools,
+    /// The specs it was built from, to tell when a record changed them.
+    pub(crate) built_from: BuiltFrom,
+}
+
+/// The specs a runner was built from: the spec, and the sub-agent spec its
+/// [`Toolset::SubAgent`] names, if it has one.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BuiltFrom {
+    pub(crate) spec: AgentSpec,
+    pub(crate) sub_agent: Option<AgentSpec>,
+}
+
+impl BuiltFrom {
+    /// `slug`'s spec and its sub-agent's, as `specs` has them now. A
+    /// sub-agent spec that can't be found is left `None` here: building the
+    /// runner reports it.
+    fn current(slug: &str, specs: &AgentSpecs) -> Result<Self, SpecRunnerError> {
+        let spec = specs.find(slug)?;
+        let sub_agent = spec.toolsets.iter().find_map(|t| match t {
+            Toolset::SubAgent { spec } => specs.find(spec).ok(),
+            _ => None,
+        });
+        Ok(Self { spec, sub_agent })
+    }
 }
 
 /// Why a spec's runner can't be built: the session's turn fails with it.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SpecRunnerError {
-    /// This host has no spec of the slug.
-    #[error("this host has no agent spec {0:?}; the built-in specs are {list}", list = builtin::SLUGS.join(", "))]
-    UnknownSpec(String),
+    /// Neither the account nor the built-ins have the slug, or the
+    /// account's record of it doesn't read.
+    #[error(transparent)]
+    Lookup(#[from] LookupError),
     /// The spec's model has no endpoint here (a missing key or profile).
     #[error("agent spec {slug:?}: {err}")]
     Provider { slug: String, err: ProviderError },
@@ -59,6 +93,8 @@ pub(crate) enum SpecRunnerError {
 
 /// What building a runner reads from the host.
 pub(crate) struct SpecDeps<'a> {
+    /// The account's spec records over the built-ins.
+    pub(crate) specs: &'a AgentSpecs,
     /// The account's provider profiles, for the spec's model and its
     /// sub-agent's.
     pub(crate) profiles: &'a BackendProfiles,
@@ -81,15 +117,33 @@ impl SpecRunners {
         self.runners.get(slug)
     }
 
-    /// The runner for `slug`, built from the host's spec of that slug on
-    /// first use.
+    /// The runner for `slug`, built from the spec `deps.specs` has for it on
+    /// first use, and rebuilt when that spec (or its sub-agent's) has
+    /// changed since, unless `busy`: another session under `slug` is
+    /// mid-run on the cached runner, which must keep its stop.
     pub(crate) fn get_or_build(
         &mut self,
         slug: &str,
         deps: &SpecDeps<'_>,
+        busy: bool,
     ) -> Result<&SpecRunner, SpecRunnerError> {
-        if !self.runners.contains_key(slug) {
-            let runner = build(slug, deps)?;
+        let current = BuiltFrom::current(slug, deps.specs)?;
+        let stale = match self.runners.get(slug) {
+            None => true,
+            Some(runner) if runner.built_from == current => false,
+            Some(_) if busy => {
+                tracing::info!(
+                    "agent spec {slug} changed; keeping its runner until its sessions are idle"
+                );
+                false
+            }
+            Some(_) => {
+                tracing::info!("agent spec {slug} changed; rebuilding its runner");
+                true
+            }
+        };
+        if stale {
+            let runner = build(current, deps)?;
             self.runners.insert(slug.to_owned(), runner);
         }
         Ok(&self.runners[slug])
@@ -103,11 +157,12 @@ impl SpecRunners {
     }
 }
 
-/// Build the runner for the built-in spec `slug`: its model resolved to an
-/// endpoint, its tools from the host's, its sub-agent from the built-ins,
-/// and web searches sent to `$NOTEDECK_SEARXNG_URL`.
-fn build(slug: &str, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerError> {
-    let spec = builtin::find(slug).ok_or_else(|| SpecRunnerError::UnknownSpec(slug.to_owned()))?;
+/// Build the runner for `from.spec`: its model resolved to an endpoint, its
+/// tools from the host's, its sub-agent from `from.sub_agent`, and web
+/// searches sent to `$NOTEDECK_SEARXNG_URL`.
+fn build(from: BuiltFrom, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerError> {
+    let spec = &from.spec;
+    let slug = spec.slug.as_str();
     let endpoint =
         deps.profiles
             .resolve_provider(&spec.model)
@@ -119,17 +174,18 @@ fn build(slug: &str, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerError>
     let sub_agent = |child: &str| {
         SubAgent::resolve(
             child,
-            builtin::find,
+            |_| from.sub_agent.clone(),
             deps.profiles.all(),
             |var| std::env::var(var).ok(),
             search_url.clone(),
         )
     };
-    let tools = SpecTools::for_spec(&spec, deps.host_tools, sub_agent, search_url.clone())
-        .map_err(|err| SpecRunnerError::Tools {
+    let tools = SpecTools::for_spec(spec, deps.host_tools, sub_agent, search_url.clone()).map_err(
+        |err| SpecRunnerError::Tools {
             slug: slug.to_owned(),
             err,
-        })?;
+        },
+    )?;
     if spec.budget.max_cost_cents.is_some() && pricing::rate(&endpoint.model).is_none() {
         tracing::warn!(
             "agent spec {slug}: no price for model {:?}, so its max_cost_cents isn't enforced",
@@ -137,11 +193,12 @@ fn build(slug: &str, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerError>
         );
     }
     let backend = OpenAiBackend::for_endpoint(&endpoint, deps.ndb.clone())
-        .with_system_prompt(spec.prompt)
+        .with_system_prompt(spec.prompt.clone())
         .with_budget(&spec.budget);
     Ok(SpecRunner {
         backend: Box::new(backend),
         tools,
+        built_from: from,
     })
 }
 
@@ -218,15 +275,87 @@ mod tests {
         ]
     }
 
+    /// Build `slug`'s runner from the built-ins (no account records).
     fn build_named(slug: &str, ndb: &Ndb) -> Result<SpecRunner, SpecRunnerError> {
+        let specs = AgentSpecs::default();
         let profiles = profiles();
         let host_tools = host_tools();
         let deps = SpecDeps {
+            specs: &specs,
             profiles: &profiles,
             host_tools: &host_tools,
             ndb,
         };
-        build(slug, &deps)
+        build(BuiltFrom::current(slug, &specs)?, &deps)
+    }
+
+    /// Get or build `slug`'s runner over `specs`, answering what it was
+    /// built from.
+    fn runner_from(
+        runners: &mut SpecRunners,
+        specs: &AgentSpecs,
+        ndb: &Ndb,
+        busy: bool,
+    ) -> BuiltFrom {
+        let profiles = profiles();
+        let host_tools = host_tools();
+        let deps = SpecDeps {
+            specs,
+            profiles: &profiles,
+            host_tools: &host_tools,
+            ndb,
+        };
+        runners
+            .get_or_build("butler", &deps, busy)
+            .expect("the butler builds")
+            .built_from
+            .clone()
+    }
+
+    /// An edit to the butler's record, or to its researcher's, rebuilds the
+    /// butler's runner on the next turn, and not while one of its sessions
+    /// is mid-run (that run's stop is in the old runner).
+    #[tokio::test]
+    async fn an_edited_record_rebuilds_the_runner_unless_busy() {
+        use crate::agent_specs::tests::ingest_spec_record;
+        use agentium_core::agent_spec::builtin;
+        use agentium_core::agent_spec::record::build_agent_spec_event_at;
+
+        let test = crate::tests::TestDave::new();
+        let mut specs = AgentSpecs::default();
+        specs.subscribe(&test.ndb, test.account);
+        let mut runners = SpecRunners::default();
+        let first = runner_from(&mut runners, &specs, &test.ndb, false);
+        assert_eq!(first.spec, builtin::find("butler").unwrap());
+
+        let mut researcher = builtin::find("researcher").unwrap();
+        researcher.model.model = "claude-haiku-5-5".into();
+        ingest_spec_record(
+            &test,
+            build_agent_spec_event_at(&researcher, Some(1_770_000_000), &test.sk).unwrap(),
+        )
+        .await;
+        specs.poll(&test.ndb, &test.account);
+        let busy = runner_from(&mut runners, &specs, &test.ndb, true);
+        assert_eq!(busy, first, "kept while a session is mid-run");
+        let idle = runner_from(&mut runners, &specs, &test.ndb, false);
+        assert_eq!(idle.sub_agent.as_ref(), Some(&researcher), "rebuilt");
+
+        let mut butler = builtin::find("butler").unwrap();
+        butler.prompt = "Validate ideas briefly.".into();
+        ingest_spec_record(
+            &test,
+            build_agent_spec_event_at(&butler, Some(1_770_000_001), &test.sk).unwrap(),
+        )
+        .await;
+        specs.poll(&test.ndb, &test.account);
+        let edited = runner_from(&mut runners, &specs, &test.ndb, false);
+        assert_eq!(edited.spec, butler);
+        assert_eq!(
+            runner_from(&mut runners, &specs, &test.ndb, false),
+            edited,
+            "an unchanged spec keeps its runner"
+        );
     }
 
     /// The butler builds from its built-in spec: the account's provider,
@@ -344,6 +473,7 @@ mod tests {
             SpecRunner {
                 backend: Box::new(Probe(Arc::clone(&runner))),
                 tools: butler.tools,
+                built_from: butler.built_from,
             },
         );
         let host = Arc::<Seen>::default();

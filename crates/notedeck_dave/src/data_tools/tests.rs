@@ -62,6 +62,7 @@ fn live() -> Live {
             AI_SOURCE_DATA_KIND as u64,
             AI_RUN_CONFIG_KIND as u64,
             AI_BACKEND_PROFILE_KIND as u64,
+            agentium_core::agent_spec::record::AI_AGENT_SPEC_KIND as u64,
             AI_SESSION_COMMAND_KIND as u64,
         ])
         .build();
@@ -785,4 +786,5 @@ fn every_tool_is_an_agentium_command() {
 
 mod control;
 mod profile;
+mod spec;
 mod stream;

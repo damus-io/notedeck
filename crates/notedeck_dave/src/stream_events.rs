@@ -1487,10 +1487,11 @@ pub(crate) fn dispatch_spec_turn(
     slug: &str,
     runners: &mut SpecRunners,
     deps: &SpecDeps<'_>,
+    busy: bool,
     fallback: &dyn AiBackend,
     ctx: &DispatchCtx<'_>,
 ) {
-    let runner = match runners.get_or_build(slug, deps) {
+    let runner = match runners.get_or_build(slug, deps, busy) {
         Ok(runner) => runner,
         Err(err) => {
             tracing::warn!("session {}: {err}", session.id);

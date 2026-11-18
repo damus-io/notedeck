@@ -12,7 +12,7 @@ kind-31988 session-state events out of the notedeck's own nostrdb, and they
 publish control commands (spawn, send, interrupt, …) as that notedeck's
 account. The tools live in `crates/notedeck_dave/src/data_tools/` (reads in
 `mod.rs`, control in `control.rs`, streams in `stream.rs`, profiles in
-`profile.rs`); the session model is in `crates/agentium-core`.
+`profile.rs`, agent specs in `spec.rs`); the session model is in `crates/agentium-core`.
 
 Sessions are **PNS-encrypted to their owner**, so the tools only ever see the
 sessions of the notedeck's own account.
@@ -619,11 +619,31 @@ Nothing they print carries a secret's value. Give a secret with `--value-file
 -` and pipe it in, so it never lands on a command line or in shell history; at
 a terminal there is no hidden prompt, so the value would echo.
 
+## `spec` — agent specs
+
+An agent spec configures the native loop a `spawn --spec <slug>` session runs:
+model, prompt, toolsets, policy, budget. Notedeck ships built-ins (`butler`,
+`researcher`); the account's own kind-31993 record of a slug replaces the
+built-in of that slug on every host, from the spec's next turn.
+
+```bash
+nd agentium spec list
+nd agentium spec show butler --json | jq .spec > butler.json   # the shape --file takes
+nd agentium spec set butler --model qwen3 --provider local      # override one field of the built-in
+nd agentium spec set butler --prompt-file prompt.md
+nd agentium spec set scout --file scout.json                    # a new spec, whole
+nd agentium spec rm butler                                      # back to the built-in
+```
+
+`set` validates before it publishes, so a spec that mixes private boards with
+web egress is refused. A running session picks up the edit on its next turn,
+unless another session under the same spec is mid-run.
+
 ## Command surface
 
 `list`, `watch`, `show`, `log` (incl. `log --follow`), `grep`, `spawn`, `send`,
 `resume`, `interrupt`, `approve`/`deny`, `mode`, `link`/`unlink`, `config`,
-`profile`, `id`. `nd agentium <command> --help` is the reference for each.
+`profile`, `spec`, `id`. `nd agentium <command> --help` is the reference for each.
 
 `nd spawn [<dir>]` (no `agentium`) is a different command: it opens a Dave
 session in the running notedeck's own window, with no prompt or title. Use

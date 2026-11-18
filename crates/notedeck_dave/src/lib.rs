@@ -1,3 +1,4 @@
+mod agent_specs;
 mod agent_status;
 mod auto_accept;
 mod avatar;
@@ -70,7 +71,7 @@ mod vec3;
 mod web_tools;
 pub mod worktree;
 
-use agentium_core::agent_spec::{self, AgentSpec};
+use agentium_core::agent_spec::AgentSpec;
 use backend::{
     AiBackend, BackendChoice, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend,
     RemoteOnlyBackend,
@@ -382,6 +383,9 @@ pub struct Dave {
     /// The runner of each agent spec a session here runs under, built on its
     /// first turn (see [`spec_runner`]).
     spec_runners: spec_runner::SpecRunners,
+    /// The account's agent spec records (kind-31993) over the built-ins,
+    /// which a spec session's runner is built from (see [`agent_specs`]).
+    agent_specs: agent_specs::AgentSpecs,
     /// The host's tools, which a spec's Notedeck toolset picks from. Read
     /// once, on the first frame: apps register their tools when the host
     /// builds them, so the list doesn't change after.
@@ -636,6 +640,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             run_config_sub: None,
             backend_profiles: Default::default(),
             spec_runners: Default::default(),
+            agent_specs: Default::default(),
             host_tools: None,
             inspector_snapshot_sub: None,
             snapshot_wake_at: None,
@@ -1120,10 +1125,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else {
             &self.available_backends
         };
-        let specs: Vec<AgentSpec> = agent_spec::builtin::SLUGS
-            .iter()
-            .filter_map(|slug| agent_spec::builtin::find(slug))
-            .collect();
+        let specs: Vec<AgentSpec> = self.agent_specs.all();
         let entries = ui::backend_picker::picker_entries(
             backends,
             self.backend_profiles.claude_profiles(),
@@ -1323,6 +1325,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Send a message for a specific session by ID
     fn send_user_message_for(&mut self, sid: SessionId, host: &HostCtx<'_>) {
+        let busy = self.spec_sessions_streaming(sid);
         let Some(session) = self.session_manager.get_mut(sid) else {
             return;
         };
@@ -1338,6 +1341,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // backends this host was configured with.
         if let Some(slug) = session.details.agent_spec.clone() {
             let deps = spec_runner::SpecDeps {
+                specs: &self.agent_specs,
                 profiles: &self.backend_profiles,
                 host_tools: self.host_tools.as_deref().unwrap_or_default(),
                 ndb: host.ndb,
@@ -1348,6 +1352,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 &slug,
                 &mut self.spec_runners,
                 &deps,
+                busy,
                 fallback,
                 &ctx,
             );
@@ -1365,6 +1370,23 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             get_backend(&self.backends, session.backend_type),
             &ctx,
         );
+    }
+
+    /// Whether any session under `sid`'s agent spec, `sid` included, is
+    /// mid-run: its stop lives in the spec's cached runner, so an edited
+    /// spec doesn't replace that runner yet (see [`spec_runner`]). False for
+    /// a session under no spec.
+    fn spec_sessions_streaming(&self, sid: SessionId) -> bool {
+        let Some(slug) = self
+            .session_manager
+            .get(sid)
+            .and_then(|s| s.details.agent_spec.as_deref())
+        else {
+            return false;
+        };
+        self.session_manager
+            .iter()
+            .any(|s| s.details.agent_spec.as_deref() == Some(slug) && s.is_streaming())
     }
 }
 
@@ -1475,10 +1497,11 @@ impl notedeck::App for Dave {
         // Poll for live run-config updates from PNS relay
         self.poll_run_config_events(ctx.ndb);
 
-        // And for backend profile revisions, which every host of the account
-        // shares.
+        // And for backend profile and agent spec revisions, which every host of
+        // the account shares.
         if let Some(state) = &self.pns_local_state {
             self.backend_profiles.poll(ctx.ndb, &state.account);
+            self.agent_specs.poll(ctx.ndb, &state.account);
         }
 
         // Fold remote sessions' inspector snapshots into their Details tab
@@ -1981,7 +2004,10 @@ mod tests {
         else {
             panic!("a lone Claude plus a profile shows the picker");
         };
-        assert_eq!(entries.len(), 2 + agent_spec::builtin::SLUGS.len());
+        assert_eq!(
+            entries.len(),
+            2 + agentium_core::agent_spec::builtin::SLUGS.len()
+        );
 
         test.dave
             .create_or_resume_session(cwd.path().to_path_buf(), entries[1].choice(0));

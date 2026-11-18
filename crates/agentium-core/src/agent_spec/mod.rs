@@ -50,6 +50,7 @@ pub mod coding;
 pub mod policy;
 pub mod pricing;
 pub mod provider;
+pub mod record;
 #[cfg(test)]
 mod tests;
 pub mod web;

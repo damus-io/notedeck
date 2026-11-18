@@ -181,6 +181,9 @@ impl Dave {
         if !self.backend_profiles.is_subscribed() {
             self.backend_profiles.subscribe(ctx.ndb, account);
         }
+        if !self.agent_specs.is_subscribed() {
+            self.agent_specs.subscribe(ctx.ndb, account);
+        }
         if self.inspector_snapshot_sub.is_none() {
             self.subscribe_inspector_snapshots(ctx.ndb, account);
         }
@@ -200,6 +203,7 @@ impl Dave {
         }
         self.load_run_configs(ctx.ndb, account);
         self.backend_profiles.load(ctx.ndb, &account);
+        self.agent_specs.load(ctx.ndb, &account);
     }
 
     fn take_pns_local_runtime(&mut self) -> PnsLocalRuntime {
