@@ -34,18 +34,26 @@
 //!   guest's executor carrying many calls. Transport-generic, so it builds
 //!   (and is tested) without the microVM runner.
 //! - [`exec`]: that session over microsandbox's `exec_stream`.
+//! - [`lifecycle`]: how a guest is named and labelled, when one may be
+//!   reaped, and the bound on how many run at once.
+//! - [`guests`]: the one owner of guest lifecycles: boot a session's
+//!   guest in the order that works, stop and remove it, and sweep up what
+//!   a crash left behind.
 
 pub mod client;
 pub mod egress;
 pub mod guest;
 pub mod image;
 pub mod ipc;
+pub mod lifecycle;
 pub mod mounts;
 
 #[cfg(microvm)]
 pub mod boot;
 #[cfg(microvm)]
 pub mod exec;
+#[cfg(microvm)]
+pub mod guests;
 #[cfg(microvm)]
 pub mod runtime;
 
@@ -103,6 +111,23 @@ pub enum SandboxError {
     /// relative host path; microsandbox needs an absolute one.
     #[error("the host notedeck socket must be an absolute path: {}", .0.display())]
     IpcSocketNotAbsolute(std::path::PathBuf),
+    /// A dave session id that isn't a valid sandbox name as it stands
+    /// (see [`lifecycle::guest_name`]).
+    #[error("session id {0:?} can't name a guest: letters, digits, '.', '-', '_' only, at most 64 bytes")]
+    BadSessionId(String),
+    /// This notedeck already runs as many guests as it may.
+    #[error("{max} sandboxed sessions are already running; stop one to start another")]
+    AtCapacity {
+        /// The bound.
+        max: usize,
+    },
+    /// The session already has a guest that is up, in this notedeck or
+    /// another one.
+    #[error("session {0} already has a running sandbox")]
+    GuestRunning(String),
+    /// A sandbox that isn't ours has the name this session's guest needs.
+    #[error("a sandbox named {0} exists and wasn't made by notedeck; remove or rename it")]
+    GuestNameTaken(String),
     /// The guest couldn't resolve a name its egress allowlist permits: DNS
     /// is blocked by the policy or the host's resolver is unreachable.
     #[error(

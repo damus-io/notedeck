@@ -85,19 +85,22 @@ async fn this_checkout_mounts_at_its_host_path() {
     assert!(!refused.status().success, "Review let a ref write through");
 }
 
-/// The whole chain on this checkout: the default image, this build's
-/// `notedeck-agent` copied in before boot, the checkout mounted at its host
-/// path, a session that passes the build handshake, and one tool call of
-/// each kind that matters (pure Rust and shelling out).
+/// The whole chain on this checkout, through the lifecycle owner: the
+/// default image, this build's `notedeck-agent` copied in before boot, the
+/// checkout mounted at its host path, the DNS check, a session that passes
+/// the build handshake, and one tool call of each kind that matters (pure
+/// Rust and shelling out). Then the guest is shut down, and its name is
+/// free: no record left behind.
 ///
 /// Run `scripts/build-guest-agent` first: the guest is this checkout's dev
 /// build.
 #[tokio::test]
 #[ignore = "boots a microVM: needs the runtime, KVM or Apple Silicon, network, and the guest build"]
 async fn the_agent_runs_in_the_default_image_with_no_install_step() {
-    use agentium_sandbox::egress::{self, Egress};
-    use agentium_sandbox::exec;
+    use agentium_sandbox::egress::Egress;
+    use agentium_sandbox::guests::{GuestSpec, Guests};
     use agentium_sandbox::image::GuestSetup;
+    use agentium_sandbox::lifecycle::{LABEL_OWNER_PID, LABEL_SESSION};
     use agentium_sandbox::mounts::{GitAccess, MountPlan};
     use microsandbox::Sandbox;
     use notedeck_agent_proto::call::{BashInput, CodingCall, ReadInput};
@@ -105,57 +108,129 @@ async fn the_agent_runs_in_the_default_image_with_no_install_step() {
     let setup = GuestSetup::for_host(None).expect("scripts/build-guest-agent was run");
     let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let plan = MountPlan::for_checkout(&checkout, GitAccess::Review).expect("plan");
-
-    /// What the guest answered, kept past the sandbox's cleanup.
-    struct Answers {
-        read: Result<String, agentium_sandbox::client::CallError>,
-        git: Result<String, agentium_sandbox::client::CallError>,
-    }
-
-    let name = "agentium-sandbox-agent";
-    let started = std::time::Instant::now();
     let egress = Egress::coding();
-    let sandbox = egress
-        .apply(setup.apply(plan.apply(Sandbox::builder(name).cpus(1).memory(512).replace())))
-        .expect("egress policy")
-        .create()
+    let guests = Guests::new(1);
+
+    let started = std::time::Instant::now();
+    let guest = guests
+        .start(GuestSpec {
+            session_id: "boot-test-agent",
+            plan: &plan,
+            setup: &setup,
+            egress: &egress,
+            ipc: None,
+            cpus: 1,
+            memory_mib: 512,
+        })
         .await
-        .expect("guest boots");
+        .expect("guest boots and its executor answers");
     eprintln!("booted with the agent in {:?}", started.elapsed());
 
-    let ran = async {
-        let probe = egress.probe_host().expect("coding allowlist has a host");
-        let dns = egress::check_dns(&sandbox, probe).await?;
-        eprintln!("boot DNS check: {dns:?}");
-        let client = exec::start(&sandbox, image::AGENT_PATH, &plan.checkout, None).await?;
-        let read = client
-            .call(CodingCall::Read(ReadInput {
-                file_path: plan.checkout.join("Cargo.toml").to_string_lossy().into(),
-                offset: None,
-                limit: Some(3),
-            }))
-            .result()
-            .await;
-        let git = client
-            .call(CodingCall::Bash(BashInput {
-                command: "git rev-parse --is-inside-work-tree".into(),
-                description: None,
-                timeout: None,
-            }))
-            .result()
-            .await;
-        client.shutdown(std::time::Duration::from_secs(2)).await;
-        Ok::<_, agentium_sandbox::SandboxError>(Answers { read, git })
-    }
-    .await;
-    let _ = sandbox.stop().await;
-    let _ = Sandbox::remove(name).await;
+    let labels = Sandbox::get(guest.name())
+        .await
+        .expect("the guest is recorded")
+        .config()
+        .expect("config")
+        .spec
+        .labels;
+    assert_eq!(
+        labels.get(LABEL_SESSION).map(String::as_str),
+        Some("boot-test-agent")
+    );
+    assert_eq!(
+        labels.get(LABEL_OWNER_PID),
+        Some(&std::process::id().to_string())
+    );
+    assert_eq!(guests.capacity().in_use(), 1);
 
-    let Answers { read, git } = ran.expect("session with this build's agent");
+    let read = guest
+        .client()
+        .call(CodingCall::Read(ReadInput {
+            file_path: plan.checkout.join("Cargo.toml").to_string_lossy().into(),
+            offset: None,
+            limit: Some(3),
+        }))
+        .result()
+        .await;
+    let git = guest
+        .client()
+        .call(CodingCall::Bash(BashInput {
+            command: "git rev-parse --is-inside-work-tree".into(),
+            description: None,
+            timeout: None,
+        }))
+        .result()
+        .await;
+    let name = guest.name().to_owned();
+    guest.shutdown().await.expect("stop and remove");
+
+    assert_eq!(guests.capacity().in_use(), 0);
+    assert!(
+        matches!(
+            Sandbox::get(&name).await,
+            Err(microsandbox::MicrosandboxError::SandboxNotFound(_))
+        ),
+        "shutdown left the record of {name}"
+    );
     let read = read.expect("Read in the guest");
     assert!(read.contains("[workspace]"), "{read}");
     let git = git.expect("Bash in the guest");
     assert!(git.contains("true"), "{git}");
+}
+
+/// The crash leak: a guest of ours whose owner is dead, and one that has
+/// only stopped, are reaped by a sweep; a sandbox without our label, even
+/// one named like ours, is not touched.
+#[tokio::test]
+#[ignore = "boots a microVM: needs the runtime, KVM or Apple Silicon, and network"]
+async fn a_sweep_reaps_orphans_and_leaves_the_rest() {
+    use agentium_sandbox::guests::{reap, Guests};
+    use agentium_sandbox::lifecycle::{labels, NAME_PREFIX};
+    use microsandbox::Sandbox;
+
+    // A pid nobody has: a reaped child's.
+    let mut child = std::process::Command::new("true").spawn().expect("spawn");
+    let dead = child.id();
+    child.wait().expect("wait");
+
+    let orphan = format!("{NAME_PREFIX}sweep-orphan");
+    let stopped = format!("{NAME_PREFIX}sweep-stopped");
+    let theirs = format!("{NAME_PREFIX}sweep-theirs");
+    let boot = |name: &str, owner: Option<u32>| {
+        let builder = Sandbox::builder(name)
+            .image(image::DEFAULT_IMAGE)
+            .cpus(1)
+            .memory(256)
+            .replace();
+        let builder = match owner {
+            Some(pid) => builder.labels(labels(name, pid).into_iter().map(|l| (l.key, l.value))),
+            None => builder,
+        };
+        builder.create()
+    };
+    // This process holds the orphan, but its label names a dead owner,
+    // which is all the sweep can see of a crashed notedeck's guest.
+    let orphan_vm = boot(&orphan, Some(dead)).await.expect("boot orphan");
+    let stopped_vm = boot(&stopped, Some(std::process::id()))
+        .await
+        .expect("boot stopped");
+    stopped_vm.stop().await.expect("stop");
+    let theirs_vm = boot(&theirs, None).await.expect("boot theirs");
+
+    let report = Guests::new(1).sweep().await.expect("list");
+    eprintln!("{report:#?}");
+    drop(orphan_vm);
+    let _ = theirs_vm.stop().await;
+    let theirs_left = Sandbox::get(&theirs).await.is_ok();
+    for name in [&orphan, &stopped, &theirs] {
+        let _ = reap(name).await;
+    }
+
+    assert!(report.reaped.contains(&orphan), "{report:?}");
+    assert!(report.reaped.contains(&stopped), "{report:?}");
+    assert!(!report.reaped.contains(&theirs), "{report:?}");
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert!(theirs_left, "the sweep removed a sandbox that wasn't ours");
 }
 
 /// The default allowlist under a real guest: its probe host resolves and

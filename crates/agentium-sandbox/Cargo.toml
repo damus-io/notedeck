@@ -37,7 +37,7 @@ description = "Desktop-only microVM sandboxes (microsandbox) for agents notedeck
 default = []
 # Build the microVM runner. On a platform microsandbox can't run on this
 # is a no-op and `availability()` says so.
-microvm = ["dep:microsandbox", "dep:microsandbox-filesystem", "dep:microsandbox-network"]
+microvm = ["dep:microsandbox", "dep:microsandbox-filesystem", "dep:microsandbox-network", "dep:libc"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -64,12 +64,15 @@ microsandbox-filesystem = { version = "=0.6.13", default-features = false, featu
 # Protocol for src/egress.rs's tests asking the built policy about DNS).
 # Must stay at microsandbox's exact version.
 microsandbox-network = { version = "=0.6.13", optional = true }
+# kill(pid, 0): whether the notedeck that booted a guest is still alive,
+# for the orphan sweep (src/guests.rs).
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 # tests/protocol.rs drives the real guest loop over in-memory pipes.
 notedeck-agent-guest = { workspace = true }
-libc = "0.2"
+libc = { workspace = true }
 # Building microsandbox's ExecEvent::Stdout(Bytes) in src/exec.rs's tests;
 # already in the graph through microsandbox.
 bytes = "1"
