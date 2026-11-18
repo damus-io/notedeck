@@ -212,6 +212,13 @@ pub struct Budget {
     pub timeout_secs: Option<u64>,
 }
 
+impl Budget {
+    /// The step cap a loop runs under when no spec gives one: room for a
+    /// real search-and-read task, and a stop for a model that keeps calling
+    /// tools without ever answering.
+    pub const DEFAULT_MAX_STEPS: u32 = 25;
+}
+
 /// Why an [`AgentSpec`] can't be used.
 #[derive(Debug, thiserror::Error)]
 pub enum SpecError {
