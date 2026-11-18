@@ -45,7 +45,7 @@ fn edit() -> ToolSpec {
     ToolSpec::new("Edit", "Edit a file.", vec![]).capability(Capability::MutateWorkspace)
 }
 fn bash() -> ToolSpec {
-    ToolSpec::new("Bash", "Run a command.", vec![]).capability(Capability::MutateWorkspace)
+    super::coding::bash()
 }
 fn git_commit() -> ToolSpec {
     ToolSpec::new("git_commit", "Commit.", vec![]).capability(Capability::MutateSharedRepo)
@@ -161,6 +161,18 @@ fn the_coder_runs_on_the_host_and_the_mode_decides() {
     assert_eq!(edit_in(SessionMode::AcceptEdits), Auto);
     assert_eq!(edit_in(SessionMode::Auto), Auto);
     assert_eq!(edit_in(SessionMode::Plan), Impossible);
+
+    // The shell is not an edit: Accept Edits and Auto still ask before it,
+    // as Claude Code's do, and Plan refuses it.
+    let bash_in = |mode| {
+        coder
+            .policy
+            .resolve_in("Bash", Capability::Shell, Containment::Host, mode)
+    };
+    assert_eq!(coder.approval(coding, &bash()), Gated);
+    assert_eq!(bash_in(SessionMode::AcceptEdits), Gated);
+    assert_eq!(bash_in(SessionMode::Auto), Gated);
+    assert_eq!(bash_in(SessionMode::Plan), Impossible);
 }
 
 /// The same coder in a review guest edits and runs unasked but can't

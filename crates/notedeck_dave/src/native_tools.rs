@@ -24,11 +24,19 @@
 //! never reach the registry or the frame: each runs as a job off the frame
 //! ([`crate::web_tools::job`], [`SubAgent::job`]), after the user allows it
 //! when its approval is gated, as the butler's `ask_researcher` is.
+//!
+//! ## No coding runner yet
+//!
+//! A Coding toolset's tools are declared
+//! ([`coding`](agentium_core::agent_spec::coding)) but nothing here runs
+//! them, so a spec with one is refused when its session starts
+//! ([`SpecToolsError::NoCodingRunner`]) rather than offering tools whose
+//! every call fails.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, Toolset};
+use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, ToolSource, Toolset};
 use notedeck::{AppContext, Started, ToolOutcome};
 
 use crate::sub_agent::{SubAgent, SubAgentError};
@@ -57,6 +65,10 @@ pub(crate) enum SpecToolsError {
     Catalog(#[from] CatalogError),
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
+    /// The spec has a Coding toolset, and this build has no runner for its
+    /// tools yet.
+    #[error("agent spec {0}: this build can't run a coding toolset yet")]
+    NoCodingRunner(String),
 }
 
 impl SpecTools {
@@ -70,6 +82,13 @@ impl SpecTools {
         search_url: Option<String>,
     ) -> Result<Self, SpecToolsError> {
         let catalog = Catalog::build(spec, available)?;
+        if catalog
+            .tools()
+            .iter()
+            .any(|t| t.source == ToolSource::Coding)
+        {
+            return Err(SpecToolsError::NoCodingRunner(spec.slug.clone()));
+        }
         let child = spec.toolsets.iter().find_map(|t| match t {
             Toolset::SubAgent { spec } => Some(spec.as_str()),
             _ => None,
@@ -115,5 +134,32 @@ pub(crate) fn started_call(name: &str, started: Started) -> StartedCall {
                 .result
                 .map(|value| ToolResponses::App(AppToolResponse { tool, value }))
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A coder's catalog builds, its six tools declared, but Dave has no
+    /// runner for them yet, so its session is refused at the start rather
+    /// than offered tools whose every call fails.
+    #[test]
+    fn a_coding_spec_is_refused_until_a_runner_exists() {
+        let coder = AgentSpec::from_json(
+            r#"{
+              "slug": "coder",
+              "model": { "provider": "anthropic", "model": "claude-opus-5-5" },
+              "prompt": "Implement the card.",
+              "toolsets": [{ "kind": "coding", "runner": { "kind": "local_executor" } }],
+              "budget": { "max_steps": 10 }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(Catalog::build(&coder, &[]).unwrap().tools().len(), 6);
+        let err = SpecTools::for_spec(&coder, &[], |_| unreachable!("no sub-agent"), None)
+            .err()
+            .expect("a coding spec has no runner");
+        assert!(matches!(err, SpecToolsError::NoCodingRunner(slug) if slug == "coder"));
     }
 }

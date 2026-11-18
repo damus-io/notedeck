@@ -35,7 +35,7 @@
 //! next URL. [`AgentSpec::validate`] refuses a spec where one toolset reaches
 //! the network and another holds private data. Web tools reach it, and so
 //! does a coding toolset's shell on any runner, unless the spec's policy
-//! makes the shell impossible ([`coding::NETWORK_TOOLS`]). Research runs as
+//! makes the shell impossible ([`coding::network_tools`]). Research runs as
 //! a [`Toolset::SubAgent`]: another spec, with no private data, that returns
 //! a summary.
 //!
@@ -277,7 +277,7 @@ pub enum SpecError {
     /// the network.
     #[error(
         "agent spec {0} reads private data beside a shell that can reach the network: \
-         tighten Bash (or mutate_workspace) to impossible, or drop the private toolset"
+         tighten Bash (or the shell class) to impossible, or drop the private toolset"
     )]
     PrivateDataWithShell(String),
     /// `budget.max_steps` is zero.
@@ -365,16 +365,13 @@ impl AgentSpec {
 
     /// Whether `toolset`'s tools reach the network under this spec's policy:
     /// [`Toolset::has_egress`], except a coding toolset whose network tools
-    /// ([`coding::NETWORK_TOOLS`]) the policy makes impossible under its
+    /// ([`coding::network_tools`]) the policy makes impossible under its
     /// runner's containment, by name or by class.
     pub fn reaches_network(&self, toolset: &Toolset) -> bool {
-        let Toolset::Coding { runner } = toolset else {
+        if !matches!(toolset, Toolset::Coding { .. }) {
             return toolset.has_egress();
-        };
-        let containment = runner.containment();
-        coding::NETWORK_TOOLS.iter().any(|tool| {
-            self.approval_for(tool.name, tool.class, containment) != Approval::Impossible
-        })
+        }
+        coding::network_tools().any(|tool| self.approval(toolset, &tool) != Approval::Impossible)
     }
 
     /// Check this spec can be called as another's sub-agent: it holds no

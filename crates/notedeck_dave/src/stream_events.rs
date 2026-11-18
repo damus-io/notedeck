@@ -801,6 +801,14 @@ fn start_app_call(
             Ok(job) => CallRunner::Job(job),
             Err(err) => return StartedCall::Done(Box::new(ToolResponses::Error(err))),
         },
+        // SpecTools refuses a spec with a coding toolset until a runner
+        // exists, so no session offers one; answer honestly if one slips by.
+        ToolSource::Coding => {
+            return StartedCall::Done(Box::new(ToolResponses::Error(format!(
+                "'{}' is a coding tool, and this build has no runner for it",
+                call.name
+            ))))
+        }
     };
     let gate = match approval {
         Approval::Auto => Gate::Open,

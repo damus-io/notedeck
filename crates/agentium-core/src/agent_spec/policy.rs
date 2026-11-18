@@ -6,8 +6,11 @@
 //! [`Approval`], and an [`AgentSpec`](super::AgentSpec)'s [`Policy`] adjusts
 //! the result: tightening freely, widening only by naming the tool and why.
 //!
-//! Read the table by column and containment relaxes exactly one row,
-//! `MutateWorkspace`. `ActAsUser` never relaxes because the user's key is not
+//! Read the table by column and containment relaxes exactly two rows,
+//! `MutateWorkspace` and `Shell`: a guest is where edits and commands run
+//! unasked. (A guest shell still reaches the network, so
+//! [`AgentSpec::validate`](super::AgentSpec::validate) keeps it away from
+//! private data rather than this table.) `ActAsUser` never relaxes because the user's key is not
 //! in a guest; `Egress` never relaxes because a guest boundary does nothing
 //! against exfiltration, the agent already holds what it would leak; and
 //! `MutateSharedRepo` is impossible under review containment because the
@@ -25,14 +28,15 @@
 //! | mode | what changes |
 //! |---|---|
 //! | Manual | nothing: the table and the spec's policy |
-//! | Accept Edits, Auto | `MutateWorkspace` runs unasked in-process and on the host |
-//! | Plan | every write (`MutateWorkspace`, `MutateSharedRepo`, `ActAsUser`) is refused |
+//! | Accept Edits, Auto | `MutateWorkspace` runs unasked in-process and on the host; `Shell` still asks |
+//! | Plan | every write (`MutateWorkspace`, `MutateSharedRepo`, `ActAsUser`, `Shell`) is refused |
 //! | Bypass | every call that may run, runs unasked |
 //!
 //! **Auto relaxes exactly what Accept Edits does.** Claude Code's auto mode
 //! puts each remaining call to a classifier; the native loop has none, and
-//! Auto is the mode a new session starts in, so `Egress`, `ActAsUser` and
-//! `MutateSharedRepo` keep asking under it rather than running unread.
+//! Auto is the mode a new session starts in, so `Shell`, `Egress`,
+//! `ActAsUser` and `MutateSharedRepo` keep asking under it rather than
+//! running unread.
 //!
 //! The mode relaxes the table, not the spec: a spec's tighten still wins, so
 //! a spec that gates its edits keeps asking under Accept Edits. Plan and
@@ -172,8 +176,8 @@ pub fn base_approval(class: Capability, containment: Containment) -> Approval {
     use Containment::*;
     match (class, containment) {
         (Observe | Navigate, _) => Auto,
-        (MutateWorkspace, InProcess | Host) => Gated,
-        (MutateWorkspace, SandboxedReview | SandboxedCommit) => Auto,
+        (MutateWorkspace | Shell, InProcess | Host) => Gated,
+        (MutateWorkspace | Shell, SandboxedReview | SandboxedCommit) => Auto,
         (MutateSharedRepo, SandboxedReview) => Impossible,
         (MutateSharedRepo, InProcess | Host | SandboxedCommit) => Gated,
         (ActAsUser | Egress, _) => Gated,
@@ -362,20 +366,25 @@ mod tests {
         egress_host: Egress x Host => Gated;
         egress_sandboxed_review: Egress x SandboxedReview => Gated;
         egress_sandboxed_commit: Egress x SandboxedCommit => Gated;
+
+        shell_in_process: Shell x InProcess => Gated;
+        shell_host: Shell x Host => Gated;
+        shell_sandboxed_review: Shell x SandboxedReview => Auto;
+        shell_sandboxed_commit: Shell x SandboxedCommit => Auto;
     }
 
-    /// Containment relaxes exactly one row: every class but MutateWorkspace
-    /// and MutateSharedRepo reads the same down every column, and only
-    /// MutateWorkspace gets looser.
+    /// Containment relaxes exactly the workspace and the shell: every other
+    /// class but MutateSharedRepo reads the same down every column, and only
+    /// those two get looser.
     #[test]
-    fn containment_relaxes_only_mutate_workspace() {
+    fn containment_relaxes_only_the_workspace_and_the_shell() {
         for class in Capability::ALL {
             let host = base_approval(class, Host);
             for containment in Containment::ALL {
                 let cell = base_approval(class, containment);
                 if cell < host {
-                    assert_eq!(
-                        class, MutateWorkspace,
+                    assert!(
+                        matches!(class, MutateWorkspace | Shell),
                         "{class:?} relaxed under {containment:?}"
                     );
                 }
@@ -628,13 +637,10 @@ mod tests {
         };
         for mode in [SessionMode::AcceptEdits, SessionMode::Auto] {
             assert_eq!(gated.resolve_in("Edit", MutateWorkspace, Host, mode), Gated);
-            assert_eq!(
-                refused.resolve_in("Bash", MutateWorkspace, Host, mode),
-                Impossible
-            );
+            assert_eq!(refused.resolve_in("Bash", Shell, Host, mode), Impossible);
         }
         assert_eq!(
-            refused.resolve_in("Bash", MutateWorkspace, Host, SessionMode::Bypass),
+            refused.resolve_in("Bash", Shell, Host, SessionMode::Bypass),
             Impossible
         );
     }

@@ -10,7 +10,8 @@
     "tighten": [
       { "class": "mutate_workspace", "to": "impossible" },
       { "class": "mutate_shared_repo", "to": "impossible" },
-      { "class": "act_as_user", "to": "impossible" }
+      { "class": "act_as_user", "to": "impossible" },
+      { "class": "shell", "to": "impossible" }
     ]
   },
   "budget": { "max_steps": 60, "timeout_secs": 1200 }

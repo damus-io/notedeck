@@ -19,17 +19,18 @@
 //! the current view ([`ToolArg::from_current`](crate::tool::ToolArg::from_current))
 //! is one the model passes itself.
 //!
-//! ## Web and sub-agent tools are declared here
+//! ## Web, sub-agent and coding tools are declared here
 //!
-//! The `Web` and `SubAgent` toolsets have no app behind them, so their tools
-//! come from [`web`](super::web), not the registry. Each [`CatalogTool`]
-//! says where its call goes ([`ToolSource`]), so the host runs an app tool
-//! through its registry and the rest itself.
+//! The `Web`, `SubAgent` and `Coding` toolsets have no app behind them, so
+//! their tools come from [`web`](super::web) and [`coding`](super::coding),
+//! not the registry. Each [`CatalogTool`] says where its call goes
+//! ([`ToolSource`]), so the host runs an app tool through its registry, a
+//! coding tool through the toolset's runner, and the rest itself.
 
 use std::collections::HashMap;
 
-use super::web;
-use super::{AgentSpec, Approval, Containment, Policy, SessionMode, Toolset, ToolsetKind};
+use super::{coding, web};
+use super::{AgentSpec, Approval, Containment, Policy, SessionMode, Toolset};
 use crate::tool::{Capability, ToolKind, ToolSpec};
 use crate::tools::Tool;
 
@@ -64,6 +65,9 @@ pub enum ToolSource {
         /// The child spec's slug.
         spec: String,
     },
+    /// The Coding toolset's runner: a [`coding`] tool, its call parsed as a
+    /// [`CodingCall`](coding::CodingCall).
+    Coding,
 }
 
 /// Every tool a spec's agent is offered (see the module docs).
@@ -77,9 +81,6 @@ pub struct Catalog {
 /// Why a spec's [`Catalog`] can't be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CatalogError {
-    /// The spec has a toolset this build can't run yet.
-    #[error("agent spec {spec}: this build can't run a {kind:?} toolset yet")]
-    Unsupported { spec: String, kind: ToolsetKind },
     /// A Notedeck toolset names an app that offers no tools.
     #[error("agent spec {spec}: no app named {app:?} offers tools")]
     UnknownApp { spec: String, app: String },
@@ -90,11 +91,12 @@ pub enum CatalogError {
 
 impl Catalog {
     /// The tools `spec`'s agent is offered, from `available`: every tool
-    /// the host has (the registry's specs), for its Notedeck toolset, and
-    /// the [`web`] tools for its Web and SubAgent toolsets. Every tool gets
-    /// its [`approval`](AgentSpec::approval), and the impossible ones are
-    /// dropped. Fails on a toolset this build can't run, an app that offers
-    /// nothing, and a policy rule naming a tool that isn't offered.
+    /// the host has (the registry's specs), for its Notedeck toolset, the
+    /// [`web`] tools for its Web and SubAgent toolsets, and the [`coding`]
+    /// tools for its Coding toolset. Every tool gets its
+    /// [`approval`](AgentSpec::approval), and the impossible ones are
+    /// dropped. Fails on an app that offers nothing and a policy rule naming
+    /// a tool that isn't offered.
     pub fn build<'a>(
         spec: &AgentSpec,
         available: impl IntoIterator<Item = &'a ToolSpec> + Clone,
@@ -132,10 +134,9 @@ impl Catalog {
                     catalog.offer(toolset, web::ask_researcher(), source);
                 }
                 Toolset::Coding { .. } => {
-                    return Err(CatalogError::Unsupported {
-                        spec: spec.slug.clone(),
-                        kind: toolset.kind(),
-                    })
+                    for tool in coding::coding_tools() {
+                        catalog.offer(toolset, tool, ToolSource::Coding);
+                    }
                 }
             }
         }
@@ -418,22 +419,56 @@ mod tests {
         );
     }
 
-    /// A toolset this build can't run fails the catalog rather than being
-    /// skipped, so a spec never runs with less than it asked for.
+    /// The coder is offered the six coding tools, run by its runner. On
+    /// the host, reads run unasked and edits and the shell ask; under
+    /// Accept Edits the edits stop asking but the shell doesn't, and Plan
+    /// refuses both.
     #[test]
-    fn an_unsupported_toolset_is_an_error() {
-        let host = host_tools();
-        let mut reviewer = spec(&["headway"], Policy::default());
-        reviewer.toolsets.push(Toolset::Coding {
-            runner: crate::agent_spec::Runner::LocalExecutor,
-        });
+    fn the_coder_is_offered_the_coding_tools() {
+        let coder = AgentSpec::from_json(include_str!("examples/coder.json")).unwrap();
+        let catalog = Catalog::build(&coder, &host_tools()).unwrap();
         assert_eq!(
-            Catalog::build(&reviewer, &host).unwrap_err(),
-            CatalogError::Unsupported {
-                spec: "butler".into(),
-                kind: ToolsetKind::Coding
-            }
+            names(&catalog),
+            [
+                coding::READ,
+                coding::WRITE,
+                coding::EDIT,
+                coding::GREP,
+                coding::GLOB,
+                coding::BASH
+            ]
         );
+        assert!(catalog
+            .tools()
+            .iter()
+            .all(|t| t.source == ToolSource::Coding && t.containment == Containment::Host));
+        let approval = |name, mode| catalog.approval_in(name, mode).unwrap();
+        use SessionMode::*;
+        assert_eq!(approval(coding::GREP, Manual), Approval::Auto);
+        assert_eq!(approval(coding::EDIT, Manual), Approval::Gated);
+        assert_eq!(approval(coding::BASH, Manual), Approval::Gated);
+        assert_eq!(approval(coding::EDIT, AcceptEdits), Approval::Auto);
+        assert_eq!(approval(coding::BASH, AcceptEdits), Approval::Gated);
+        assert_eq!(approval(coding::BASH, Auto), Approval::Gated);
+        assert_eq!(approval(coding::READ, Plan), Approval::Auto);
+        assert_eq!(approval(coding::EDIT, Plan), Approval::Impossible);
+        assert_eq!(approval(coding::BASH, Plan), Approval::Impossible);
+        assert_eq!(approval(coding::BASH, Bypass), Approval::Auto);
+    }
+
+    /// The reviewer's class tightens drop every coding tool that changes
+    /// anything, the shell included: it is offered the three reads.
+    #[test]
+    fn the_reviewer_is_offered_only_the_coding_reads() {
+        let reviewer = AgentSpec::from_json(include_str!("examples/reviewer.json")).unwrap();
+        let catalog = Catalog::build(&reviewer, &host_tools()).unwrap();
+        let coding: Vec<_> = catalog
+            .tools()
+            .iter()
+            .filter(|t| t.source == ToolSource::Coding)
+            .map(|t| t.spec.name())
+            .collect();
+        assert_eq!(coding, [coding::READ, coding::GREP, coding::GLOB]);
     }
 
     /// The butler's sub-agent toolset offers one tool, gated: the question

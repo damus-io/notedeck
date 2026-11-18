@@ -283,8 +283,8 @@ pub enum Capability {
     /// Moves the user's view without changing data: open a column, present
     /// notes.
     Navigate,
-    /// Changes the working tree the agent was given: Write, Edit, Bash, build
-    /// output.
+    /// Changes the working tree the agent was given, and nothing else: Write,
+    /// Edit.
     MutateWorkspace,
     /// Changes repository state shared beyond the working tree: commit,
     /// rebase, branch, gc, push.
@@ -295,27 +295,46 @@ pub enum Capability {
     /// Reaches the network outside notedeck: web search, URL fetch. The
     /// exfiltration path, so it never relaxes with containment.
     Egress,
+    /// Runs an arbitrary program: Bash. It can do what every other class
+    /// does, so it writes (plan mode refuses it) and reaches the network
+    /// ([`reaches_network`](Self::reaches_network)), and Accept Edits does not
+    /// run it unasked, as Claude Code's doesn't. A guest relaxes it as it
+    /// does `MutateWorkspace`, since a guest is where a shell runs unasked.
+    Shell,
 }
 
 impl Capability {
     /// Every class, in table order.
-    pub const ALL: [Capability; 6] = [
+    pub const ALL: [Capability; 7] = [
         Capability::Observe,
         Capability::Navigate,
         Capability::MutateWorkspace,
         Capability::MutateSharedRepo,
         Capability::ActAsUser,
         Capability::Egress,
+        Capability::Shell,
     ];
 
     /// Whether a call of this class changes something: the workspace, the
     /// shared repository, or what is published as the user. What plan mode
-    /// refuses. Egress only reads, though what it sends can leak.
+    /// refuses. Egress only reads, though what it sends can leak; a shell
+    /// may write anything.
     pub fn writes(self) -> bool {
         matches!(
             self,
-            Capability::MutateWorkspace | Capability::MutateSharedRepo | Capability::ActAsUser
+            Capability::MutateWorkspace
+                | Capability::MutateSharedRepo
+                | Capability::ActAsUser
+                | Capability::Shell
         )
+    }
+
+    /// Whether a call of this class can reach the network outside notedeck:
+    /// egress by definition, and a shell, since no runner yet gives one no
+    /// network. What [`AgentSpec::validate`](crate::agent_spec::AgentSpec::validate)
+    /// keeps away from private data.
+    pub fn reaches_network(self) -> bool {
+        matches!(self, Capability::Egress | Capability::Shell)
     }
 }
 
