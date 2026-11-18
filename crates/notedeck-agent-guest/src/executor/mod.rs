@@ -48,6 +48,18 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use notedeck_agent_proto::call::CodingCall;
+use notedeck_agent_proto::wire::OutputStream;
+
+/// Watches a call's output as it is written: which stream, and the next
+/// piece of it, always ending on a character boundary. Only Bash calls it,
+/// and only for its first [`STREAM_BUDGET`] bytes per stream.
+pub type OnOutput<'a> = &'a (dyn Fn(OutputStream, &str) + Send + Sync);
+
+/// How many bytes of each stream a Bash call hands to [`OnOutput`]. Past
+/// it the command runs on and its answer still keeps its head and tail;
+/// only the live view stops, so a flood (`yes`, a runaway log) can't push
+/// megabytes across the guest boundary that nobody will read.
+pub const STREAM_BUDGET: usize = 512 * 1024;
 
 /// Runs coding tool calls against one working tree.
 #[derive(Debug, Clone)]
@@ -125,6 +137,17 @@ impl Executor {
         call: &CodingCall,
         cancelled: impl Future<Output = ()>,
     ) -> Result<String, ExecError> {
+        self.run_streaming(call, cancelled, &|_, _| {}).await
+    }
+
+    /// [`Executor::run`], also handing a Bash call's output to `on_output`
+    /// as the command writes it. The answer is the same either way.
+    pub async fn run_streaming(
+        &self,
+        call: &CodingCall,
+        cancelled: impl Future<Output = ()>,
+        on_output: OnOutput<'_>,
+    ) -> Result<String, ExecError> {
         match call {
             CodingCall::Read(r) => files::read(&self.resolve(&r.file_path), r.offset, r.limit),
             CodingCall::Write(w) => files::write(&self.resolve(&w.file_path), &w.content),
@@ -136,7 +159,7 @@ impl Executor {
             ),
             CodingCall::Grep(g) => search::grep(g, &self.resolve_dir(g.path.as_deref())),
             CodingCall::Glob(g) => search::glob(&g.pattern, &self.resolve_dir(g.path.as_deref())),
-            CodingCall::Bash(b) => bash::bash(&self.root, b, cancelled).await,
+            CodingCall::Bash(b) => bash::bash(&self.root, b, cancelled, on_output).await,
         }
     }
 

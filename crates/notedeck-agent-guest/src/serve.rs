@@ -3,10 +3,11 @@
 //! ```text
 //!            ┌──────────── serve (one task) ─────────────┐
 //!  stdin ──▶ │ Ping ─▶ Pong                              │ ──▶ stdout
-//!            │ Call ─▶ spawn ─▶ Executor::run ─┐         │
+//!            │ Call ─▶ spawn ─▶ Executor::run ─┐ chunks, │
 //!            │ Cancel ─▶ in_flight[id].cancel  │ finished│
 //!            │                ◀────────────────┘         │
-//!            │ in_flight.remove(id), then write answer   │
+//!            │ Chunk: write it                           │
+//!            │ finished: in_flight.remove(id), write it  │
 //!            └───────────────────────────────────────────┘
 //! ```
 //!
@@ -17,6 +18,10 @@
 //! work finishes, turns a mid-run cancel into a no-op that still reports
 //! success.)
 //!
+//! A Bash call's output goes out as [`GuestMessage::Chunk`]s while it runs,
+//! on the same channel as its answer and ahead of it, so the host always
+//! sees a call's chunks before its result.
+//!
 //! Shutdown, or the host closing stdin, cancels everything in flight and
 //! waits for each answer before returning, so no Bash process group
 //! outlives the executor.
@@ -24,7 +29,7 @@
 use std::collections::HashMap;
 
 use notedeck_agent_proto::call::CodingCall;
-use notedeck_agent_proto::wire::{GuestMessage, HostMessage, Version};
+use notedeck_agent_proto::wire::{GuestMessage, HostMessage, OutputStream, Version};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -44,10 +49,12 @@ impl Running {
     }
 }
 
-/// A call's answer, on its way back to the loop.
-struct Finished {
-    id: u64,
-    answer: GuestMessage,
+/// What a call's task sends back to the loop.
+enum Event {
+    /// Output the call wrote; written out as it is.
+    Chunk(GuestMessage),
+    /// The call's answer: it leaves `in_flight` and the answer is written.
+    Finished { id: u64, answer: GuestMessage },
 }
 
 /// Sends a call's answer back to the loop, or, if the task unwinds before
@@ -55,14 +62,23 @@ struct Finished {
 /// and a shutdown doesn't wait for it forever.
 struct Reply {
     id: u64,
-    to_loop: mpsc::UnboundedSender<Finished>,
+    to_loop: mpsc::UnboundedSender<Event>,
     sent: bool,
 }
 
 impl Reply {
+    /// Send output the call has written so far.
+    fn chunk(&self, stream: OutputStream, data: &str) {
+        let _ = self.to_loop.send(Event::Chunk(GuestMessage::Chunk {
+            id: self.id,
+            stream,
+            data: data.to_owned(),
+        }));
+    }
+
     fn send(mut self, answer: GuestMessage) {
         self.sent = true;
-        let _ = self.to_loop.send(Finished {
+        let _ = self.to_loop.send(Event::Finished {
             id: self.id,
             answer,
         });
@@ -74,7 +90,7 @@ impl Drop for Reply {
         if self.sent {
             return;
         }
-        let _ = self.to_loop.send(Finished {
+        let _ = self.to_loop.send(Event::Finished {
             id: self.id,
             answer: GuestMessage::Error {
                 id: self.id,
@@ -102,7 +118,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut lines = input.lines();
-    let (to_loop, mut finished) = mpsc::unbounded_channel::<Finished>();
+    let (to_loop, mut events) = mpsc::unbounded_channel::<Event>();
     let mut in_flight: HashMap<u64, Running> = HashMap::new();
     let mut reading = true;
     let mut failure: Option<std::io::Error> = None;
@@ -148,10 +164,13 @@ where
                     None
                 }
             },
-            Some(done) = finished.recv() => {
-                in_flight.remove(&done.id);
-                Some(done.answer)
-            }
+            Some(event) = events.recv() => match event {
+                Event::Chunk(chunk) => Some(chunk),
+                Event::Finished { id, answer } => {
+                    in_flight.remove(&id);
+                    Some(answer)
+                }
+            },
         };
 
         let Some(reply) = reply else {
@@ -202,7 +221,7 @@ fn read_line(line: &str) -> Option<Result<HostMessage, GuestMessage>> {
 fn start(
     executor: &Executor,
     in_flight: &mut HashMap<u64, Running>,
-    to_loop: &mpsc::UnboundedSender<Finished>,
+    to_loop: &mpsc::UnboundedSender<Event>,
     id: u64,
     call: CodingCall,
 ) -> Option<GuestMessage> {
@@ -229,7 +248,8 @@ fn start(
         let cancelled = async move {
             let _ = cancelled.await;
         };
-        let answer = match executor.run(&call, cancelled).await {
+        let on_output = |stream: OutputStream, data: &str| reply.chunk(stream, data);
+        let answer = match executor.run_streaming(&call, cancelled, &on_output).await {
             Ok(text) => GuestMessage::Result { id, text },
             Err(ExecError::Cancelled) => GuestMessage::Cancelled { id },
             Err(e) => GuestMessage::Error {

@@ -37,10 +37,17 @@ description = "Desktop-only microVM sandboxes (microsandbox) for agents notedeck
 default = []
 # Build the microVM runner. On a platform microsandbox can't run on this
 # is a no-op and `availability()` says so.
-microvm = ["dep:microsandbox", "dep:microsandbox-filesystem", "dep:tokio"]
+microvm = ["dep:microsandbox", "dep:microsandbox-filesystem"]
 
 [dependencies]
 thiserror = { workspace = true }
+# The tool protocol's wire types and line reassembler (src/client.rs).
+notedeck-agent-proto = { workspace = true }
+serde_json = { workspace = true }
+# The client's pump task, its channels and its handshake timeout. Not behind
+# `microvm`: the client is transport-generic and is tested over in-memory
+# pipes in every build.
+tokio = { workspace = true, features = ["sync", "time", "rt", "io-util", "macros"] }
 
 [target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 # Defaults off: `prebuilt` is the $HOME download above, `keyring` pulls
@@ -49,8 +56,12 @@ microsandbox = { version = "=0.6.13", default-features = false, features = ["net
 # Only to switch on its `prebuilt` feature (agentd into OUT_DIR); no code
 # here names it. Must stay at microsandbox's exact version.
 microsandbox-filesystem = { version = "=0.6.13", default-features = false, features = ["prebuilt"], optional = true }
-tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
+# tests/protocol.rs drives the real guest loop over in-memory pipes.
+notedeck-agent-guest = { workspace = true }
+libc = "0.2"
+# Building microsandbox's ExecEvent::Stdout(Bytes) in src/exec.rs's tests;
+# already in the graph through microsandbox.
+bytes = "1"

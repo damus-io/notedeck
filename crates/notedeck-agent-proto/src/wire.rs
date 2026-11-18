@@ -25,7 +25,11 @@ use crate::call::CodingCall;
 /// The protocol's version. Bump it on any change to a message's shape, so
 /// [`Version::check`] refuses a guest built before the change even when the
 /// build ids are unset or equal.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// - 1: Ping/Pong, Call, Cancel, Shutdown; Result, Error, Cancelled,
+///   Malformed.
+/// - 2: [`GuestMessage::Chunk`], a running call's output as it is written.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// A message from the host to the executor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +40,7 @@ pub enum HostMessage {
     Ping { id: u64 },
     /// Run a tool call; answered by a [`GuestMessage::Result`],
     /// [`GuestMessage::Error`] or [`GuestMessage::Cancelled`] with the same
-    /// id.
+    /// id, after any number of [`GuestMessage::Chunk`]s.
     Call { id: u64, call: CodingCall },
     /// Stop the call `id`. A Bash call's whole process group is killed, and
     /// the call is answered [`GuestMessage::Cancelled`]. A call that already
@@ -54,6 +58,20 @@ pub enum HostMessage {
 pub enum GuestMessage {
     /// The executor's version, answering [`HostMessage::Ping`].
     Pong { id: u64, version: Version },
+    /// Output the running call `id` has written so far, sent as it is
+    /// written so a long command (a 90-second `cargo build`) shows progress
+    /// instead of appearing at exit. Only Bash streams.
+    ///
+    /// Chunks are for watching, not for the model: the call's
+    /// [`GuestMessage::Result`] still carries the whole answer, and its
+    /// chunks stop after a budget while the command runs on. Each `data`
+    /// ends on a character boundary, so concatenating a stream's chunks
+    /// never splits a character.
+    Chunk {
+        id: u64,
+        stream: OutputStream,
+        data: String,
+    },
     /// The call `id` finished; `text` is what the model reads.
     Result { id: u64, text: String },
     /// The call `id` failed; `message` is what the model reads instead.
@@ -63,6 +81,14 @@ pub enum GuestMessage {
     /// A line the executor couldn't read as a [`HostMessage`] and couldn't
     /// find an id in to answer.
     Malformed { message: String },
+}
+
+/// Which of a command's output streams a [`GuestMessage::Chunk`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
 }
 
 /// Which protocol, and which build, one end speaks.
@@ -151,6 +177,15 @@ mod tests {
             serde_json::to_value(&pong).unwrap(),
             json!({"type": "pong", "id": 0, "version": {"protocol": PROTOCOL_VERSION, "build": "abc"}})
         );
+        let chunk = GuestMessage::Chunk {
+            id: 5,
+            stream: OutputStream::Stdout,
+            data: "Compiling\n".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&chunk).unwrap(),
+            json!({"type": "chunk", "id": 5, "stream": "stdout", "data": "Compiling\n"})
+        );
         assert_eq!(
             serde_json::to_value(HostMessage::Shutdown).unwrap(),
             json!({"type": "shutdown"})
@@ -180,6 +215,11 @@ mod tests {
                 message: "no".into(),
             },
             GuestMessage::Cancelled { id: 3 },
+            GuestMessage::Chunk {
+                id: 4,
+                stream: OutputStream::Stderr,
+                data: "warning: x\n".into(),
+            },
             GuestMessage::Malformed {
                 message: "eh".into(),
             },

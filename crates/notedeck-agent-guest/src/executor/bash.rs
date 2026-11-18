@@ -14,8 +14,9 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use super::ExecError;
+use super::{ExecError, OnOutput, STREAM_BUDGET};
 use notedeck_agent_proto::call::BashInput;
+use notedeck_agent_proto::wire::OutputStream;
 
 /// How long a command may run when the call names no timeout, and the most
 /// it may name: Claude Code's two minutes and ten.
@@ -67,14 +68,80 @@ impl Captured {
     }
 }
 
-/// Read `pipe` to its end into `into`.
-async fn drain(pipe: Option<impl AsyncRead + Unpin>, into: &mut Captured) {
+/// One stream's live view: hands what the command writes to the watcher as
+/// text, holding back a character split across two reads until the rest of
+/// it arrives, and stopping at [`STREAM_BUDGET`].
+struct Streamer<'a> {
+    stream: OutputStream,
+    on_output: OnOutput<'a>,
+    /// Bytes read but not yet handed over: at most an incomplete character.
+    carry: Vec<u8>,
+    sent: usize,
+}
+
+impl<'a> Streamer<'a> {
+    fn new(stream: OutputStream, on_output: OnOutput<'a>) -> Self {
+        Self {
+            stream,
+            on_output,
+            carry: Vec::new(),
+            sent: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        if self.sent >= STREAM_BUDGET {
+            return;
+        }
+        let bytes = &bytes[..bytes.len().min(STREAM_BUDGET - self.sent)];
+        self.sent += bytes.len();
+        self.carry.extend_from_slice(bytes);
+        let text = take_text(&mut self.carry);
+        if !text.is_empty() {
+            (self.on_output)(self.stream, &text);
+        }
+    }
+}
+
+/// The text at the front of `bytes`, removed from it: everything but an
+/// incomplete character at the very end, which stays for the next read.
+/// An invalid sequence anywhere else becomes U+FFFD, as lossy decoding does.
+fn take_text(bytes: &mut Vec<u8>) -> String {
+    let mut text = String::new();
+    let mut rest: &[u8] = bytes;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(valid) => {
+                text.push_str(valid);
+                rest = &[];
+                break;
+            }
+            Err(e) => {
+                let (valid, after) = rest.split_at(e.valid_up_to());
+                text.push_str(std::str::from_utf8(valid).expect("valid prefix"));
+                let Some(bad) = e.error_len() else {
+                    rest = after;
+                    break;
+                };
+                text.push(char::REPLACEMENT_CHARACTER);
+                rest = &after[bad..];
+            }
+        }
+    }
+    let keep = rest.len();
+    bytes.drain(..bytes.len() - keep);
+    text
+}
+
+/// Read `pipe` to its end into `into`, showing it to `live` as it comes.
+async fn drain(pipe: Option<impl AsyncRead + Unpin>, into: &mut Captured, live: &mut Streamer<'_>) {
     let Some(mut pipe) = pipe else {
         return;
     };
     let mut chunk = [0u8; 8192];
     while let Ok(n @ 1..) = pipe.read(&mut chunk).await {
         into.push(&chunk[..n]);
+        live.push(&chunk[..n]);
     }
 }
 
@@ -86,11 +153,13 @@ enum Ended {
 }
 
 /// Run the call's command in `root` until it exits, its timeout passes or
-/// `cancelled` resolves, and answer its output and exit status.
+/// `cancelled` resolves, and answer its output and exit status. What it
+/// writes reaches `on_output` as it is written.
 pub(super) async fn bash(
     root: &Path,
     input: &BashInput,
     cancelled: impl Future<Output = ()>,
+    on_output: OnOutput<'_>,
 ) -> Result<String, ExecError> {
     let timeout_ms = input
         .timeout
@@ -111,11 +180,16 @@ pub(super) async fn bash(
 
     let mut stdout = Captured::default();
     let mut stderr = Captured::default();
+    let mut live_out = Streamer::new(OutputStream::Stdout, on_output);
+    let mut live_err = Streamer::new(OutputStream::Stderr, on_output);
     let ended = {
         let out_pipe = child.stdout.take();
         let err_pipe = child.stderr.take();
         let reads = async {
-            tokio::join!(drain(out_pipe, &mut stdout), drain(err_pipe, &mut stderr));
+            tokio::join!(
+                drain(out_pipe, &mut stdout, &mut live_out),
+                drain(err_pipe, &mut stderr, &mut live_err)
+            );
         };
         tokio::pin!(reads, cancelled);
         let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
@@ -210,7 +284,7 @@ mod tests {
     }
 
     async fn run(root: &Path, command: &str) -> Result<String, ExecError> {
-        bash(root, &call(command, None), pending()).await
+        bash(root, &call(command, None), pending(), &|_, _| {}).await
     }
 
     /// stdout and stderr both reach the model, and a failing exit says its
@@ -241,9 +315,14 @@ mod tests {
             pidfile.display()
         );
         let begun = Instant::now();
-        let err = bash(dir.path(), &call(&command, Some(500)), pending())
-            .await
-            .unwrap_err();
+        let err = bash(
+            dir.path(),
+            &call(&command, Some(500)),
+            pending(),
+            &|_, _| {},
+        )
+        .await
+        .unwrap_err();
         assert!(begun.elapsed() < Duration::from_secs(10));
         let ExecError::TimedOut { ms: 500, output } = err else {
             panic!("expected a timeout, got {err}");
@@ -276,7 +355,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let begun = Instant::now();
         let cancel = tokio::time::sleep(Duration::from_millis(100));
-        let err = bash(dir.path(), &call("sleep 30", None), cancel)
+        let err = bash(dir.path(), &call("sleep 30", None), cancel, &|_, _| {})
             .await
             .unwrap_err();
         assert!(matches!(err, ExecError::Cancelled));
@@ -311,5 +390,73 @@ mod tests {
             out.contains(&format!("[… {cut} bytes cut …]")),
             "{out:.200}"
         );
+    }
+
+    /// Output reaches the watcher while the command runs, not at exit, on
+    /// the stream it was written to.
+    #[tokio::test]
+    async fn output_streams_while_the_command_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let begun = Instant::now();
+        let seen = std::sync::Mutex::new(Vec::<(OutputStream, String, Duration)>::new());
+        let watch = |stream: OutputStream, text: &str| {
+            seen.lock()
+                .unwrap()
+                .push((stream, text.to_owned(), begun.elapsed()));
+        };
+        let command = "for i in 1 2 3 4 5; do echo $i; sleep 0.2; done; echo oops >&2";
+        let out = bash(dir.path(), &call(command, None), pending(), &watch)
+            .await
+            .unwrap();
+        assert_eq!(out, "1\n2\n3\n4\n5\noops\n");
+        let seen = seen.into_inner().unwrap();
+        let stdout: String = seen
+            .iter()
+            .filter(|(s, ..)| *s == OutputStream::Stdout)
+            .map(|(_, t, _)| t.as_str())
+            .collect();
+        assert_eq!(stdout, "1\n2\n3\n4\n5\n");
+        assert!(seen
+            .iter()
+            .any(|(s, t, _)| *s == OutputStream::Stderr && t == "oops\n"));
+        let first = seen[0].2;
+        let total = begun.elapsed();
+        assert!(
+            first + Duration::from_millis(500) < total,
+            "first output at {first:?} of {total:?}: it waited for exit"
+        );
+    }
+
+    /// A character split across two reads is held until it is whole, and
+    /// a bad byte becomes U+FFFD instead of stalling the stream.
+    #[test]
+    fn a_split_character_waits_for_its_end() {
+        let snowman = "☃".as_bytes();
+        let mut carry = snowman[..2].to_vec();
+        assert_eq!(take_text(&mut carry), "");
+        assert_eq!(carry.len(), 2);
+        carry.extend_from_slice(&snowman[2..]);
+        carry.extend_from_slice(b"a\xffb");
+        assert_eq!(take_text(&mut carry), "☃a\u{fffd}b");
+        assert!(carry.is_empty());
+    }
+
+    /// The live view stops at its budget; the answer still has both ends.
+    #[tokio::test]
+    async fn the_live_view_stops_at_its_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let streamed = std::sync::atomic::AtomicUsize::new(0);
+        let watch = |_: OutputStream, text: &str| {
+            streamed.fetch_add(text.len(), std::sync::atomic::Ordering::Relaxed);
+        };
+        let command = format!(
+            "head -c {} /dev/zero | tr '\\0' x; echo; echo last",
+            STREAM_BUDGET * 3
+        );
+        let out = bash(dir.path(), &call(&command, None), pending(), &watch)
+            .await
+            .unwrap();
+        assert!(out.ends_with("x\nlast\n"));
+        assert_eq!(streamed.into_inner(), STREAM_BUDGET);
     }
 }

@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 
 use notedeck_agent_guest::{serve, Executor};
 use notedeck_agent_proto::call::{BashInput, CodingCall, ReadInput, WriteInput};
-use notedeck_agent_proto::wire::{GuestMessage, HostMessage, Version, PROTOCOL_VERSION};
+use notedeck_agent_proto::wire::{
+    GuestMessage, HostMessage, OutputStream, Version, PROTOCOL_VERSION,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
 use tokio::task::JoinHandle;
 
@@ -63,8 +65,20 @@ impl Host {
             .await;
     }
 
-    /// The next message, failing the test if none comes within [`PROMPTLY`].
+    /// The next message that isn't a running call's output, failing the
+    /// test if none comes within [`PROMPTLY`].
     async fn recv(&mut self) -> GuestMessage {
+        loop {
+            let message = self.recv_any().await;
+            if !matches!(message, GuestMessage::Chunk { .. }) {
+                return message;
+            }
+        }
+    }
+
+    /// The next message, chunks included, failing the test if none comes
+    /// within [`PROMPTLY`].
+    async fn recv_any(&mut self) -> GuestMessage {
         let line = tokio::time::timeout(PROMPTLY, self.from_guest.next_line())
             .await
             .expect("an answer within the deadline")
@@ -205,6 +219,42 @@ async fn calls_in_flight_run_side_by_side() {
     );
     host.send(&HostMessage::Cancel { id: 1 }).await;
     assert_eq!(host.recv().await, GuestMessage::Cancelled { id: 1 });
+}
+
+/// A command's output arrives as chunks while it runs, all of them ahead of
+/// its result, and together they are what the result says.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_streams_its_output_before_its_result() {
+    let mut host = Host::start();
+    let started = Instant::now();
+    host.send(&HostMessage::Call {
+        id: 1,
+        call: bash("for i in 1 2 3 4 5; do echo tick $i; sleep 0.2; done"),
+    })
+    .await;
+    let mut streamed = String::new();
+    let mut first_chunk = None;
+    let text = loop {
+        match host.recv_any().await {
+            GuestMessage::Chunk {
+                id: 1,
+                stream: OutputStream::Stdout,
+                data,
+            } => {
+                first_chunk.get_or_insert(started.elapsed());
+                streamed.push_str(&data);
+            }
+            GuestMessage::Result { id: 1, text } => break text,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(streamed, text);
+    let first_chunk = first_chunk.expect("at least one chunk");
+    assert!(
+        first_chunk + Duration::from_millis(500) < started.elapsed(),
+        "the first chunk came at {first_chunk:?}: it waited for the exit"
+    );
 }
 
 /// A cancel for a call that has finished, or never ran, raced its answer:

@@ -197,8 +197,13 @@ dependencies = [
 name = "agentium-sandbox"
 version = "0.11.0-beta.1"
 dependencies = [
+ "bytes",
+ "libc",
  "microsandbox",
  "microsandbox-filesystem",
+ "notedeck-agent-guest",
+ "notedeck-agent-proto",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

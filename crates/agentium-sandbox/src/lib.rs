@@ -23,12 +23,19 @@
 //!   shared git state is readonly.
 //! - [`boot`]: boot a guest and run one command in it, the smoke test that
 //!   the whole chain works on a machine.
+//! - [`client`]: the host's end of the tool protocol, one session with the
+//!   guest's executor carrying many calls. Transport-generic, so it builds
+//!   (and is tested) without the microVM runner.
+//! - [`exec`]: that session over microsandbox's `exec_stream`.
 
+pub mod client;
 pub mod guest;
 pub mod mounts;
 
 #[cfg(microvm)]
 pub mod boot;
+#[cfg(microvm)]
+pub mod exec;
 #[cfg(microvm)]
 pub mod runtime;
 
@@ -78,6 +85,14 @@ pub enum SandboxError {
     /// rather than emulates, so the guest must match it.
     #[error("no guest architecture for this host")]
     UnsupportedArch,
+    /// The guest's executor wouldn't open a session: the wrong build, or it
+    /// never answered.
+    #[error(transparent)]
+    Connect(#[from] client::ConnectError),
+    /// An exec session came back without the stdin pipe it was asked for.
+    #[cfg(microvm)]
+    #[error("the guest exec session has no stdin")]
+    NoStdin,
     /// A command in the guest exited non-zero.
     #[cfg(microvm)]
     #[error("guest command exited {code}: {stderr}")]
