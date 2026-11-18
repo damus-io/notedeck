@@ -70,6 +70,7 @@ mod vec3;
 mod web_tools;
 pub mod worktree;
 
+use agentium_core::agent_spec::{self, AgentSpec};
 use backend::{
     AiBackend, BackendChoice, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend,
     RemoteOnlyBackend,
@@ -877,6 +878,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let BackendChoice {
             backend,
             profile,
+            spec,
             model,
         } = choice;
         let id = update::create_session_with_cwd(
@@ -892,6 +894,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
         if let Some(session) = self.session_manager.get_mut(id) {
             session.details.profile = profile;
+            // Before the first message dispatches: the dispatch reads it to
+            // run the turn on the spec's runner.
+            session.details.agent_spec = spec;
         }
         self.anchor_focus(id);
     }
@@ -1102,13 +1107,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Start a session in `cwd` (on `target_host` when it names another
-    /// host): straight away when there is only one backend to pick, else
+    /// host): straight away when there is only one row to pick, else
     /// through the backend picker, whose rows are each local agentic backend
-    /// and then each backend profile (see [`ui::backend_picker`]).
+    /// (the configured backend when there are none), then each backend
+    /// profile, then each built-in agent spec (see [`ui::backend_picker`]).
     fn create_or_pick_backend(&mut self, cwd: PathBuf, target_host: Option<String>) {
+        // No agentic backends: the configured backend is the picker's one
+        // backend row, beside the specs.
+        let configured = [self.model_config.backend];
+        let backends: &[BackendType] = if self.available_backends.is_empty() {
+            &configured
+        } else {
+            &self.available_backends
+        };
+        let specs: Vec<AgentSpec> = agent_spec::builtin::SLUGS
+            .iter()
+            .filter_map(|slug| agent_spec::builtin::find(slug))
+            .collect();
         let entries = ui::backend_picker::picker_entries(
-            &self.available_backends,
+            backends,
             self.backend_profiles.claude_profiles(),
+            &specs,
         );
         tracing::info!(
             "create_or_pick_backend: {} picker rows over backends {:?} target_host={:?}",
@@ -1122,7 +1141,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let only = match entries.as_slice() {
             [only] => Some(only.choice(0)),
-            // No agentic backends — fall back to configured backend
             [] => Some(BackendChoice::plain(self.model_config.backend)),
             _ => None,
         };
@@ -1966,7 +1984,7 @@ mod tests {
         else {
             panic!("a lone Claude plus a profile shows the picker");
         };
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 2 + agent_spec::builtin::SLUGS.len());
 
         test.dave
             .create_or_resume_session(cwd.path().to_path_buf(), entries[1].choice(0));
@@ -1977,6 +1995,36 @@ mod tests {
             session.details.requested_model.as_deref(),
             Some("glm-5.3-flash")
         );
+    }
+
+    /// Each built-in spec is a picker row, so even a lone Claude shows the
+    /// picker; picking the butler's row starts a native-loop session under
+    /// the butler, which its first dispatch runs on the spec's runner.
+    #[test]
+    fn picking_a_spec_row_starts_a_session_under_it() {
+        let mut test = TestDave::new();
+        test.dave.available_backends = vec![BackendType::Claude];
+        let cwd = TempDir::new().unwrap();
+
+        test.dave
+            .create_or_pick_backend(cwd.path().to_path_buf(), None);
+        let DaveOverlay::BackendPicker { entries, .. } =
+            std::mem::take(&mut test.dave.active_overlay)
+        else {
+            panic!("a lone Claude plus the built-in specs shows the picker");
+        };
+        let butler = entries
+            .iter()
+            .find(|e| e.key.spec.as_deref() == Some("butler"))
+            .expect("the butler has a row");
+
+        test.dave
+            .create_or_resume_session(cwd.path().to_path_buf(), butler.choice(0));
+        assert!(matches!(test.dave.active_overlay, DaveOverlay::None));
+        let session = test.dave.session_manager.get_active().unwrap();
+        assert_eq!(session.backend_type, BackendType::OpenAI);
+        assert_eq!(session.details.agent_spec.as_deref(), Some("butler"));
+        assert_eq!(session.details.profile, None);
     }
 
     #[test]

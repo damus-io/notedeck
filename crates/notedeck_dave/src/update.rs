@@ -1467,7 +1467,7 @@ pub fn create_resumed_session_with_cwd(
 pub struct RemoteSpawn {
     pub host: String,
     pub cwd: PathBuf,
-    /// The clone's backend, profile and model: the original's.
+    /// The clone's backend, profile, spec and model: the original's.
     pub choice: BackendChoice,
 }
 
@@ -1505,6 +1505,7 @@ pub fn clone_session(
             choice: BackendChoice {
                 backend: backend_type,
                 profile,
+                spec: agent_spec,
                 model,
             },
         });
@@ -1914,9 +1915,46 @@ mod tests {
             BackendChoice {
                 backend: BackendType::Claude,
                 profile: Some("hydra".to_string()),
+                spec: None,
                 model: Model::Custom("glm-5.3-flash".to_string()),
             }
         );
+    }
+
+    /// A clone of a remote spec session is spawned on its host under the
+    /// same spec, not as a plain native-loop session with none of its tools.
+    #[test]
+    fn remote_clone_keeps_the_agent_spec() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+
+        let orig_id = create_session_with_cwd(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/work"),
+            "monad",
+            BackendType::OpenAI,
+            Model::Default,
+        );
+        let orig = sm.get_mut(orig_id).unwrap();
+        orig.details.agent_spec = Some("butler".to_string());
+        orig.source = SessionSource::Remote;
+
+        let spawn = clone_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            "laptop",
+            orig_id,
+        )
+        .expect("a remote clone is spawned on its host");
+        assert_eq!(spawn.choice, BackendChoice::under_spec("butler"));
     }
 
     /// clone_session must preserve the original requested model override,

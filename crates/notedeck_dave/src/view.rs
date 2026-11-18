@@ -185,20 +185,23 @@ impl Dave {
                             is_new_branch,
                         ) {
                             Ok(()) => {
-                                // A worktree off a profile session keeps its
-                                // profile while it stays on the same backend,
-                                // so its work doesn't move to the plain
-                                // backend's account.
-                                let profile = self
+                                // A worktree off a profile or spec session
+                                // keeps its profile and spec while it stays
+                                // on the same backend, so its work doesn't
+                                // move to the plain backend's account or
+                                // lose the spec's tools.
+                                let from = self
                                     .session_manager
                                     .get(creator.from_session_id)
-                                    .filter(|s| s.backend_type == backend_type)
-                                    .and_then(|s| s.details.profile.clone());
+                                    .filter(|s| s.backend_type == backend_type);
+                                let profile = from.and_then(|s| s.details.profile.clone());
+                                let spec = from.and_then(|s| s.details.agent_spec.clone());
                                 self.create_session_with_cwd(
                                     worktree_path,
                                     BackendChoice {
                                         backend: backend_type,
                                         profile,
+                                        spec,
                                         model: crate::backend::Model::Default,
                                     },
                                 );

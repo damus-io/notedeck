@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 pub(crate) struct PendingSpawnCommand {
     pub(crate) target_host: String,
     pub(crate) cwd: PathBuf,
-    /// The backend, profile and model the remote session starts on. The
-    /// profile and model ride the command's `profile` and `model` tags.
+    /// The backend, profile, spec and model the remote session starts on.
+    /// The profile, spec and model ride the command's `profile`,
+    /// `agent-spec` and `model` tags.
     pub(crate) choice: BackendChoice,
     /// UUID that links this command to the placeholder session and the
     /// kind-31988 response from the remote host.
@@ -26,12 +27,13 @@ pub(crate) struct PendingSpawnCommand {
 }
 
 impl PendingSpawnCommand {
-    /// The command's per-spawn tags: the model and backend profile the remote
-    /// session starts on.
+    /// The command's per-spawn tags: the model, backend profile and agent
+    /// spec the remote session starts on.
     pub(crate) fn spawn_options(&self) -> session_events::SpawnOptions<'_> {
         session_events::SpawnOptions {
             model: self.choice.model.to_model_id(),
             profile: self.choice.profile.as_deref(),
+            spec: self.choice.spec.as_deref(),
             ..Default::default()
         }
     }
@@ -915,6 +917,7 @@ mod tests {
             BackendChoice {
                 backend: BackendType::Claude,
                 profile: Some("hydra".to_string()),
+                spec: None,
                 model: Model::Custom("glm-5.3-flash".to_string()),
             },
         );
@@ -960,6 +963,67 @@ mod tests {
             spawned.details.requested_model.as_deref(),
             Some("glm-5.3-flash")
         );
+    }
+
+    /// A spawn under an agent spec keeps it the whole trip: a Dave queueing
+    /// the spawn for another host (the picker's spec row, or a remote clone
+    /// of a spec session) puts `["agent-spec", slug]` on the kind-31989
+    /// command, and the host starts a native-loop session under that spec.
+    #[tokio::test]
+    async fn a_queued_spawn_carries_its_spec_to_the_host() {
+        let sk = test_secret_key();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+
+        let mut sender = TestDave::new();
+        sender.dave.queue_spawn_command(
+            "host-a",
+            Path::new("/work/dir"),
+            BackendChoice::under_spec("butler"),
+        );
+        let pending = &sender.dave.pending_spawn_commands[0];
+        let cmd = session_events::build_spawn_command_event(
+            &pending.target_host,
+            &pending.cwd.to_string_lossy(),
+            pending.choice.backend.as_str(),
+            &pending.spawn_options(),
+            &pending.spawn_id,
+            None,
+            &sk,
+        )
+        .unwrap();
+        let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+        ndb.process_event_with(&cmd.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        ndb.wait_for_all_notes(sub, 1).await.unwrap();
+
+        let request = {
+            let txn = Transaction::new(&ndb).unwrap();
+            let note = ndb.get_note_by_id(&txn, &cmd.note_id).unwrap();
+            assert_eq!(
+                session_events::get_tag_value(&note, agentium_core::agent_spec::SPEC_TAG),
+                Some("butler"),
+                "the command names the spec"
+            );
+            let Some(SessionCommand::Spawn { request, .. }) =
+                decode_session_command(&note, "host-a", BackendType::Claude)
+            else {
+                panic!("expected a Spawn command for this host");
+            };
+            *request
+        };
+        assert_eq!(request.spec.as_deref(), Some("butler"));
+
+        let mut host = TestDave::new();
+        let before: Vec<_> = host.dave.session_manager.iter().map(|s| s.id).collect();
+        host.dave.apply_spawn_command(request, 1_800_000_000);
+        let spawned = host
+            .dave
+            .session_manager
+            .iter()
+            .find(|s| !before.contains(&s.id))
+            .expect("the spawn materialized a session");
+        assert_eq!(spawned.details.agent_spec.as_deref(), Some("butler"));
+        assert_eq!(spawned.backend_type, BackendType::OpenAI);
     }
 
     /// A spawn's lineage survives the whole trip a real spawn takes: the CLI's

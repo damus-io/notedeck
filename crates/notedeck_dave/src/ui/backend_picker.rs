@@ -1,23 +1,27 @@
 //! The new-session backend picker: one row per local agentic backend, then one
-//! per backend profile layered on Claude ("Claude Code · Hydra").
+//! per backend profile layered on Claude ("Claude Code · Hydra"), then one per
+//! agent spec ("butler"), which runs in the native loop on the spec's model.
 //!
 //! The rows are built once, when the picker opens ([`picker_entries`]), and
 //! carried in the overlay, so a frame only reads them.
 
 use super::backend_icon;
 use crate::backend::{BackendChoice, BackendType, Model};
+use agentium_core::agent_spec::AgentSpec;
 use agentium_core::config::BackendProfile;
 use std::collections::HashMap;
 
-/// Which picker row: a backend, and the profile on it. Keys the overlay's
-/// per-row model pick, so plain Claude and Claude under a profile (both
-/// [`BackendType::Claude`]) keep their own.
+/// Which picker row: a backend, and the profile or spec on it. Keys the
+/// overlay's per-row model pick, so plain Claude and Claude under a profile
+/// (both [`BackendType::Claude`]) keep their own.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PickerKey {
     /// The row's backend.
     pub backend: BackendType,
     /// The row's backend profile slug, `None` for the plain backend.
     pub profile: Option<String>,
+    /// The row's agent spec slug, `None` for a row under no spec.
+    pub spec: Option<String>,
 }
 
 /// One row of the backend picker, with everything a frame draws prebuilt.
@@ -30,6 +34,10 @@ pub struct PickerEntry {
     /// The models the row's dropdown offers. The first is what the row starts
     /// a session on when nothing else is picked.
     models: Vec<Model>,
+    /// What the row's second line says in place of a model dropdown, for a
+    /// row whose model isn't the user's to pick: a spec row names its
+    /// spec's model ("agent spec · claude-sonnet-5-5").
+    detail: Option<String>,
 }
 
 impl PickerEntry {
@@ -42,9 +50,11 @@ impl PickerEntry {
             key: PickerKey {
                 backend,
                 profile: None,
+                spec: None,
             },
             label: row_label(idx, backend.display_name()),
             models,
+            detail: None,
         }
     }
 
@@ -76,9 +86,28 @@ impl PickerEntry {
             key: PickerKey {
                 backend: BackendType::Claude,
                 profile: Some(profile.slug.clone()),
+                spec: None,
             },
             label: row_label(idx, &name),
             models,
+            detail: None,
+        }
+    }
+
+    /// A row for a session under `spec`, labelled by its slug. It runs in the
+    /// native loop on the spec's own model, so it offers no model to pick and
+    /// names the spec's instead.
+    fn spec(spec: &AgentSpec, idx: usize) -> Self {
+        let choice = BackendChoice::under_spec(spec.slug.clone());
+        Self {
+            key: PickerKey {
+                backend: choice.backend,
+                profile: None,
+                spec: choice.spec,
+            },
+            label: row_label(idx, &spec.slug),
+            models: vec![choice.model],
+            detail: Some(format!("agent spec \u{00B7} {}", spec.model.model)),
         }
     }
 
@@ -88,6 +117,7 @@ impl PickerEntry {
         BackendChoice {
             backend: self.key.backend,
             profile: self.key.profile.clone(),
+            spec: self.key.spec.clone(),
             model: self.model(model_idx).clone(),
         }
     }
@@ -108,10 +138,13 @@ fn row_label(idx: usize, name: &str) -> String {
 }
 
 /// The picker's rows: each of `available` plainly, then one per profile when
-/// Claude is among them (a profile is an env overlay on the Claude backend).
+/// Claude is among them (a profile is an env overlay on the Claude backend),
+/// then one per spec in `specs`. A spec row doesn't need `available` to hold
+/// a backend: its turns run on the spec's own runner.
 pub fn picker_entries<'a>(
     available: &[BackendType],
     profiles: impl IntoIterator<Item = &'a BackendProfile>,
+    specs: impl IntoIterator<Item = &'a AgentSpec>,
 ) -> Vec<PickerEntry> {
     let mut entries: Vec<PickerEntry> = available
         .iter()
@@ -123,6 +156,10 @@ pub fn picker_entries<'a>(
             let idx = entries.len();
             entries.push(PickerEntry::profile(profile, idx));
         }
+    }
+    for spec in specs {
+        let idx = entries.len();
+        entries.push(PickerEntry::spec(spec, idx));
     }
     entries
 }
@@ -192,6 +229,8 @@ fn backend_picker_row(
                             }
                         }
                     });
+            } else if let Some(detail) = &entry.detail {
+                ui.label(egui::RichText::new(detail).size(11.0).weak());
             }
 
             // Start button
@@ -286,7 +325,7 @@ mod tests {
     /// profile row offers its own models with its default first.
     #[test]
     fn a_profile_is_its_own_row_on_its_own_models() {
-        let entries = picker_entries(&[BackendType::Claude], [&hydra()]);
+        let entries = picker_entries(&[BackendType::Claude], [&hydra()], []);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, "[1] Claude Code");
         assert_eq!(entries[1].label, "[2] Claude Code \u{00B7} Hydra");
@@ -302,6 +341,7 @@ mod tests {
             BackendChoice {
                 backend: BackendType::Claude,
                 profile: Some("hydra".into()),
+                spec: None,
                 model: Model::Custom("glm-5.3-flash".into()),
             }
         );
@@ -315,7 +355,7 @@ mod tests {
     /// Profiles ride Claude: with no Claude backend there's no profile row.
     #[test]
     fn no_profile_rows_without_claude() {
-        let entries = picker_entries(&[BackendType::Codex], [&hydra()]);
+        let entries = picker_entries(&[BackendType::Codex], [&hydra()], []);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].key.profile, None);
     }
@@ -324,7 +364,7 @@ mod tests {
     #[test]
     fn a_profile_without_models_offers_default() {
         let bare = BackendProfile::new("bare", "Bare");
-        let entries = picker_entries(&[BackendType::Claude], [&bare]);
+        let entries = picker_entries(&[BackendType::Claude], [&bare], []);
         assert_eq!(entries[1].models, vec![Model::Default]);
     }
 
@@ -332,7 +372,7 @@ mod tests {
     /// and each keeps its own model pick.
     #[test]
     fn selected_models_tell_two_claude_rows_apart() {
-        let entries = picker_entries(&[BackendType::Claude], [&hydra()]);
+        let entries = picker_entries(&[BackendType::Claude], [&hydra()], []);
         let mut selected = HashMap::new();
         selected.insert(entries[0].key.clone(), 2);
         selected.insert(entries[1].key.clone(), 1);
@@ -344,5 +384,32 @@ mod tests {
             Model::Custom("qwen3.8-flash-next".into())
         );
         assert_eq!(pick(&entries[1]).profile.as_deref(), Some("hydra"));
+    }
+
+    /// Every built-in spec is a row after the backends and profiles,
+    /// labelled by its slug and naming its model; picking one starts a
+    /// native-loop session under that spec, even on a host whose only
+    /// backend is Claude.
+    #[test]
+    fn a_spec_is_a_row_that_starts_a_session_under_it() {
+        use agentium_core::agent_spec::builtin;
+        let specs: Vec<AgentSpec> = builtin::SLUGS
+            .iter()
+            .filter_map(|s| builtin::find(s))
+            .collect();
+        let entries = picker_entries(&[BackendType::Claude], [&hydra()], &specs);
+        assert_eq!(entries.len(), 2 + builtin::SLUGS.len());
+        let butler = &entries[2];
+        assert_eq!(butler.label, "[3] butler");
+        let model = &builtin::find("butler").unwrap().model.model;
+        assert_eq!(
+            butler.detail.as_deref(),
+            Some(format!("agent spec \u{00B7} {model}").as_str())
+        );
+        assert_eq!(butler.choice(0), BackendChoice::under_spec("butler"));
+        assert_eq!(butler.choice(0).backend, BackendType::OpenAI);
+        // A spec row keys its own model pick apart from the backend rows.
+        assert_ne!(butler.key, entries[0].key);
+        assert_eq!(entries[3].key.spec.as_deref(), Some("researcher"));
     }
 }

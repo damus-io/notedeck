@@ -49,7 +49,7 @@ fn pick_row(entries: Vec<PickerEntry>, row: usize, model_index: usize) -> Backen
 
 /// [`pick_row`] on a picker of `bt` alone, pressing its key.
 fn pick(bt: BackendType, model_index: usize) -> BackendChoice {
-    pick_row(picker_entries(&[bt], []), 0, model_index)
+    pick_row(picker_entries(&[bt], [], []), 0, model_index)
 }
 
 /// The account's `hydra` profile, as `agentium profile set hydra` makes it.
@@ -64,7 +64,7 @@ fn hydra() -> BackendProfile {
 /// starts a session under the profile on its default model.
 #[test]
 fn test_picker_profile_row_starts_a_profile_session() {
-    let entries = picker_entries(&[BackendType::Claude], [&hydra()]);
+    let entries = picker_entries(&[BackendType::Claude], [&hydra()], []);
     assert_eq!(entries.len(), 2, "plain Claude, then Claude under hydra");
     let choice = pick_row(entries, 1, 0);
     assert_eq!(
@@ -72,6 +72,7 @@ fn test_picker_profile_row_starts_a_profile_session() {
         BackendChoice {
             backend: BackendType::Claude,
             profile: Some("hydra".into()),
+            spec: None,
             model: Model::Custom("glm-5.3-flash".into()),
         }
     );
@@ -98,7 +99,7 @@ fn test_picker_profile_row_starts_a_profile_session() {
 /// are `BackendType::Claude`.
 #[test]
 fn test_picker_rows_on_one_backend_keep_their_own_model() {
-    let entries = picker_entries(&[BackendType::Claude], [&hydra()]);
+    let entries = picker_entries(&[BackendType::Claude], [&hydra()], []);
     let plain = pick_row(entries.clone(), 0, 1);
     assert_eq!((plain.profile, plain.model), (None, Model::Opus));
     let profiled = pick_row(entries, 1, 1);
