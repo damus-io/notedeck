@@ -1,0 +1,46 @@
+[package]
+name = "notedeck-agent-guest"
+edition = "2021"
+version.workspace = true
+description = "notedeck's coding tool executor: the library notedeck runs on the host, and the static notedeck-agent binary a sandbox guest runs"
+
+# HARD RULE: no dependency that builds C (see notedeck-agent-proto's
+# Cargo.toml). This crate is cross-compiled to aarch64- and
+# x86_64-unknown-linux-musl by scripts/build-guest-agent with nothing but
+# rustup targets and rust-lld; ring, aws-lc-sys, openssl-sys or libgit2-sys
+# would make every dev machine and CI runner need a C cross toolchain.
+# crates/bin_testing/tests/guest_no_c.rs fails if one gets in.
+
+[lib]
+path = "src/lib.rs"
+
+# The binary a guest runs: tool calls in on stdin, answers out on stdout.
+[[bin]]
+name = "notedeck-agent"
+path = "src/main.rs"
+
+[dependencies]
+notedeck-agent-proto = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Grep's pattern.
+regex = "1"
+# ripgrep's directory walker: Grep and Glob skip what .gitignore skips
+# (target/, node_modules/) and take ripgrep's --glob syntax.
+ignore = "0.4"
+# Glob's pattern match, where `*` stops at a `/` and `**` crosses it.
+globset = "0.4"
+# "process" runs Bash with a timeout and cancellation; "io-std" is the
+# binary's stdio; "rt-multi-thread" keeps a slow Grep (a synchronous walk)
+# from stalling the other calls in flight and their cancels.
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "process", "io-util", "io-std"] }
+
+[target.'cfg(unix)'.dependencies]
+# kill(2) on a Bash call's whole process group when it times out or is
+# cancelled, so a command's own children don't outlive it.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+bin_testing = { workspace = true }

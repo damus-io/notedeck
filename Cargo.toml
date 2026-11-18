@@ -37,10 +37,14 @@ members = [
     "crates/notedeck_wasm",
     "crates/notedeck_release",
     "crates/notedeck_testing",
+    "crates/notedeck-agent-proto",
+    "crates/notedeck-agent-guest",
 ]
 
 [workspace.dependencies]
 agentium-core = { path = "crates/agentium-core" }
+notedeck-agent-proto = { path = "crates/notedeck-agent-proto" }
+notedeck-agent-guest = { path = "crates/notedeck-agent-guest" }
 opener = "0.8.2"
 async-trait = "0.1.89"
 chrono = "0.4.40" 

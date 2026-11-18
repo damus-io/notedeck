@@ -48,7 +48,7 @@
 //!
 //! A Coding toolset's tools ([`coding`](agentium_core::agent_spec::coding))
 //! run as jobs too ([`crate::coding_tools::job`]), through
-//! [`LocalExecutor`](agentium_core::agent_spec::local_executor::LocalExecutor)
+//! [`Executor`](agentium_core::agent_spec::local_executor::Executor)
 //! in the session's working tree. Only that runner exists: a spec naming the
 //! Microsandbox runner is refused when its session starts
 //! ([`SpecToolsError::NoSandboxRunner`]), since running its calls on the

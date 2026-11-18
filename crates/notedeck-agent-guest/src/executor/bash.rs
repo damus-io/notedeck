@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::ExecError;
-use crate::agent_spec::coding::BashInput;
+use notedeck_agent_proto::call::BashInput;
 
 /// How long a command may run when the call names no timeout, and the most
 /// it may name: Claude Code's two minutes and ten.

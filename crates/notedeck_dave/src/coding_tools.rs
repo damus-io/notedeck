@@ -1,11 +1,11 @@
 //! The Coding toolset's tools in the native loop: Read, Write, Edit, Grep,
 //! Glob and Bash (declared in [`agentium_core::agent_spec::coding`]), run on
-//! the host by [`LocalExecutor`] in the session's working tree.
+//! the host by [`Executor`] in the session's working tree.
 //!
 //! ```text
 //! model ─ ToolCalls::App{Edit, …} ─▶ start_app_call ── approval? ──▶ job (off the frame)
 //!                                                                      │
-//!          CodingCall::parse ─▶ LocalExecutor::run(call, round's stop) ┤
+//!          CodingCall::parse ─▶ Executor::run(call, round's stop)     ┤
 //!                                                                      │
 //!   row:    ExecutedTool (summary, Bash output, Edit/Write diff) ◀─────┤ reported as progress
 //!   answer: the executor's text, or its error, for the model ◀─────────┘
@@ -27,8 +27,8 @@
 
 use std::path::PathBuf;
 
-use agentium_core::agent_spec::coding::CodingCall;
-use agentium_core::agent_spec::local_executor::{ExecError, LocalExecutor};
+use agentium_core::agent_spec::coding::{file_update, CodingCall};
+use agentium_core::agent_spec::local_executor::{ExecError, Executor};
 use serde_json::Value;
 
 use crate::backend::shared::FinishedCall;
@@ -42,7 +42,7 @@ use crate::ToolResponses;
 pub(crate) fn job(call: AppToolCall, root: PathBuf) -> ToolJob {
     Box::new(move |ctx| {
         let coding = CodingCall::parse(&call.name, &call.args).map_err(|err| err.to_string())?;
-        let exec = LocalExecutor::new(root);
+        let exec = Executor::new(root);
         let ran =
             block_on_own_runtime(async { Ok(exec.run(&coding, ctx.cancel().cancelled()).await) })?;
         let text = match ran {
@@ -71,7 +71,7 @@ fn report_row(ctx: &JobCtx, coding: &CodingCall, text: &str, failed: bool) {
         tool_name: coding.name(),
         tool_input: &input,
         result_value: &result,
-        file_update: if failed { None } else { coding.file_update() },
+        file_update: if failed { None } else { file_update(coding) },
         parent_task_id: None,
         tool_use_id: Some(ctx.call_id()),
         is_error: failed,

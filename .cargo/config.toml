@@ -1,2 +1,14 @@
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
+
+# The sandbox guest's notedeck-agent binary (scripts/build-guest-agent):
+# static musl, linked by the rust-lld and musl CRT that ship with the
+# rustup target, so neither a C cross toolchain nor zig is needed. This
+# holds only while notedeck-agent-guest builds no C (see its Cargo.toml).
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]

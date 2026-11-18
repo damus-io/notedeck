@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Build notedeck-agent, the tool executor a sandbox guest runs, for every
+# guest architecture: static musl binaries at
+#
+#   target/aarch64-unknown-linux-musl/small/notedeck-agent
+#   target/x86_64-unknown-linux-musl/small/notedeck-agent
+#
+# libkrun virtualises rather than emulates, so a guest's architecture is its
+# host's: arm64 for Apple-Silicon macOS, mostly x86-64 for KVM Linux and WHP
+# Windows. Both are built so a missing one is found here, not at sandbox boot.
+#
+# The commit is stamped into each binary as NOTEDECK_AGENT_BUILD (with
+# -dirty for uncommitted changes); the guest answers a ping with it, and
+# the host refuses a guest whose build isn't its own.
+#
+# Needs only the two rustup targets; .cargo/config.toml links them with
+# rust-lld. Pass target triples to build only those.
+#
+#   scripts/build-guest-agent
+#   scripts/build-guest-agent x86_64-unknown-linux-musl
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+targets=("$@")
+if [ ${#targets[@]} -eq 0 ]; then
+    targets=(aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
+fi
+
+if command -v rustup >/dev/null; then
+    installed=$(rustup target list --installed)
+    missing=()
+    for t in "${targets[@]}"; do
+        grep -qx "$t" <<<"$installed" || missing+=("$t")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "build-guest-agent: missing rust targets: ${missing[*]}" >&2
+        echo "  rustup target add ${missing[*]}" >&2
+        exit 1
+    fi
+fi
+
+build=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+if [ "$build" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then
+    build="$build-dirty"
+fi
+export NOTEDECK_AGENT_BUILD="$build"
+
+target_dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+
+for t in "${targets[@]}"; do
+    cargo build -p notedeck-agent-guest --bin notedeck-agent --profile small --target "$t"
+done
+
+for t in "${targets[@]}"; do
+    bin="$target_dir/$t/small/notedeck-agent"
+    if [ ! -x "$bin" ]; then
+        echo "build-guest-agent: $bin wasn't built" >&2
+        exit 1
+    fi
+    size=$(wc -c <"$bin")
+    echo "$bin  $((size / 1024)) KB  build $build"
+done

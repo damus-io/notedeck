@@ -128,18 +128,24 @@ pub(super) fn edit(
 mod tests {
     use super::*;
 
-    fn file_with(text: &str) -> (tempfile::TempDir, PathBuf) {
+    /// A file in a temp dir that lives as long as this does.
+    struct TempFile {
+        dir: tempfile::TempDir,
+        path: PathBuf,
+    }
+
+    fn file_with(text: &str) -> TempFile {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("f.txt");
         std::fs::write(&path, text).unwrap();
-        (dir, path)
+        TempFile { dir, path }
     }
 
     /// Lines come numbered as `cat -n` numbers them, from the offset, and a
     /// read that stops early says where to read on.
     #[test]
     fn read_numbers_lines_and_says_where_it_stopped() {
-        let (_dir, path) = file_with("a\nb\nc\nd\n");
+        let TempFile { dir: _dir, path } = file_with("a\nb\nc\nd\n");
         assert_eq!(
             read(&path, None, None).unwrap(),
             "     1\ta\n     2\tb\n     3\tc\n     4\td\n"
@@ -154,7 +160,7 @@ mod tests {
     /// A long line is cut rather than flooding the context.
     #[test]
     fn read_cuts_a_long_line() {
-        let (_dir, path) = file_with(&"x".repeat(MAX_LINE_CHARS + 50));
+        let TempFile { dir: _dir, path } = file_with(&"x".repeat(MAX_LINE_CHARS + 50));
         let out = read(&path, None, None).unwrap();
         assert!(out.ends_with(" [line cut]\n"));
         assert_eq!(out.matches('x').count(), MAX_LINE_CHARS);
@@ -163,7 +169,7 @@ mod tests {
     /// A directory or a binary file is refused with a reason.
     #[test]
     fn read_refuses_a_directory_or_binary() {
-        let (dir, path) = file_with("");
+        let TempFile { dir, path } = file_with("");
         std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
         assert!(matches!(
             read(&path, None, None),
@@ -190,7 +196,7 @@ mod tests {
     /// unless told to replace all, and leaves the file alone when it fails.
     #[test]
     fn edit_replaces_one_or_all_and_refuses_the_rest() {
-        let (_dir, path) = file_with("let a = 1;\nlet a = 1;\nlet b = 2;\n");
+        let TempFile { dir: _dir, path } = file_with("let a = 1;\nlet a = 1;\nlet b = 2;\n");
         let content = || std::fs::read_to_string(&path).unwrap();
 
         edit(&path, "let b = 2;", "let b = 3;", false).unwrap();

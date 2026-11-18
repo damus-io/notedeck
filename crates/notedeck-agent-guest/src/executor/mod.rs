@@ -1,43 +1,36 @@
-//! The Coding toolset's tools, run on the host: what
-//! [`Runner::LocalExecutor`](super::Runner::LocalExecutor) means.
+//! The six coding tools, run where this process runs: in notedeck on the
+//! host (agentium-core's `Runner::LocalExecutor`), or in the
+//! `notedeck-agent` binary inside a guest ([`serve`](crate::serve)).
 //!
 //! ```text
-//! model ─ tool_use{name, input} ─▶ CodingCall::parse ─▶ LocalExecutor::run ─▶ text for the model
-//!                                                            │
-//!                    Read · Write · Edit ── std::fs, in this process
-//!                    Grep · Glob ────────── ripgrep's walker: skips what .gitignore skips
-//!                    Bash ──────────────── `bash -c` in its own process group;
-//!                                          a timeout or cancel kills the group
+//! CodingCall ─▶ Executor::run ─▶ text for the model, or an ExecError it reads instead
+//!                  │
+//!                  Read · Write · Edit ── std::fs, in this process
+//!                  Grep · Glob ────────── ripgrep's walker: skips what .gitignore skips
+//!                  Bash ──────────────── `bash -c` in its own process group;
+//!                                        a timeout or cancel kills the group
 //! ```
 //!
 //! A runner gets a [`CodingCall`] (already parsed, so already one of the six
 //! tools with arguments it knows) and answers the text the model reads, or
-//! an [`ExecError`] it reads instead. What the user sees of a call (the tool
-//! row, the diff) comes from the call itself
-//! ([`CodingCall::input`], [`CodingCall::file_update`]), not from here.
+//! an [`ExecError`]. What the user sees of a call (the tool row, the diff)
+//! comes from the call itself, not from here.
 //!
-//! ## In this process, not a subprocess
+//! ## On the host, in process
 //!
-//! The runner was first planned as a separate executor binary speaking a
-//! stdio protocol, the same binary a microVM guest would run. On the host
-//! that buys nothing: the binary would have the user's privileges either
-//! way, and it would be one more thing to ship per platform and find at
-//! run time. So the host does what Claude Code does: file tools run here,
-//! and only Bash is a child process.
-//!
-//! A protocol pays once a guest (the Microsandbox runner) needs these tools
-//! across a VM boundary. Then this module is the guest binary's body, and
-//! its ends already serialize: a [`CodingCall`] is a tool_use block's name
-//! and input, and the answer is text.
+//! On the host notedeck calls [`Executor::run`] directly rather than
+//! spawning the binary: a separate process would have the user's
+//! privileges either way, and would be one more thing to find at run time.
+//! So the host does what Claude Code does: file tools run in notedeck, and
+//! only Bash is a child process. The binary is for a guest, where the tools
+//! have to run on the far side of a VM boundary.
 //!
 //! ## Not a boundary
 //!
 //! Nothing here confines a call. A path may be absolute and anywhere, Bash
-//! can do what the user can, and [`LocalExecutor::root`] is only where a
+//! can do what the process can, and [`Executor::root`] is only where a
 //! relative path and a command start. On the host the session's permission
-//! mode is the only guard (its [`Containment::Host`](super::Containment)
-//! column of the approval table), so a session using this runner must never
-//! be presented as sandboxed.
+//! mode is the only guard; in a guest, the VM is.
 //!
 //! ## What we don't have
 //!
@@ -54,11 +47,11 @@ mod search;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use super::coding::CodingCall;
+use notedeck_agent_proto::call::CodingCall;
 
-/// Runs coding tool calls on the host, against one working tree.
+/// Runs coding tool calls against one working tree.
 #[derive(Debug, Clone)]
-pub struct LocalExecutor {
+pub struct Executor {
     root: PathBuf,
 }
 
@@ -112,7 +105,7 @@ pub enum ExecError {
     Cancelled,
 }
 
-impl LocalExecutor {
+impl Executor {
     /// An executor whose relative paths and commands start in `root`, the
     /// session's working tree.
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -162,7 +155,7 @@ impl LocalExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_spec::coding::{ReadInput, WriteInput};
+    use notedeck_agent_proto::call::{ReadInput, WriteInput};
     use std::future::pending;
 
     /// A relative path starts at the root and an absolute one is taken as
@@ -170,7 +163,7 @@ mod tests {
     #[tokio::test]
     async fn a_relative_path_starts_at_the_root() {
         let dir = tempfile::tempdir().unwrap();
-        let exec = LocalExecutor::new(dir.path());
+        let exec = Executor::new(dir.path());
         let write = CodingCall::Write(WriteInput {
             file_path: "src/new.rs".into(),
             content: "fn main() {}\n".into(),
@@ -193,7 +186,7 @@ mod tests {
     async fn a_tool_use_block_runs() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        let exec = LocalExecutor::new(dir.path());
+        let exec = Executor::new(dir.path());
         let call = CodingCall::parse(
             "Edit",
             &serde_json::json!({

@@ -10,7 +10,7 @@ use ignore::{Walk, WalkBuilder};
 use regex::RegexBuilder;
 
 use super::ExecError;
-use crate::agent_spec::coding::{GrepInput, GrepOutputMode};
+use notedeck_agent_proto::call::{GrepInput, GrepOutputMode};
 
 /// Most files a Glob answers, newest first; the rest are counted.
 const MAX_GLOB_FILES: usize = 100;

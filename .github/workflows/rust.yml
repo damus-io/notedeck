@@ -60,6 +60,21 @@ jobs:
           ./scripts/check-patches
           python3 scripts/export_source_strings.py --check
 
+  # The sandbox guest's notedeck-agent, cross-compiled for both guest
+  # architectures with only the rustup targets and rust-lld. Its own job so
+  # the musl targets stay out of the android and iOS toolchains; it fails
+  # the day something in the guest's graph needs a C cross compiler.
+  guest-agent:
+    name: Build guest agent (musl)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl,x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/build-guest-agent
+
   android:
     name: Check (android)
     runs-on: ubuntu-22.04

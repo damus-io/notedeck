@@ -172,14 +172,13 @@ dependencies = [
  "cli_term",
  "enostr",
  "futures-util",
- "globset",
  "hex",
- "ignore",
- "libc",
  "md-stream",
  "ndb_testing",
  "nostrdb",
  "nostrdb_net",
+ "notedeck-agent-guest",
+ "notedeck-agent-proto",
  "profiling",
  "regex",
  "serde",
@@ -6027,6 +6026,31 @@ dependencies = [
  "url",
  "uuid",
  "zip 2.4.2",
+]
+
+[[package]]
+name = "notedeck-agent-guest"
+version = "0.11.0-beta.1"
+dependencies = [
+ "bin_testing",
+ "globset",
+ "ignore",
+ "libc",
+ "notedeck-agent-proto",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "notedeck-agent-proto"
+version = "0.11.0-beta.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

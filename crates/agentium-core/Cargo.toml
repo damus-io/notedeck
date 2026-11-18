@@ -26,9 +26,13 @@ wordid = { workspace = true }
 # it backs AssistantMessage's incremental parse and stays platform-neutral.
 md-stream = { workspace = true }
 similar = "2"
-# "process" and "io-util" run the coding toolset's Bash on the host
-# (agent_spec::local_executor) with a timeout and cancellation.
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "process", "io-util"] }
+# The coding tools' calls (agent_spec::coding re-exports them), defined once
+# for notedeck and the sandbox guest's executor.
+notedeck-agent-proto = { workspace = true }
+# The executor the host coder runs in process (agent_spec::local_executor);
+# the sandbox guest runs the same body as its notedeck-agent binary.
+notedeck-agent-guest = { workspace = true }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 # Puffin scopes on the hot per-chip reads (e.g. latest_activity_created_at, run
@@ -38,18 +42,8 @@ profiling = { workspace = true }
 # pattern and match highlight), for the `cli` module's renderers.
 cli_term = { workspace = true }
 regex = "1"
-# ripgrep's directory walker: the coding toolset's Grep and Glob skip what
-# .gitignore skips (target/, node_modules/) and take ripgrep's --glob syntax.
-ignore = "0.4"
-# Glob's pattern match, where `*` stops at a `/` and `**` crosses it.
-globset = "0.4"
 # StreamExt::next drives the session-watch subscription stream.
 futures-util = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-# kill(2) on a Bash call's whole process group when it times out or is
-# cancelled, so a command's own children don't outlive it.
-libc = "0.2"
 
 [dev-dependencies]
 ndb_testing = { workspace = true }

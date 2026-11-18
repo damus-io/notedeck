@@ -1,0 +1,16 @@
+[package]
+name = "notedeck-agent-proto"
+edition = "2021"
+version.workspace = true
+description = "Wire types shared by notedeck's coding agent and its tool executor: the six tool calls and the stdio protocol"
+
+# HARD RULE: no dependency that builds C, here or in notedeck-agent-guest.
+# Both are cross-compiled to aarch64- and x86_64-unknown-linux-musl with
+# nothing but `rustup target add` and rust-lld (.cargo/config.toml). One
+# ring, aws-lc-sys, openssl-sys or libgit2-sys in the graph turns that into
+# "every dev machine and CI runner needs a C cross toolchain".
+# crates/bin_testing/tests/guest_no_c.rs fails if one gets in.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
