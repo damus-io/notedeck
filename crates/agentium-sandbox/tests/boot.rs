@@ -5,7 +5,7 @@
 //! `cargo test -p agentium-sandbox --features microvm --test boot -- --ignored`
 #![cfg(microvm)]
 
-use agentium_sandbox::{boot, runtime};
+use agentium_sandbox::{boot, image, runtime};
 
 #[tokio::test]
 #[ignore = "boots a microVM: needs the runtime, KVM or Apple Silicon, and network"]
@@ -29,7 +29,8 @@ async fn a_guest_boots_and_runs_a_command() {
 
 /// This checkout, mounted through a Review [`MountPlan`] at its host path:
 /// git in the guest sees the host's HEAD, and the shared git dir refuses a
-/// write. Needs an image with git in it.
+/// write. The default image has git; git trusts the checkout through the
+/// plan's `git_env` although the guest's root doesn't own the files.
 ///
 /// [`MountPlan`]: agentium_sandbox::mounts::MountPlan
 #[tokio::test]
@@ -53,7 +54,7 @@ async fn this_checkout_mounts_at_its_host_path() {
     let sandbox = plan
         .apply(
             Sandbox::builder(name)
-                .image("alpine/git")
+                .image(image::DEFAULT_IMAGE)
                 .cpus(1)
                 .memory(512)
                 .replace(),
@@ -82,4 +83,71 @@ async fn this_checkout_mounts_at_its_host_path() {
     );
     let refused = refused.expect("exec");
     assert!(!refused.status().success, "Review let a ref write through");
+}
+
+/// The whole chain on this checkout: the default image, this build's
+/// `notedeck-agent` copied in before boot, the checkout mounted at its host
+/// path, a session that passes the build handshake, and one tool call of
+/// each kind that matters (pure Rust and shelling out).
+///
+/// Run `scripts/build-guest-agent` first: the guest is this checkout's dev
+/// build.
+#[tokio::test]
+#[ignore = "boots a microVM: needs the runtime, KVM or Apple Silicon, network, and the guest build"]
+async fn the_agent_runs_in_the_default_image_with_no_install_step() {
+    use agentium_sandbox::exec;
+    use agentium_sandbox::image::GuestSetup;
+    use agentium_sandbox::mounts::{GitAccess, MountPlan};
+    use microsandbox::Sandbox;
+    use notedeck_agent_proto::call::{BashInput, CodingCall, ReadInput};
+
+    let setup = GuestSetup::for_host(None).expect("scripts/build-guest-agent was run");
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let plan = MountPlan::for_checkout(&checkout, GitAccess::Review).expect("plan");
+
+    /// What the guest answered, kept past the sandbox's cleanup.
+    struct Answers {
+        read: Result<String, agentium_sandbox::client::CallError>,
+        git: Result<String, agentium_sandbox::client::CallError>,
+    }
+
+    let name = "agentium-sandbox-agent";
+    let started = std::time::Instant::now();
+    let sandbox = setup
+        .apply(plan.apply(Sandbox::builder(name).cpus(1).memory(512).replace()))
+        .create()
+        .await
+        .expect("guest boots");
+    eprintln!("booted with the agent in {:?}", started.elapsed());
+
+    let ran = async {
+        let client = exec::start(&sandbox, image::AGENT_PATH, &plan.checkout).await?;
+        let read = client
+            .call(CodingCall::Read(ReadInput {
+                file_path: plan.checkout.join("Cargo.toml").to_string_lossy().into(),
+                offset: None,
+                limit: Some(3),
+            }))
+            .result()
+            .await;
+        let git = client
+            .call(CodingCall::Bash(BashInput {
+                command: "git rev-parse --is-inside-work-tree".into(),
+                description: None,
+                timeout: None,
+            }))
+            .result()
+            .await;
+        client.shutdown(std::time::Duration::from_secs(2)).await;
+        Ok::<_, agentium_sandbox::SandboxError>(Answers { read, git })
+    }
+    .await;
+    let _ = sandbox.stop().await;
+    let _ = Sandbox::remove(name).await;
+
+    let Answers { read, git } = ran.expect("session with this build's agent");
+    let read = read.expect("Read in the guest");
+    assert!(read.contains("[workspace]"), "{read}");
+    let git = git.expect("Bash in the guest");
+    assert!(git.contains("true"), "{git}");
 }

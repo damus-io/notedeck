@@ -123,7 +123,9 @@ impl GuestInput for ExecSink {
     }
 }
 
-/// Start the executor at `binary` (its path inside the guest) in `sandbox`,
+/// Start the executor at `binary` (its path inside the guest:
+/// [`crate::image::AGENT_PATH`] for a guest set up with
+/// [`crate::image::GuestSetup`]) in `sandbox`,
 /// serving the working tree `root`, and open a session with it. Refused
 /// unless the guest is this build ([`crate::guest::HOST_BUILD`]).
 pub async fn start(

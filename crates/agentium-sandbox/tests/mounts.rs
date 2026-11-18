@@ -364,3 +364,52 @@ fn push_lands_through_a_readonly_git_dir() {
     );
     assert_eq!(String::from_utf8_lossy(&remote_head.stdout), head);
 }
+
+/// The guest doesn't own the host's files, so git there sees every mounted
+/// repository as someone else's. `GIT_TEST_ASSUME_DIFFERENT_OWNER` is git's
+/// own switch for that case: with it, git refuses the checkout as `dubious
+/// ownership` until the plan's [`MountPlan::git_env`] names it, and still
+/// refuses any other repository. No guest needed.
+#[test]
+fn git_env_trusts_the_checkout_and_nothing_else() {
+    let f = Fixture::new();
+    for checkout in [f.worktree(), f.main()] {
+        let plan = MountPlan::for_checkout(&checkout, GitAccess::Review).unwrap();
+        let rev_parse = |dir: &Path, trusted: bool| {
+            let mut cmd = git_cmd(dir);
+            cmd.env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+                .args(["rev-parse", "HEAD"]);
+            if trusted {
+                for e in plan.git_env() {
+                    cmd.env(e.key, e.value);
+                }
+            }
+            cmd.output().expect("run git")
+        };
+
+        let refused = rev_parse(&checkout, false);
+        assert!(
+            !refused.status.success()
+                && String::from_utf8_lossy(&refused.stderr).contains("dubious ownership"),
+            "{}",
+            report("untrusted", &refused)
+        );
+        let trusted = rev_parse(&checkout, true);
+        assert!(trusted.status.success(), "{}", report("trusted", &trusted));
+        let elsewhere = rev_parse(&f.remote(), true);
+        assert!(
+            !elsewhere.status.success(),
+            "{}",
+            report("another repo", &elsewhere)
+        );
+    }
+}
+
+/// A directory that isn't a repository needs no trust.
+#[test]
+fn git_env_is_empty_outside_a_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let plan = MountPlan::for_checkout(dir.path(), GitAccess::Review).unwrap();
+    assert_eq!(plan.layout, RepoLayout::NotARepo);
+    assert!(plan.git_env().is_empty());
+}

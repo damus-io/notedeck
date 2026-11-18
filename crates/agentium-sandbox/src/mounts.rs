@@ -101,6 +101,15 @@ pub enum RepoLayout {
     },
 }
 
+/// One environment variable every command in the guest gets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestEnv {
+    /// Its name.
+    pub key: &'static str,
+    /// Its value.
+    pub value: String,
+}
+
 /// The mounts that give a guest a working checkout at its host path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountPlan {
@@ -177,13 +186,46 @@ impl MountPlan {
         self.checkout.to_str().unwrap_or_default()
     }
 
-    /// Add the plan's bind mounts to a sandbox and start it in the
-    /// checkout.
+    /// The environment that makes git in the guest trust the checkout.
+    ///
+    /// The mounted files belong to the host user, and the guest runs as
+    /// its image's user (root, for the default image), so git would refuse
+    /// the repository as `dubious ownership`. `safe.directory` is only read
+    /// from protected config: system, global or the command line. The
+    /// `GIT_CONFIG_COUNT` variables are the command line's, so they work
+    /// without touching any file in the image, and they name this checkout
+    /// only rather than `*`. Empty when the checkout isn't a repository.
+    pub fn git_env(&self) -> Vec<GuestEnv> {
+        if self.layout == RepoLayout::NotARepo {
+            return Vec::new();
+        }
+        vec![
+            GuestEnv {
+                key: "GIT_CONFIG_COUNT",
+                value: "1".to_owned(),
+            },
+            GuestEnv {
+                key: "GIT_CONFIG_KEY_0",
+                value: "safe.directory".to_owned(),
+            },
+            GuestEnv {
+                key: "GIT_CONFIG_VALUE_0",
+                value: self.checkout_str().to_owned(),
+            },
+        ]
+    }
+
+    /// Add the plan's bind mounts to a sandbox, start it in the checkout
+    /// and have git trust it ([`MountPlan::git_env`]).
     #[cfg(microvm)]
     pub fn apply(
         &self,
         builder: microsandbox::sandbox::SandboxBuilder,
     ) -> microsandbox::sandbox::SandboxBuilder {
+        let builder = self
+            .git_env()
+            .into_iter()
+            .fold(builder, |b, e| b.env(e.key, e.value));
         let builder = self.mounts.iter().fold(builder, |b, m| {
             let path = m.path.to_string_lossy().into_owned();
             let readonly = m.readonly;
