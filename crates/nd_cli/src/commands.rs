@@ -903,6 +903,7 @@ mod tests {
             command: command.iter().map(|w| (*w).to_owned()).collect(),
             accepts_signer: false,
             streams: None,
+            model_reach: None,
         }
     }
 

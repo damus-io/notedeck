@@ -547,6 +547,11 @@ fn tool_info(spec: &ToolSpec) -> ToolInfo {
             notedeck::StreamMode::Append => notedeck_ipc::StreamMode::Append,
             notedeck::StreamMode::Redraw => notedeck_ipc::StreamMode::Redraw,
         }),
+        model_reach: Some(match spec.model_reach() {
+            notedeck::ModelReach::Never => notedeck_ipc::ModelReach::Never,
+            notedeck::ModelReach::Data => notedeck_ipc::ModelReach::Data,
+            notedeck::ModelReach::Window => notedeck_ipc::ModelReach::Window,
+        }),
     }
 }
 
@@ -1196,6 +1201,11 @@ mod tests {
         drop(ctx);
         let count = tools.iter().find(|t| t.name == COUNT).unwrap();
         assert_eq!(count.streams, Some(notedeck_ipc::StreamMode::Redraw));
+        assert_eq!(
+            count.model_reach,
+            Some(notedeck_ipc::ModelReach::Never),
+            "notedeck sends the spec's reach, so `nd mcp` reads it rather than rederiving it"
+        );
         let Outcome::Error { message } = reply(call(&mut f, COUNT, json!({ "to": 1 }))) else {
             panic!("a stream can't be called");
         };

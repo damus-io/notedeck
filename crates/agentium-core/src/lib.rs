@@ -36,4 +36,4 @@ mod util;
 pub mod wordid;
 
 pub use engine::{Engine, EngineError, SendOptions, SessionWatch};
-pub use tool::{Capability, ToolArg, ToolArgType, ToolSpec};
+pub use tool::{Capability, ModelReach, ToolArg, ToolArgType, ToolSpec};

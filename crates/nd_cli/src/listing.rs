@@ -119,6 +119,7 @@ mod tests {
             command: Vec::new(),
             accepts_signer: false,
             streams: None,
+            model_reach: None,
         }
     }
 

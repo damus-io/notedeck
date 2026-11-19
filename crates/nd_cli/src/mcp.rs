@@ -12,7 +12,7 @@
 //! `tools/call`, so a hidden tool can't be called by name either.
 
 use crate::Failure;
-use notedeck_ipc::{Reply, Request, ToolInfo, ToolKind};
+use notedeck_ipc::{ModelReach, Reply, Request, ToolInfo};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
@@ -41,22 +41,31 @@ pub struct Exposure {
 }
 
 impl Exposure {
-    /// Whether a client may see and call `tool`. A stream is never shown:
-    /// an MCP call answers once.
+    /// Whether a client may see and call `tool`, by the same
+    /// [`ModelReach`] an agent's catalog reads: never a stream (an MCP call
+    /// answers once), a window tool only with `--ui`, then only what changes
+    /// nothing under `--read-only`.
     fn allows(self, tool: &ToolInfo) -> bool {
-        tool.streams.is_none()
-            && (self.ui || tool.kind == ToolKind::Data)
-            && (!self.read_only || tool.read_only)
+        let reachable = match tool.model_reach() {
+            ModelReach::Never => false,
+            ModelReach::Data => true,
+            ModelReach::Window => self.ui,
+        };
+        reachable && (!self.read_only || tool.read_only)
     }
 
     /// The flag that would expose `tool`, for the error a hidden call gets.
     fn hint(self, tool: &ToolInfo) -> &'static str {
-        if tool.streams.is_some() {
-            "it streams, and an MCP call answers once; follow it with `nd` in a shell"
-        } else if tool.kind == ToolKind::Ui && !self.ui {
-            "it acts on the window; start `nd mcp --ui` to allow that"
-        } else {
-            "it changes data, and this server was started with --read-only"
+        match tool.model_reach() {
+            ModelReach::Never => {
+                "it streams, and an MCP call answers once; follow it with `nd` in a shell"
+            }
+            ModelReach::Window if !self.ui => {
+                "it acts on the window; start `nd mcp --ui` to allow that"
+            }
+            ModelReach::Data | ModelReach::Window => {
+                "it changes data, and this server was started with --read-only"
+            }
         }
     }
 }
@@ -280,7 +289,7 @@ fn text(body: String, is_error: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notedeck_ipc::IntentStatus;
+    use notedeck_ipc::{IntentStatus, ToolKind};
 
     fn tool(name: &str, kind: ToolKind, read_only: bool) -> ToolInfo {
         ToolInfo {
@@ -294,6 +303,7 @@ mod tests {
             command: Vec::new(),
             accepts_signer: false,
             streams: None,
+            model_reach: None,
         }
     }
 
@@ -430,6 +440,29 @@ mod tests {
             "{result}"
         );
         assert_eq!(seen, [Request::ListTools], "no call was sent");
+    }
+
+    /// The reach notedeck sends is the rule: `allows` doesn't rederive it
+    /// from `kind` when it is there, so a spec's answer and the server's
+    /// can't drift.
+    #[test]
+    fn a_sent_reach_wins_over_the_kind() {
+        let never = ToolInfo {
+            model_reach: Some(ModelReach::Never),
+            ..tool("read_board", ToolKind::Data, true)
+        };
+        let window = ToolInfo {
+            model_reach: Some(ModelReach::Window),
+            ..tool("open", ToolKind::Data, true)
+        };
+        let all = Exposure {
+            ui: true,
+            read_only: false,
+        };
+        assert!(!all.allows(&never));
+        assert!(!DATA.allows(&window));
+        assert!(all.allows(&window));
+        assert!(DATA.hint(&window).contains("--ui"));
     }
 
     #[test]

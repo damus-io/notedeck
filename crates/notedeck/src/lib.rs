@@ -175,10 +175,10 @@ pub use time::{
 };
 pub use timecache::TimeCached;
 pub use tool::{
-    note_to_simple, AppTool, Emitter, EventSink, Finished, PendingCall, QueryCall, RegisteredTool,
-    Rendered, SimpleNote, SlowTool, Started, StreamJob, StreamMode, StreamTool, ToolArg,
-    ToolArgType, ToolCall, ToolContext, ToolEntry, ToolInvocation, ToolJob, ToolKind, ToolOutcome,
-    ToolOwner, ToolRegistry, ToolSpec, ToolUpdate, UiToolEntry, SAVE_KEYMAP_TOOL,
+    note_to_simple, AppTool, Emitter, EventSink, Finished, ModelReach, PendingCall, QueryCall,
+    RegisteredTool, Rendered, SimpleNote, SlowTool, Started, StreamJob, StreamMode, StreamTool,
+    ToolArg, ToolArgType, ToolCall, ToolContext, ToolEntry, ToolInvocation, ToolJob, ToolKind,
+    ToolOutcome, ToolOwner, ToolRegistry, ToolSpec, ToolUpdate, UiToolEntry, SAVE_KEYMAP_TOOL,
 };
 pub use unknowns::{
     get_unknown_note_ids, unknown_id_send, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds,

@@ -350,6 +350,21 @@ pub enum StreamMode {
     Redraw,
 }
 
+/// Whether a model may call a tool, and on what: the wire form of
+/// `agentium_core::tool::ModelReach`, the rule `nd mcp` and an agent's
+/// catalog share. Read it through [`ToolInfo::model_reach`], which derives
+/// it for a notedeck that doesn't send it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelReach {
+    /// A model can't call it: it streams, and a model's call answers once.
+    Never,
+    /// Reads or writes data and answers once.
+    Data,
+    /// Acts on the user's window; each caller decides whether to allow it.
+    Window,
+}
+
 /// One tool as [`Request::ListTools`] lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolInfo {
@@ -380,6 +395,31 @@ pub struct ToolInfo {
     /// wire for any other tool, and from an older notedeck.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub streams: Option<StreamMode>,
+    /// Whether a model may call it, as the spec says. Absent from an older
+    /// notedeck, so read it through [`model_reach`](Self::model_reach),
+    /// which falls back to what `kind` and `streams` say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_reach: Option<ModelReach>,
+}
+
+impl ToolInfo {
+    /// Whether a model may call it: what notedeck sent, or, from a notedeck
+    /// that predates the field, the same rule derived from the wire: a
+    /// stream is [`Never`](ModelReach::Never), else a UI tool is
+    /// [`Window`](ModelReach::Window) and a data tool
+    /// [`Data`](ModelReach::Data).
+    pub fn model_reach(&self) -> ModelReach {
+        if let Some(reach) = self.model_reach {
+            return reach;
+        }
+        if self.streams.is_some() {
+            return ModelReach::Never;
+        }
+        match self.kind {
+            ToolKind::Data => ModelReach::Data,
+            ToolKind::Ui => ModelReach::Window,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -399,6 +439,7 @@ mod tests {
             command: vec!["headway".to_owned(), "review".to_owned()],
             accepts_signer: false,
             streams: None,
+            model_reach: None,
         }
     }
 
@@ -568,6 +609,45 @@ mod tests {
         let line = serde_json::to_string(&streams).unwrap();
         assert!(line.contains(r#""streams":"redraw""#), "{line}");
         assert_eq!(serde_json::from_str::<ToolInfo>(&line).unwrap(), streams);
+    }
+
+    /// `model_reach` round-trips when sent, and a tool list from a
+    /// notedeck that predates it still says what a model may reach,
+    /// derived from `kind` and `streams`.
+    #[test]
+    fn model_reach_falls_back_to_kind_and_streams() {
+        let sent = ToolInfo {
+            kind: ToolKind::Data,
+            model_reach: Some(ModelReach::Data),
+            ..tool()
+        };
+        let line = serde_json::to_string(&sent).unwrap();
+        assert!(line.contains(r#""model_reach":"data""#), "{line}");
+        assert_eq!(serde_json::from_str::<ToolInfo>(&line).unwrap(), sent);
+
+        let old = |kind: ToolKind, streams: Option<StreamMode>| {
+            let tool = ToolInfo {
+                kind,
+                streams,
+                model_reach: None,
+                ..tool()
+            };
+            let line = serde_json::to_string(&tool).unwrap();
+            assert!(!line.contains("model_reach"), "{line}");
+            serde_json::from_str::<ToolInfo>(&line)
+                .unwrap()
+                .model_reach()
+        };
+        assert_eq!(old(ToolKind::Data, None), ModelReach::Data);
+        assert_eq!(old(ToolKind::Ui, None), ModelReach::Window);
+        assert_eq!(
+            old(ToolKind::Data, Some(StreamMode::Append)),
+            ModelReach::Never
+        );
+        assert_eq!(
+            old(ToolKind::Ui, Some(StreamMode::Redraw)),
+            ModelReach::Never
+        );
     }
 
     #[test]

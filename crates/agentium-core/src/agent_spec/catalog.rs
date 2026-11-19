@@ -44,7 +44,7 @@ use std::collections::HashMap;
 
 use super::{coding, web};
 use super::{AgentSpec, Approval, Containment, Policy, SessionMode, Toolset};
-use crate::tool::{Capability, ToolSpec};
+use crate::tool::{Capability, ModelReach, ToolSpec};
 use crate::tools::Tool;
 
 /// One tool the agent may call.
@@ -228,10 +228,11 @@ impl Offering<'_> {
 }
 
 /// Whether `app`'s Notedeck toolset offers `tool`: it is `nd <app> …`, and a
-/// model can call it. A UI tool qualifies through its command line alone
-/// (see the module docs).
+/// model can call it ([`ToolSpec::model_reach`], the rule `nd mcp` reads
+/// too). A UI tool ([`ModelReach::Window`]) qualifies through its command
+/// line alone (see the module docs), where `nd mcp` also wants `--ui`.
 fn offers(app: &str, tool: &ToolSpec) -> bool {
-    tool.command_path().first() == Some(&app) && tool.stream_mode().is_none()
+    tool.command_path().first() == Some(&app) && tool.model_reach() != ModelReach::Never
 }
 
 /// Every tool `spec`'s policy names, widened or tightened.

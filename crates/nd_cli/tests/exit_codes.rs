@@ -55,6 +55,7 @@ fn tools() -> Vec<ToolInfo> {
         command: Vec::new(),
         accepts_signer: false,
         streams: None,
+        model_reach: None,
     }]
 }
 
@@ -73,6 +74,7 @@ fn app_tools() -> Vec<ToolInfo> {
         command: vec!["headway".to_owned(), verb.to_owned()],
         accepts_signer: false,
         streams: None,
+        model_reach: None,
     };
     vec![
         tool(
@@ -714,6 +716,7 @@ fn stream_tools() -> Vec<ToolInfo> {
         command: vec!["agentium".to_owned(), verb.to_owned()],
         accepts_signer: false,
         streams,
+        model_reach: None,
     };
     let session = json!({"type": "string", "description": "The session.", "x-nd-positional": 0});
     vec![

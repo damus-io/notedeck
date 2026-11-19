@@ -268,6 +268,26 @@ pub enum ToolKind {
     Ui,
 }
 
+/// Whether a model may call a tool, and on what: the one rule `nd mcp`'s
+/// exposure and an agent spec's catalog both read (see
+/// [`ToolSpec::model_reach`]).
+///
+/// It says what a call would reach, not whether a given caller allows it:
+/// each caller decides about [`Window`](Self::Window) on its own (`nd mcp`
+/// needs `--ui`; a catalog offers a UI tool that has a command line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelReach {
+    /// A model can't call it at all: it streams, and a model's call
+    /// answers once.
+    Never,
+    /// Reads or writes data and answers once: callable by any model the
+    /// caller lets near the data.
+    Data,
+    /// Acts on the user's window (opens a pane, moves a cursor). Callable,
+    /// but driving someone's window is the caller's call to allow.
+    Window,
+}
+
 /// What a tool may do: the row of the approval table
 /// ([`crate::agent_spec::policy::base_approval`]).
 ///
@@ -526,6 +546,25 @@ impl ToolSpec {
         }
     }
 
+    /// Whether a model may call it, and on what (see [`ModelReach`]). A
+    /// [stream](Self::streams) is [`Never`](ModelReach::Never), whatever its
+    /// kind; otherwise a [`ToolKind::Ui`] tool is
+    /// [`Window`](ModelReach::Window) and a data tool
+    /// [`Data`](ModelReach::Data).
+    ///
+    /// [`needs_current`](Self::needs_current) has nothing to do with it: an
+    /// argument the command bar fills from the current view is one a model
+    /// passes itself.
+    pub fn model_reach(&self) -> ModelReach {
+        if self.streams.is_some() {
+            return ModelReach::Never;
+        }
+        match self.kind {
+            ToolKind::Data => ModelReach::Data,
+            ToolKind::Ui => ModelReach::Window,
+        }
+    }
+
     /// Whether a call starts its app (see [`starts_app`](Self::starts_app)).
     pub fn is_app_starter(&self) -> bool {
         self.starts_app
@@ -577,7 +616,10 @@ impl ToolSpec {
     }
 
     /// Whether it can only run on what an app's view is on: a required
-    /// argument is [from the current ref](ToolArg::from_current).
+    /// argument is [from the current ref](ToolArg::from_current). Not
+    /// whether a model can call it: that is
+    /// [`model_reach`](Self::model_reach), and a model passes such an
+    /// argument itself.
     pub fn needs_current(&self) -> bool {
         self.arguments
             .iter()
@@ -711,6 +753,32 @@ fn insert_cli_keys(props: &mut serde_json::Map<String, Value>, arg: &ToolArg, sl
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A data tool reaches data, a UI tool the window, and a stream of
+    /// either kind is out of a model's reach. A required from-current
+    /// argument changes none of it.
+    #[test]
+    fn model_reach_is_never_for_a_stream_else_follows_the_kind() {
+        let data = ToolSpec::new("t_show", "Show.", vec![]);
+        assert_eq!(data.model_reach(), ModelReach::Data);
+        let ui = ToolSpec::new("t_open", "Open.", vec![]).ui();
+        assert_eq!(ui.model_reach(), ModelReach::Window);
+        let data_stream = ToolSpec::new("t_log", "Log.", vec![]).streams(StreamMode::Append);
+        assert_eq!(data_stream.model_reach(), ModelReach::Never);
+        let ui_stream = ToolSpec::new("t_watch", "Watch.", vec![])
+            .ui()
+            .streams(StreamMode::Redraw);
+        assert_eq!(ui_stream.model_reach(), ModelReach::Never);
+        let current = ToolSpec::new(
+            "t_comment",
+            "Comment.",
+            vec![ToolArg::new("card", ToolArgType::String, "The card.")
+                .required(true)
+                .from_current()],
+        );
+        assert!(current.needs_current());
+        assert_eq!(current.model_reach(), ModelReach::Data);
+    }
 
     /// The derived class follows what the spec already says, and a declared
     /// class wins over it.
