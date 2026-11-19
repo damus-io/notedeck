@@ -4,7 +4,8 @@
 
 use crate::backend::{BackendChoice, BackendType, Model};
 use crate::{
-    session_events, session_loader, update, Dave, DaveOverlay, HostCtx, SessionId, SessionMessage,
+    session_events, session_loader, update, Dave, DaveOverlay, HostCtx, NewSession, SessionId,
+    SessionMessage,
 };
 use agentium_core::session_events::SessionRelation;
 use claude_agent_sdk_rs::PermissionMode;
@@ -373,13 +374,24 @@ impl Dave {
             &mut self.directory_picker,
             &mut self.scene,
             self.show_scene,
-            self.ai_mode,
-            PathBuf::from(cwd),
             &self.hostname,
-            backend,
-            // Verbatim, so an alias reaches the backend as the spawner typed it
-            // rather than pinned to whatever id this build maps it to.
-            model.map_or(Model::Default, Model::Custom),
+            // Profile and spec are on the session before the first message
+            // dispatches below: the dispatch reads the profile to layer its
+            // env (or to refuse the turn when this host lacks it) and the spec
+            // to run the turn under it.
+            NewSession {
+                cwd: PathBuf::from(cwd),
+                ai_mode: self.ai_mode,
+                choice: BackendChoice {
+                    backend,
+                    profile,
+                    spec,
+                    // Verbatim, so an alias reaches the backend as the spawner
+                    // typed it rather than pinned to whatever id this build
+                    // maps it to.
+                    model: model.map_or(Model::Default, Model::Custom),
+                },
+            },
         );
 
         // Store spawn_id so it's echoed in kind-31988 state events, letting the
@@ -397,13 +409,6 @@ impl Dave {
             session.details.issue_url = issue_url;
             session.details.parent_session = parent_session;
             session.details.relation = relation;
-            // Before the first message dispatches below, like the mode: the
-            // dispatch reads it to layer the profile's env (or to refuse the
-            // turn when this host lacks the profile).
-            session.details.profile = profile;
-            // Like the profile: the first dispatch below reads it to run the
-            // turn under the spec.
-            session.details.agent_spec = spec;
             // Set the mode *here*, before the first message is queued below:
             // `dispatch` reads it to build the backend's options, and that
             // dispatch happens later in this same frame. Applying it afterwards —

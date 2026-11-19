@@ -6,7 +6,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::agent_status::AgentStatus;
-use crate::backend::BackendType;
+use crate::backend::{BackendChoice, BackendType};
 use crate::config::AiMode;
 use crate::focus_queue::FocusPriority;
 use crate::git_status::GitStatusCache;
@@ -1546,6 +1546,20 @@ pub struct AutoResolved {
     pub perm_id: uuid::Uuid,
 }
 
+/// Everything a new session starts with: where it runs, its mode, and the
+/// backend, profile, spec and model it runs on. Handed whole to
+/// [`SessionManager::create`], so a setting can't be dropped by a create
+/// path that forgets to assign it afterwards.
+#[derive(Debug, Clone)]
+pub struct NewSession {
+    /// The session's working directory.
+    pub cwd: PathBuf,
+    /// Chat or agentic.
+    pub ai_mode: AiMode,
+    /// The backend, profile, spec and model it runs on.
+    pub choice: BackendChoice,
+}
+
 /// Manages multiple chat sessions
 pub struct SessionManager {
     sessions: HashMap<SessionId, ChatSession>,
@@ -1767,17 +1781,48 @@ impl SessionManager {
         }
     }
 
-    /// Create a new session with the given cwd and make it active
+    /// Create a new session with the given cwd on `backend_type`'s plain
+    /// choice (no profile, no spec, default model) and make it active.
     pub fn new_session(
         &mut self,
         cwd: PathBuf,
         ai_mode: AiMode,
         backend_type: BackendType,
     ) -> SessionId {
+        self.create(NewSession {
+            cwd,
+            ai_mode,
+            choice: BackendChoice::plain(backend_type),
+        })
+    }
+
+    /// Create the session `new` describes and make it active.
+    ///
+    /// Every setting the choice carries (profile, spec, model) is on the
+    /// session before it is inserted, so no caller can create one and forget
+    /// to set them afterwards: the first dispatch, even later in the same
+    /// frame, already sees them.
+    pub fn create(&mut self, new: NewSession) -> SessionId {
+        let NewSession {
+            cwd,
+            ai_mode,
+            choice:
+                BackendChoice {
+                    backend,
+                    profile,
+                    spec,
+                    model,
+                },
+        } = new;
         let id = self.next_id;
         self.next_id += 1;
 
-        let session = ChatSession::new(id, cwd, ai_mode, backend_type);
+        let mut session = ChatSession::new(id, cwd, ai_mode, backend);
+        let model_id = model.to_model_id().map(str::to_string);
+        session.details.requested_model = model_id.clone();
+        session.details.model = model_id;
+        session.details.profile = profile;
+        session.details.agent_spec = spec;
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
@@ -2656,6 +2701,37 @@ impl ChatSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `create` puts the whole choice on the session before anything can
+    /// read it: backend, profile, spec, and the model as both the requested
+    /// and the current one. A profile or spec left for the caller to assign
+    /// afterwards is one a create path can forget.
+    #[test]
+    fn create_applies_the_whole_choice() {
+        use crate::backend::Model;
+        let mut mgr = SessionManager::new();
+        let id = mgr.create(NewSession {
+            cwd: PathBuf::from("/work"),
+            ai_mode: AiMode::Agentic,
+            choice: BackendChoice {
+                backend: BackendType::Claude,
+                profile: Some("hydra".to_string()),
+                spec: Some("butler".to_string()),
+                model: Model::Custom("glm-5.3-flash".to_string()),
+            },
+        });
+
+        assert_eq!(mgr.active_id(), Some(id));
+        let session = mgr.get(id).unwrap();
+        assert_eq!(session.backend_type, BackendType::Claude);
+        assert_eq!(session.ai_mode, AiMode::Agentic);
+        assert_eq!(session.cwd(), Some(&PathBuf::from("/work")));
+        let details = &session.details;
+        assert_eq!(details.profile.as_deref(), Some("hydra"));
+        assert_eq!(details.agent_spec.as_deref(), Some("butler"));
+        assert_eq!(details.requested_model.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(details.model.as_deref(), Some("glm-5.3-flash"));
+    }
 
     /// The scene map repacks when a session joins or moves, never when one
     /// only changes status or title.

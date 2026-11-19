@@ -11,7 +11,9 @@ use crate::messages::{
     AnswerSummary, AnswerSummaryEntry, Message, PermissionRequest, PermissionResponse,
     PermissionView, QuestionAnswer,
 };
-use crate::session::{ChatSession, EditorJob, PermissionMessageState, SessionId, SessionManager};
+use crate::session::{
+    ChatSession, EditorJob, NewSession, PermissionMessageState, SessionId, SessionManager,
+};
 use crate::ui::{AgentScene, DirectoryPicker};
 use claude_agent_sdk_rs::PermissionMode;
 use std::path::PathBuf;
@@ -1399,27 +1401,20 @@ pub fn poll_editor_job(session_manager: &mut SessionManager) {
 // Session Management
 // =============================================================================
 
-/// Create a new session with the given cwd and optional model override.
-#[allow(clippy::too_many_arguments)]
+/// Create the session `new` describes, on this host, and focus it.
 pub fn create_session_with_cwd(
     session_manager: &mut SessionManager,
     directory_picker: &mut DirectoryPicker,
     scene: &mut AgentScene,
     show_scene: bool,
-    ai_mode: AiMode,
-    cwd: PathBuf,
     hostname: &str,
-    backend_type: BackendType,
-    model: Model,
+    new: NewSession,
 ) -> SessionId {
-    directory_picker.add_recent(cwd.clone());
+    directory_picker.add_recent(new.cwd.clone());
 
-    let id = session_manager.new_session(cwd, ai_mode, backend_type);
+    let id = session_manager.create(new);
     if let Some(session) = session_manager.get_mut(id) {
-        let model_id = model.to_model_id().map(str::to_string);
         session.details.hostname = hostname.to_string();
-        session.details.requested_model = model_id.clone();
-        session.details.model = model_id;
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -1485,47 +1480,41 @@ pub fn clone_session(
 ) -> Option<RemoteSpawn> {
     let session = session_manager.get(id)?;
     let cwd = session.cwd().cloned()?;
-    let backend_type = session.backend_type;
-    let model = session
-        .details
-        .resolve_model()
-        .map(|id| Model::from_model_id(&id))
-        .unwrap_or(Model::Default);
-    // A clone runs under the same backend profile: dropping it would send the
-    // clone's work to the plain backend's account instead.
-    let profile = session.details.profile.clone();
-    // And under the same agent spec, or the clone would run on the host's
-    // default backend with none of the spec's tools.
-    let agent_spec = session.details.agent_spec.clone();
+    // A clone runs on the original's backend, model, profile and spec:
+    // dropping the profile would send the clone's work to the plain backend's
+    // account, and dropping the spec would run it with none of the spec's
+    // tools.
+    let choice = BackendChoice {
+        backend: session.backend_type,
+        profile: session.details.profile.clone(),
+        spec: session.details.agent_spec.clone(),
+        model: session
+            .details
+            .resolve_model()
+            .map(|id| Model::from_model_id(&id))
+            .unwrap_or(Model::Default),
+    };
 
     if session.is_remote() {
         return Some(RemoteSpawn {
             host: session.details.hostname.clone(),
             cwd,
-            choice: BackendChoice {
-                backend: backend_type,
-                profile,
-                spec: agent_spec,
-                model,
-            },
+            choice,
         });
     }
 
-    let new_id = create_session_with_cwd(
+    create_session_with_cwd(
         session_manager,
         directory_picker,
         scene,
         show_scene,
-        ai_mode,
-        cwd,
         hostname,
-        backend_type,
-        model,
+        NewSession {
+            cwd,
+            ai_mode,
+            choice,
+        },
     );
-    if let Some(clone) = session_manager.get_mut(new_id) {
-        clone.details.profile = profile;
-        clone.details.agent_spec = agent_spec;
-    }
     None
 }
 
@@ -1639,11 +1628,12 @@ mod tests {
             picker,
             scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from(cwd),
             hostname,
-            BackendType::Claude,
-            Model::Default,
+            NewSession {
+                cwd: PathBuf::from(cwd),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice::plain(BackendType::Claude),
+            },
         );
 
         let session = sm.get_mut(id).expect("session should exist");
@@ -1665,11 +1655,12 @@ mod tests {
             picker,
             scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/tmp"),
             "remote-a",
-            BackendType::Claude,
-            Model::Default,
+            NewSession {
+                cwd: PathBuf::from("/tmp"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice::plain(BackendType::Claude),
+            },
         );
         let session = sm.get_mut(id).expect("session should exist");
         session.source = SessionSource::Remote;
@@ -1763,11 +1754,17 @@ mod tests {
             &mut picker,
             &mut scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/tmp"),
             "localhost",
-            BackendType::Claude,
-            Model::Opus,
+            NewSession {
+                cwd: PathBuf::from("/tmp"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice {
+                    backend: BackendType::Claude,
+                    profile: None,
+                    spec: None,
+                    model: Model::Opus,
+                },
+            },
         );
 
         // Verify the original session has the model set
@@ -1809,11 +1806,12 @@ mod tests {
             &mut picker,
             &mut scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/tmp"),
             "localhost",
-            BackendType::Claude,
-            Model::Default,
+            NewSession {
+                cwd: PathBuf::from("/tmp"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice::plain(BackendType::Claude),
+            },
         );
 
         assert!(sm.get(orig_id).unwrap().details.requested_model.is_none());
@@ -1851,11 +1849,12 @@ mod tests {
             &mut picker,
             &mut scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/tmp"),
             "localhost",
-            BackendType::Claude,
-            Model::Default,
+            NewSession {
+                cwd: PathBuf::from("/tmp"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice::plain(BackendType::Claude),
+            },
         );
         sm.get_mut(orig_id).unwrap().details.profile = Some("hydra".to_string());
 
@@ -1890,11 +1889,17 @@ mod tests {
             &mut picker,
             &mut scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/work"),
             "monad",
-            BackendType::Claude,
-            Model::Custom("glm-5.3-flash".to_string()),
+            NewSession {
+                cwd: PathBuf::from("/work"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice {
+                    backend: BackendType::Claude,
+                    profile: None,
+                    spec: None,
+                    model: Model::Custom("glm-5.3-flash".to_string()),
+                },
+            },
         );
         let orig = sm.get_mut(orig_id).unwrap();
         orig.details.profile = Some("hydra".to_string());
@@ -1935,11 +1940,12 @@ mod tests {
             &mut picker,
             &mut scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/work"),
             "monad",
-            BackendType::OpenAI,
-            Model::Default,
+            NewSession {
+                cwd: PathBuf::from("/work"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice::plain(BackendType::OpenAI),
+            },
         );
         let orig = sm.get_mut(orig_id).unwrap();
         orig.details.agent_spec = Some("butler".to_string());
@@ -1971,11 +1977,17 @@ mod tests {
             &mut picker,
             &mut scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/tmp"),
             "localhost",
-            BackendType::Codex,
-            Model::Custom("gpt-5.2-codex".to_string()),
+            NewSession {
+                cwd: PathBuf::from("/tmp"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice {
+                    backend: BackendType::Codex,
+                    profile: None,
+                    spec: None,
+                    model: Model::Custom("gpt-5.2-codex".to_string()),
+                },
+            },
         );
 
         let session = sm.get_mut(orig_id).unwrap();
@@ -2578,11 +2590,12 @@ mod tests {
             &mut picker,
             &mut scene,
             false,
-            AiMode::Agentic,
-            PathBuf::from("/tmp"),
             "localhost",
-            BackendType::Claude,
-            Model::Default,
+            NewSession {
+                cwd: PathBuf::from("/tmp"),
+                ai_mode: AiMode::Agentic,
+                choice: BackendChoice::plain(BackendType::Claude),
+            },
         );
 
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);

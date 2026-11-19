@@ -75,8 +75,7 @@ pub mod worktree;
 
 use agentium_core::agent_spec::AgentSpec;
 use backend::{
-    BackendChoice, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend,
-    RemoteOnlyBackend,
+    BackendChoice, BackendType, ClaudeBackend, CodexBackend, OpenAiBackend, RemoteOnlyBackend,
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
@@ -110,7 +109,7 @@ pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use quaternion::Quaternion;
 pub use restore::PendingOpen;
-pub use session::{ChatSession, SessionId, SessionManager, SessionMessage};
+pub use session::{ChatSession, NewSession, SessionId, SessionManager, SessionMessage};
 pub use session_discovery::{discover_sessions, format_relative_time, ResumableSession};
 pub use tools::{
     PartialToolCall, QueryCall, QueryResponse, Tool, ToolCall, ToolCalls, ToolResponse,
@@ -787,11 +786,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &mut self.directory_picker,
             &mut self.scene,
             self.show_scene,
-            AiMode::Chat,
-            cwd,
             &self.hostname,
-            self.model_config.backend,
-            Model::Default,
+            NewSession {
+                cwd,
+                ai_mode: AiMode::Chat,
+                choice: BackendChoice::plain(self.model_config.backend),
+            },
         );
 
         if let Some(session) = self.session_manager.get_mut(id) {
@@ -876,29 +876,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Create a new session with the given cwd (called after directory picker
     /// selection), on `choice`'s backend, profile and model.
     fn create_session_with_cwd(&mut self, cwd: PathBuf, choice: BackendChoice) {
-        let BackendChoice {
-            backend,
-            profile,
-            spec,
-            model,
-        } = choice;
         let id = update::create_session_with_cwd(
             &mut self.session_manager,
             &mut self.directory_picker,
             &mut self.scene,
             self.show_scene,
-            self.ai_mode,
-            cwd,
             &self.hostname,
-            backend,
-            model,
+            NewSession {
+                cwd,
+                ai_mode: self.ai_mode,
+                choice,
+            },
         );
-        if let Some(session) = self.session_manager.get_mut(id) {
-            session.details.profile = profile;
-            // Before the first message dispatches: the dispatch reads it to
-            // run the turn on the spec's runner.
-            session.details.agent_spec = spec;
-        }
         self.anchor_focus(id);
     }
 

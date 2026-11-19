@@ -3,7 +3,7 @@ use notedeck::test_harness::PressKey;
 use notedeck_dave::backend::traits::{BackendType, Model};
 use notedeck_dave::backend::BackendChoice;
 use notedeck_dave::config::AiMode;
-use notedeck_dave::session::SessionManager;
+use notedeck_dave::session::{NewSession, SessionManager};
 use notedeck_dave::ui::backend_picker::picker_entries;
 use notedeck_dave::ui::directory_picker::DirectoryPicker;
 use notedeck_dave::ui::scene::AgentScene;
@@ -83,16 +83,16 @@ fn test_picker_profile_row_starts_a_profile_session() {
         &mut DirectoryPicker::new(),
         &mut AgentScene::new(),
         false,
-        AiMode::Agentic,
-        PathBuf::from("/tmp"),
         "localhost",
-        choice.backend,
-        choice.model,
+        NewSession {
+            cwd: PathBuf::from("/tmp"),
+            ai_mode: AiMode::Agentic,
+            choice,
+        },
     );
-    assert_eq!(
-        mgr.get(id).unwrap().details.resolve_model().as_deref(),
-        Some("glm-5.3-flash")
-    );
+    let details = &mgr.get(id).unwrap().details;
+    assert_eq!(details.profile.as_deref(), Some("hydra"));
+    assert_eq!(details.resolve_model().as_deref(), Some("glm-5.3-flash"));
 }
 
 /// The first row's model pick doesn't leak into the profile row, though both
@@ -168,21 +168,17 @@ fn test_picker_selection_flows_to_session() {
     let mut scene = AgentScene::new();
 
     // Opus override: resolve_model should return an opus model ID
-    let BackendChoice {
-        backend: picked_backend,
-        model: picked_model,
-        ..
-    } = pick(bt, 1);
     let id = create_session_with_cwd(
         &mut mgr,
         &mut dir_picker,
         &mut scene,
         false,
-        AiMode::Agentic,
-        PathBuf::from("/tmp"),
         "localhost",
-        picked_backend,
-        picked_model,
+        NewSession {
+            cwd: PathBuf::from("/tmp"),
+            ai_mode: AiMode::Agentic,
+            choice: pick(bt, 1),
+        },
     );
 
     let resolved = mgr.get(id).unwrap().details.resolve_model();
@@ -196,21 +192,17 @@ fn test_picker_selection_flows_to_session() {
     );
 
     // Default: resolve_model should return None (CLI default)
-    let BackendChoice {
-        backend: picked_backend,
-        model: picked_model,
-        ..
-    } = pick(bt, 0);
     let id = create_session_with_cwd(
         &mut mgr,
         &mut dir_picker,
         &mut scene,
         false,
-        AiMode::Agentic,
-        PathBuf::from("/tmp"),
         "localhost",
-        picked_backend,
-        picked_model,
+        NewSession {
+            cwd: PathBuf::from("/tmp"),
+            ai_mode: AiMode::Agentic,
+            choice: pick(bt, 0),
+        },
     );
 
     assert!(
