@@ -93,7 +93,8 @@ pub use account::relay::{
 };
 pub use account::FALLBACK_PUBKEY;
 pub use app::{
-    App, AppAction, AppActionQueue, AppResponse, Notedeck, NotedeckRemoteConfig, TabNotifications,
+    App, AppAction, AppActionQueue, AppResponse, Notedeck, NotedeckRemoteConfig, ReplyingCall,
+    TabNotifications, UiToolAnswer, UiToolPending, UiToolReply,
 };
 pub use args::{Args, ParsedArgs};
 pub use async_loader::{worker_count, AsyncLoader};

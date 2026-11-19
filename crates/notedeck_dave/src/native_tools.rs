@@ -17,23 +17,24 @@
 //! [`ToolSpec`](notedeck::ToolSpec), and the call runs the same registry
 //! entry `nd headway …` runs. Nothing here wraps a tool.
 //!
-//! ## A UI tool's call is an intent for the window
+//! ## A UI tool's call waits on the chrome's answer
 //!
 //! A spec may be offered a UI tool (one with an `nd` command line, see
 //! [`Catalog`]). The registry can't run it, since it needs its app's own
-//! state, so it answers with an [`Intent`](ToolOutcome::Intent): an
-//! [`AppAction`] for the chrome. Dave queues that on
-//! [`AppContext::app_actions`], which the chrome routes after the frame's
-//! render as it routes a clicked widget's action (a UI tool reaches its app
-//! through [`AppAction::CallTool`]). The model hears that the call went to
-//! the window, not what the tool did there: the chrome drops a UI tool's
-//! answer. With no window (`--headless`) there is nothing to act on and no
-//! render to drain the queue, so the call is refused instead.
+//! state, so it answers with an [`Intent`](ToolOutcome::Intent) carrying
+//! [`AppAction::CallTool`]. Dave queues that call with a reply
+//! ([`AppActionQueue::call_tool`]) and the call becomes a job: the chrome
+//! runs the tool in its app at the end of this tick's `update` and answers,
+//! and the job waits for that answer on its own thread, never the frame's.
+//! So the model hears what the tool said: its data, its error (a malformed
+//! note id), or that the window carried out the intent it raised. Headless
+//! the chrome still runs the tool, and answers an intent that needs the
+//! window with an error.
 //!
 //! ```text
-//! start_app_call ─▶ registry ─▶ Intent(action) ─┬─ window:   app_actions ─▶ chrome (after render)
-//!                                               │            model: {"sent_to_window": true}
-//!                                               └─ headless: model: error
+//! start_app_call ─▶ registry ─▶ Intent(CallTool) ─▶ app_actions.call_tool ─▶ UiToolPending
+//!   job thread: wait (bounded, cancellable) ◀── chrome update: Data / Error
+//!                                           ◀── chrome render: Applied
 //! ```
 //!
 //! ## Web and sub-agent tools run as jobs
@@ -56,9 +57,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, Runner, Toolset};
-use notedeck::{AppAction, AppActionQueue, AppContext, Started, ToolOutcome};
+use notedeck::{
+    AppAction, AppActionQueue, AppContext, Started, ToolOutcome, UiToolAnswer, UiToolPending,
+};
 
 use crate::sub_agent::{SubAgent, SubAgentError};
 use crate::tool_round::StartedCall;
@@ -129,34 +133,49 @@ impl SpecTools {
     }
 }
 
+/// How long a UI tool's call waits on the chrome's answer. Data and errors
+/// come back on the tick the call was made; only an intent waits on a
+/// render, which a hidden window may not draw.
+const UI_TOOL_BOUND: Duration = Duration::from_secs(30);
+
 /// Start the app tool `call` through the host's tool registry: what the
-/// frame's start pass runs once the call may start. A UI tool's intent goes
-/// to the window's action queue, when there is a window (see the module
-/// docs).
+/// frame's start pass runs once the call may start. A UI tool's call is
+/// queued for the chrome to answer (see the module docs).
 pub(crate) fn start_app_call(ctx: &mut AppContext<'_>, call: &AppToolCall) -> StartedCall {
     // A model-driven call never signs with a comment key (see
     // `ToolContext::comment_signer`).
     let started = ctx.start_tool_rendered(&call.name, &call.args, None);
-    let window = ctx.egui.is_some().then_some(&mut *ctx.app_actions);
-    started_call(&call.name, started, window)
+    started_call(&call.name, started, ctx.app_actions)
 }
 
 /// What a registry's `started` call of the tool `name` is to the round: a
 /// value answers at once, a slow tool's pending work becomes a job off the
-/// frame, and an intent is queued on `window` for the chrome to route, or
-/// refused when there is no window.
+/// frame, and a UI tool's call is queued on `queue` for the chrome to answer,
+/// as a job that waits on that answer.
 pub(crate) fn started_call(
     name: &str,
     started: Started,
-    window: Option<&mut AppActionQueue>,
+    queue: &mut AppActionQueue,
 ) -> StartedCall {
     let tool = name.to_owned();
     match started {
-        Started::Done(rendered) => StartedCall::Done(Box::new(match rendered.outcome {
-            ToolOutcome::Data(value) => ToolResponses::App(AppToolResponse { tool, value }),
-            ToolOutcome::Error(err) => ToolResponses::Error(err),
-            ToolOutcome::Intent(action) => send_to_window(tool, action, window),
-        })),
+        Started::Done(rendered) => match rendered.outcome {
+            ToolOutcome::Data(value) => {
+                StartedCall::Done(Box::new(ToolResponses::App(AppToolResponse {
+                    tool,
+                    value,
+                })))
+            }
+            ToolOutcome::Error(err) => StartedCall::Done(Box::new(ToolResponses::Error(err))),
+            ToolOutcome::Intent(AppAction::CallTool(invocation)) => {
+                wait_on_ui_tool(tool, queue.call_tool(invocation))
+            }
+            // The registry raises no other intent; one would have no caller
+            // to hear what it did.
+            ToolOutcome::Intent(_) => StartedCall::Done(Box::new(ToolResponses::Error(format!(
+                "'{tool}' answered with an action the agent can't carry out"
+            )))),
+        },
         Started::Pending(pending) => StartedCall::Pending(Box::new(move |_cancel| {
             pending
                 .run()
@@ -166,24 +185,19 @@ pub(crate) fn started_call(
     }
 }
 
-/// Queue the intent `action` that a call of `tool` answered with on the
-/// window's action queue, and tell the model it went there. With no window
-/// it is refused: nothing would route it, and nothing would see it.
-fn send_to_window(
-    tool: String,
-    action: AppAction,
-    window: Option<&mut AppActionQueue>,
-) -> ToolResponses {
-    let Some(queue) = window else {
-        return ToolResponses::Error(format!(
-            "'{tool}' acts on the window, and this notedeck has none (it runs headless)"
-        ));
-    };
-    queue.push(action);
-    ToolResponses::App(AppToolResponse {
-        tool,
-        value: serde_json::json!({ "sent_to_window": true }),
-    })
+/// A job that waits, on its own thread, for the chrome's answer to the UI
+/// tool call `pending`, and hands it to the model.
+fn wait_on_ui_tool(tool: String, pending: UiToolPending) -> StartedCall {
+    StartedCall::Pending(Box::new(move |job| {
+        match pending.wait(UI_TOOL_BOUND, || job.cancel().is_cancelled()) {
+            UiToolAnswer::Data(value) => Ok(ToolResponses::App(AppToolResponse { tool, value })),
+            UiToolAnswer::Error(err) => Err(err),
+            UiToolAnswer::Applied => Ok(ToolResponses::App(AppToolResponse {
+                tool,
+                value: serde_json::json!({ "applied": true }),
+            })),
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -200,44 +214,67 @@ mod tests {
         ))))
     }
 
-    /// With a window, a UI tool's intent is queued for the chrome to route
-    /// after the render, and the model hears it went to the window.
-    #[test]
-    fn a_ui_tools_intent_goes_to_the_window() {
-        let mut queue = AppActionQueue::default();
-        let StartedCall::Done(response) = started_call(
-            "nostr_open_thread",
-            intent("nostr_open_thread"),
-            Some(&mut queue),
-        ) else {
-            panic!("an intent answers at once");
+    /// Run `call`'s job as the round would, off any round.
+    fn run_job(call: StartedCall) -> Result<ToolResponses, String> {
+        let StartedCall::Pending(job) = call else {
+            panic!("a UI tool's call is a job");
         };
-        let ToolResponses::App(AppToolResponse { tool, value }) = *response else {
-            panic!("the model hears the call was sent");
-        };
-        assert_eq!(tool, "nostr_open_thread");
-        assert_eq!(value, serde_json::json!({ "sent_to_window": true }));
-        let queued = queue.take();
-        let [AppAction::CallTool(call)] = queued.as_slice() else {
-            panic!("one intent queued, got {}", queued.len());
-        };
-        assert_eq!(call.name, "nostr_open_thread");
-        assert_eq!(call.args, serde_json::json!({ "id": "x" }));
+        let cancel = crate::tool_round::ToolCancel::default();
+        job(&crate::tool_round::JobCtx::detached("call-1", cancel))
     }
 
-    /// Headless, nothing would route the intent or show what it did, so
-    /// the call is refused rather than queued.
+    /// A UI tool's call is queued with a reply for the chrome, and the job
+    /// hands the model what the tool answered, not just that it was sent.
     #[test]
-    fn a_ui_tools_intent_is_refused_headless() {
-        let StartedCall::Done(response) =
-            started_call("nostr_open_thread", intent("nostr_open_thread"), None)
-        else {
-            panic!("an intent answers at once");
+    fn a_ui_tools_answer_reaches_the_model() {
+        let mut queue = AppActionQueue::default();
+        let call = started_call("nostr_open_thread", intent("nostr_open_thread"), &mut queue);
+        let calls = queue.take_tool_calls();
+        let [queued] = <[_; 1]>::try_from(calls).ok().expect("one call queued");
+        assert_eq!(queued.invocation.name, "nostr_open_thread");
+        assert_eq!(queued.invocation.args, serde_json::json!({ "id": "x" }));
+        assert!(queue.take().is_empty(), "not an unanswered action");
+
+        queued
+            .reply
+            .send(UiToolAnswer::Data(serde_json::json!({ "opened": 1 })));
+        let Ok(ToolResponses::App(AppToolResponse { tool, value })) = run_job(call) else {
+            panic!("the model hears the tool's data");
         };
-        let ToolResponses::Error(err) = *response else {
-            panic!("a headless intent is an error");
+        assert_eq!(tool, "nostr_open_thread");
+        assert_eq!(value, serde_json::json!({ "opened": 1 }));
+    }
+
+    /// The tool's error (a malformed id) reaches the model as an error, and
+    /// an intent the window carried out as `applied`.
+    #[test]
+    fn a_ui_tools_error_and_applied_reach_the_model() {
+        let mut queue = AppActionQueue::default();
+        let call = started_call("nostr_open_thread", intent("nostr_open_thread"), &mut queue);
+        let [queued] = <[_; 1]>::try_from(queue.take_tool_calls()).ok().unwrap();
+        queued
+            .reply
+            .send(UiToolAnswer::Error("not a note id".to_owned()));
+        assert_eq!(run_job(call).err().as_deref(), Some("not a note id"));
+
+        let call = started_call("nostr_zap", intent("nostr_zap"), &mut queue);
+        let [queued] = <[_; 1]>::try_from(queue.take_tool_calls()).ok().unwrap();
+        queued.reply.send(UiToolAnswer::Applied);
+        let Ok(ToolResponses::App(AppToolResponse { value, .. })) = run_job(call) else {
+            panic!("an applied intent is an answer");
         };
-        assert!(err.contains("headless"), "{err}");
+        assert_eq!(value, serde_json::json!({ "applied": true }));
+    }
+
+    /// A call no shell took (a host with no chrome) answers so, rather than
+    /// waiting out its bound.
+    #[test]
+    fn a_ui_tool_call_no_shell_ran_is_an_error() {
+        let mut queue = AppActionQueue::default();
+        let call = started_call("nostr_open_thread", intent("nostr_open_thread"), &mut queue);
+        drop(queue.take_tool_calls());
+        let err = run_job(call).expect_err("nothing answered");
+        assert!(err.contains("no shell"), "{err}");
     }
 
     /// A coder on the host runner builds, offering its six tools to the

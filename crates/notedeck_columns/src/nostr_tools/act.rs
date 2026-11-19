@@ -24,7 +24,8 @@
 //! went somewhere. A zap is a [UI tool](notedeck::ToolKind::Ui) instead: it
 //! needs the wallet and Columns' zap state, which only the click's action
 //! path holds, so it answers with the [`NoteAction::Zap`] a zap button
-//! raises and the model hears `sent_to_window`.
+//! raises and the model hears `applied` once the window has handed it to
+//! Columns (or the zap's error, such as a malformed note id).
 //!
 //! A reply, reaction or zap needs the note it is about. One the db lacks is
 //! asked of the user's relays (a one-shot read on the frame's batch) and
@@ -520,9 +521,9 @@ pub fn ui_specs() -> Vec<ToolSpec> {
             "Zap a nostr note's author from the user's wallet, as the zap button does: \
              sats leave the user's wallet. With no `sats`, the wallet's default zap amount. \
              The note must be in the local db: one it lacks is fetched from the user's \
-             relays and the call fails asking to try again. Answers {\"sent_to_window\": true} once the zap \
-             is on its way; it doesn't say whether the wallet paid. Needs a window and a \
-             connected wallet.",
+             relays and the call fails asking to try again. Answers {\"applied\": true} once the \
+             window has the zap on its way; it doesn't say whether the wallet paid. Needs a \
+             window and a connected wallet.",
             asks_first!()
         ),
         vec![

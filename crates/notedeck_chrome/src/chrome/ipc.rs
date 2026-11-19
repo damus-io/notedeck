@@ -414,14 +414,7 @@ fn call_tool(
     };
     let outcome = match outcome {
         ToolOutcome::Intent(AppAction::CallTool(invocation)) => {
-            match chrome.call_ui_tool(ctx, &invocation) {
-                // One call is one hop, as with any tool the chrome runs.
-                ToolOutcome::Intent(AppAction::CallTool(next)) => ToolOutcome::Error(format!(
-                    "'{name}' asked to call '{}'; a tool call is one hop",
-                    next.name
-                )),
-                outcome => outcome,
-            }
+            chrome.run_ui_tool(ctx, &invocation)
         }
         outcome => outcome,
     };
@@ -556,7 +549,7 @@ fn tool_info(spec: &ToolSpec) -> ToolInfo {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use notedeck::{
         AppResponse, AppTool, Notedeck, RegisteredTool, SlowTool, ToolContext, ToolInvocation,
@@ -570,11 +563,11 @@ mod tests {
     /// A data tool: answers with its args.
     const ECHO: &str = "test_echo";
     /// A UI tool answering with data.
-    const PEEK: &str = "test_peek";
+    pub(in crate::chrome) const PEEK: &str = "test_peek";
     /// A UI tool answering with an intent to toggle the chrome's drawer.
-    const TOGGLE: &str = "test_toggle_chrome";
+    pub(in crate::chrome) const TOGGLE: &str = "test_toggle_chrome";
     /// A UI tool answering with a call to [`PEEK`], which is never made.
-    const CALL_AGAIN: &str = "test_call_again";
+    pub(in crate::chrome) const CALL_AGAIN: &str = "test_call_again";
     /// A data tool that accepts a comment signer and answers with its pubkey.
     const WHO_SIGNS: &str = "test_who_signs";
     /// A slow tool: its work waits for the file its `gate` arg names.
@@ -813,17 +806,17 @@ mod tests {
     /// The slot the fixture installs [`IdleApp`] in.
     const IDLE_SLOT: usize = 1;
 
-    struct Fixture {
+    pub(in crate::chrome) struct Fixture {
         _dir: tempfile::TempDir,
-        notedeck: Notedeck,
-        chrome: Chrome,
-        calls: Rc<RefCell<Vec<String>>>,
+        pub(in crate::chrome) notedeck: Notedeck,
+        pub(in crate::chrome) chrome: Chrome,
+        pub(in crate::chrome) calls: Rc<RefCell<Vec<String>>>,
     }
 
     /// A chrome running only [`ToolApp`], with [`IdleApp`] installed behind
     /// it and never opened, the tools registered. It never serves the
     /// socket.
-    fn fixture() -> Fixture {
+    pub(in crate::chrome) fn fixture() -> Fixture {
         let dir = tempfile::TempDir::new().expect("tmp dir");
         let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
         let mut notedeck = Notedeck::init(&egui::Context::default(), dir.path(), &args);

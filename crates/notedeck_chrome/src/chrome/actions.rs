@@ -418,6 +418,27 @@ impl Chrome {
         app.call_ui_tool(ctx, name, &invocation.args)
     }
 
+    /// Run a UI tool as [`call_ui_tool`](Self::call_ui_tool) does, holding it
+    /// to one hop: a tool that answers with another
+    /// [`AppAction::CallTool`] is refused, so two tools can't call each other
+    /// forever (a chain of tools is a macro's job). What every caller that
+    /// routes a UI tool's outcome runs: the socket, a queued call, a raised
+    /// [`AppAction::CallTool`]. An [`Intent`](ToolOutcome::Intent) it returns
+    /// is never a `CallTool`.
+    pub fn run_ui_tool(
+        &mut self,
+        ctx: &mut AppContext,
+        invocation: &ToolInvocation,
+    ) -> ToolOutcome {
+        match self.call_ui_tool(ctx, invocation) {
+            ToolOutcome::Intent(AppAction::CallTool(next)) => ToolOutcome::Error(format!(
+                "'{}' asked to call '{}'; a tool call is one hop",
+                invocation.name, next.name
+            )),
+            outcome => outcome,
+        }
+    }
+
     /// Whether the UI tool `name` would do something now: a running app owns
     /// it in `tools` and says it's [available](App::ui_tool_available). A key
     /// bound to a tool that isn't falls through. Doesn't allocate.
@@ -445,27 +466,20 @@ impl Chrome {
     }
 }
 
-/// Route an [`AppAction::CallTool`]: run the tool in its app, then route an
-/// [`Intent`](ToolOutcome::Intent) it returns like any other action. A tool
-/// that answers with another `CallTool` is dropped, so one call is one hop and
-/// two tools can't call each other forever; a chain of tools is a macro's job.
+/// Route an [`AppAction::CallTool`]: run the tool in its app (one hop, see
+/// [`Chrome::run_ui_tool`]), then route an [`Intent`](ToolOutcome::Intent) it
+/// returns like any other action. Its data is dropped and its error logged:
+/// nobody raised this call to hear the answer.
 fn route_call_tool(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     invocation: &ToolInvocation,
     ui: &mut egui::Ui,
 ) {
-    match chrome.call_ui_tool(ctx, invocation) {
+    match chrome.run_ui_tool(ctx, invocation) {
         ToolOutcome::Data(_) => {}
         ToolOutcome::Error(err) => {
             tracing::warn!("UI tool '{}' dropped: {err}", invocation.name);
-        }
-        ToolOutcome::Intent(AppAction::CallTool(next)) => {
-            tracing::warn!(
-                "UI tool '{}' asked to call '{}'; dropped, a tool call is one hop",
-                invocation.name,
-                next.name
-            );
         }
         ToolOutcome::Intent(action) => chrome_handle_app_action(chrome, ctx, action, ui),
     }

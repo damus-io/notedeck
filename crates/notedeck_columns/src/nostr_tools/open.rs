@@ -32,12 +32,14 @@ pub const OPEN_THREAD: &str = "nostr_open_thread";
 /// Open a hashtag's timeline in Columns.
 pub const OPEN_HASHTAG: &str = "nostr_open_hashtag";
 
-/// The sentence every open tool's description ends with: a caller sees
-/// the call reach the window, never what the window made of it.
+/// The sentence every open tool's description ends with: a caller hears
+/// that the window opened the route, or the tool's error, never what the
+/// route found to show.
 macro_rules! answer_note {
     () => {
-        " Answers {\"sent_to_window\": true} once the open is on its way; \
-         it doesn't say whether the window had anything to show."
+        " Answers {\"applied\": true} once the window has opened it, or an error \
+         (a malformed id, or no window); it doesn't say whether the window had \
+         anything to show."
     };
 }
 
@@ -165,7 +167,7 @@ mod tests {
             assert_eq!(spec.kind(), ToolKind::Ui, "{}", spec.name());
             assert_eq!(spec.command_path().first(), Some(&"nostr"));
             assert_eq!(spec.capability_class(), Capability::Navigate);
-            assert!(spec.description().contains("sent_to_window"));
+            assert!(spec.description().contains("\"applied\": true"));
         }
     }
 

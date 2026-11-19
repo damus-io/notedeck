@@ -48,7 +48,9 @@ pub enum AppAction {
     /// shell finds the owner in the [`ToolRegistry`](crate::ToolRegistry) and
     /// calls its [`App::call_ui_tool`]. Raised by calling a UI tool through
     /// [`AppContext::call_tool`], which returns it as an
-    /// [`Intent`](crate::ToolOutcome::Intent).
+    /// [`Intent`](crate::ToolOutcome::Intent). The tool's own answer is
+    /// dropped; a caller that needs it queues the call with
+    /// [`AppActionQueue::call_tool`] instead.
     CallTool(crate::ToolInvocation),
     /// Record a jump on the chrome's jump list for the app that raised it:
     /// this is where its view was before a far move the keymap didn't make
@@ -66,13 +68,24 @@ pub enum AppAction {
 /// here instead. The shell drains it after each app's `render` (see
 /// [`take`](Self::take)) and routes every action exactly like `AppResponse::action`.
 ///
-/// One producer pushes from `update` instead: Dave's native agent loop, when
-/// a model calls a UI tool (it opens a thread, routes a column). It pushes
-/// only when the host has a window ([`AppContext::egui`](crate::AppContext::egui)
-/// is `Some`), since headless there is no render to drain the queue.
+/// A caller that needs a UI tool's *answer* — Dave's native agent loop, when a
+/// model calls a UI tool from `update` — queues the call with
+/// [`call_tool`](Self::call_tool) instead, and waits on the
+/// [`UiToolPending`] it returns off the frame. The shell takes those calls in
+/// its own `update` ([`take_tool_calls`](Self::take_tool_calls)), headless
+/// too, and answers each one: at once with the tool's data or error, or with
+/// [`UiToolAnswer::Applied`] once the window has carried out the intent it
+/// raised. A call no shell took is dropped after the tick's `update`, which
+/// answers it with an error.
+///
+/// ```text
+/// update:  Dave ── call_tool ──▶ calls ──▶ shell update ── Data / Error ──▶ reply
+///                                                    └── intent ─▶ render ── Applied ──▶ reply
+/// ```
 #[derive(Default)]
 pub struct AppActionQueue {
     actions: Vec<AppAction>,
+    calls: Vec<ReplyingCall>,
 }
 
 impl AppActionQueue {
@@ -85,6 +98,106 @@ impl AppActionQueue {
     /// per frame; the moved-out `Vec` hands off this frame's allocation.
     pub fn take(&mut self) -> Vec<AppAction> {
         std::mem::take(&mut self.actions)
+    }
+
+    /// Queue a call of the UI tool `invocation` names for the shell, which
+    /// answers it on the returned [`UiToolPending`] (see the type's docs).
+    pub fn call_tool(&mut self, invocation: crate::ToolInvocation) -> UiToolPending {
+        let (reply, pending) = std::sync::mpsc::channel();
+        self.calls.push(ReplyingCall {
+            invocation,
+            reply: UiToolReply(reply),
+        });
+        UiToolPending(pending)
+    }
+
+    /// Take the queued UI tool calls, leaving the queue empty. Called by the
+    /// shell in its `update`, once per tick; the moved-out `Vec` hands off
+    /// that tick's allocation.
+    pub fn take_tool_calls(&mut self) -> Vec<ReplyingCall> {
+        std::mem::take(&mut self.calls)
+    }
+
+    /// Drop every call no shell took this tick, so each waiter hears that
+    /// nothing ran it rather than waiting out its bound. The host does this
+    /// after the top-level app's `update`.
+    pub(crate) fn drop_untaken_tool_calls(&mut self) {
+        self.calls.clear();
+    }
+}
+
+/// A UI tool call queued with [`AppActionQueue::call_tool`], and where its
+/// answer goes.
+pub struct ReplyingCall {
+    /// The call.
+    pub invocation: crate::ToolInvocation,
+    /// Where the shell sends what it came to.
+    pub reply: UiToolReply,
+}
+
+/// What a UI tool call queued with [`AppActionQueue::call_tool`] came to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiToolAnswer {
+    /// The tool answered with a value.
+    Data(serde_json::Value),
+    /// The tool refused the call, or nothing could run it.
+    Error(String),
+    /// The tool raised an intent and the window carried it out (it routed
+    /// the action; what the action's app did with it is that app's).
+    Applied,
+}
+
+/// The sending half of a queued UI tool call: the shell answers through it
+/// once. Dropping it unanswered tells the waiter no shell ran the call.
+pub struct UiToolReply(std::sync::mpsc::Sender<UiToolAnswer>);
+
+impl UiToolReply {
+    /// Answer the call. A waiter that has gone (its round was cancelled) is
+    /// fine: the answer is dropped.
+    pub fn send(self, answer: UiToolAnswer) {
+        let _ = self.0.send(answer);
+    }
+}
+
+/// The waiting half of a queued UI tool call (see
+/// [`AppActionQueue::call_tool`]). Waited on off the frame, never on it.
+pub struct UiToolPending(std::sync::mpsc::Receiver<UiToolAnswer>);
+
+impl UiToolPending {
+    /// How often [`wait`](Self::wait) looks at its `stopped` check.
+    const POLL: Duration = Duration::from_millis(100);
+
+    /// Block until the shell answers, for at most `bound`, giving up early
+    /// once `stopped` says so. Every way it ends is an answer: no shell
+    /// taking the call, the bound passing and a stop each come back as
+    /// [`UiToolAnswer::Error`]. Call it on a worker thread, never the frame.
+    pub fn wait(self, bound: Duration, stopped: impl Fn() -> bool) -> UiToolAnswer {
+        use std::sync::mpsc::RecvTimeoutError;
+        let deadline = std::time::Instant::now() + bound;
+        loop {
+            if stopped() {
+                return UiToolAnswer::Error("the call was cancelled".to_owned());
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return UiToolAnswer::Error(format!(
+                    "the window didn't carry the call out within {}s",
+                    bound.as_secs()
+                ));
+            }
+            match self.0.recv_timeout(left.min(Self::POLL)) {
+                Ok(answer) => return answer,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return UiToolAnswer::Error("no shell ran the call".to_owned())
+                }
+            }
+        }
+    }
+
+    /// The answer, if the shell has sent it, without waiting.
+    pub fn try_answer(&self) -> Option<UiToolAnswer> {
+        self.0.try_recv().ok()
     }
 }
 
@@ -558,6 +671,9 @@ fn main_panel(style: &egui::Style) -> egui::CentralPanel {
 #[profiling::function]
 fn render_notedeck(app: &mut dyn App, app_ctx: &mut AppContext, egui: Option<&mut egui::Ui>) {
     app.update(app_ctx);
+    // The shell answers queued UI tool calls in its `update`; one still here
+    // had no shell to take it, and dropping it tells its waiter so.
+    app_ctx.app_actions.drop_untaken_tool_calls();
     let Some(ui) = egui else {
         return;
     };
@@ -647,11 +763,13 @@ impl Notedeck {
     /// - **Nav requests** ([`Navigator`]) and **app actions**
     ///   ([`AppActionQueue`]) are produced during render — apps enqueue them
     ///   from `render`/`render_nav` and inline `KindRenderer` widgets. The one
-    ///   `update` producer, Dave's native loop sending a UI tool's intent,
-    ///   checks [`AppContext::egui`](crate::AppContext::egui) and refuses the
-    ///   call headless rather than queueing it. With no render pass, both
-    ///   queues stay empty, so skipping their drain leaks nothing and drops no
-    ///   work an `update` loop depends on.
+    ///   `update` producer, Dave's native loop calling a UI tool, queues a
+    ///   *replying* call ([`AppActionQueue::call_tool`]) that the shell
+    ///   answers in its own `update`, headless too: a tool's data or error
+    ///   reaches the model, and an intent that needs the window is answered
+    ///   with an error. With no render pass, both queues stay empty, so
+    ///   skipping their drain leaks nothing and drops no work an `update`
+    ///   loop depends on.
     /// - **Keybindings / focus** are input-driven UI concerns with no
     ///   background counterpart.
     ///

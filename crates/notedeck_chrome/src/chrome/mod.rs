@@ -55,6 +55,7 @@ mod nav;
 #[cfg(all(test, not(feature = "auto-update")))]
 mod nav_scenarios;
 mod open_tool;
+mod queued_calls;
 mod roster;
 mod runnable;
 mod sidebar;
@@ -170,6 +171,10 @@ pub struct Chrome {
 
     /// notedeck's socket, once [`Chrome::serve_ipc`] opens it (see [`ipc`]).
     ipc: ipc::IpcServer,
+
+    /// Intents raised by UI tool calls queued with a reply, held for the
+    /// render (see [`queued_calls`]).
+    queued_calls: queued_calls::QueuedCalls,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -410,6 +415,7 @@ impl Chrome {
             command_bar: CommandBar::default(),
             user_keymap: UserKeymap::default(),
             ipc: ipc::IpcServer::default(),
+            queued_calls: Default::default(),
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 ctx.path,
@@ -588,6 +594,10 @@ impl notedeck::App for Chrome {
                 app.update(ctx);
             }
         }
+
+        // After the apps, so a UI tool call Dave's native loop queued this
+        // tick is answered on it.
+        self.answer_queued_tool_calls(ctx);
     }
 
     fn render(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> AppResponse {
@@ -604,6 +614,8 @@ impl notedeck::App for Chrome {
         // Intents socket requests raised in `update`.
         #[cfg(unix)]
         self.apply_ipc_intents(ctx, ui);
+        // Intents queued UI tool calls raised in `update`.
+        self.apply_queued_tool_intents(ctx, ui);
 
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
