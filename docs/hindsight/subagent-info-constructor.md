@@ -1,5 +1,6 @@
 # One constructor for SubagentInfo
 
+Card: headway:notedeck/copy-like-run
 `SubagentInfo` has no `new` or `Default`, so ~28 struct literals across five
 crates (mostly tests) spell out every field, and each new field edits them all.
 

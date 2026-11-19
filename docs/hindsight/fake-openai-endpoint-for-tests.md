@@ -1,5 +1,6 @@
 # A fake OpenAI-compatible endpoint for tests
 
+Card: headway:notedeck/display-shine-carry
 Native-loop and sub-agent tests each hand-roll a one-shot TcpListener,
 ~30 lines apiece, none of them streaming-aware.
 

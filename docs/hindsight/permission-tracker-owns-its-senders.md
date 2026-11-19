@@ -1,5 +1,6 @@
 # The permission tracker owns its senders
 
+Card: headway:notedeck/account-interest-title
 `PermissionTracker::pending` is public, so a caller can answer a request past
 `resolve`, and every per-answer duty is repeated at each site that does.
 

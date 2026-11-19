@@ -1,5 +1,6 @@
 # A Dave turn has an identity
 
+Card: headway:notedeck/lucky-music-horror
 Dave knows a turn ended but not which one; with no turn seq on `ChatSession`,
 work done once per turn invents its own marker from the chat's shape.
 

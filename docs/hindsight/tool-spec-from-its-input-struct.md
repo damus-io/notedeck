@@ -1,5 +1,6 @@
 # A tool's spec derived from its typed input struct
 
+Card: headway:notedeck/brass-bonus-vivid
 A `ToolSpec`'s `ToolArg` list is hand-written, so a tool that parses into a
 serde struct names every field twice, held together only by a test.
 

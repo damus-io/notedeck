@@ -1,5 +1,6 @@
 # A ToolSpec says whether a model can call it
 
+Card: headway:notedeck/debris-during-retreat
 `nd mcp`'s `Exposure::allows` and the agent catalog's `offers` each work out
 "a data tool that doesn't stream" from the spec's fields on their own.
 

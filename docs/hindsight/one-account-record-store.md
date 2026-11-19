@@ -1,5 +1,6 @@
 # One store for an account's PNS-wrapped replaceable records
 
+Card: headway:notedeck/wood-cube-any
 Profiles, specs and run configs each copy one subscribe/reload/poll store.
 A store over a kind and a `from_note` makes a new record just parse + build.
 

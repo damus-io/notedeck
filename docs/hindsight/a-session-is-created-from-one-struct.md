@@ -1,5 +1,6 @@
 # A Dave session is created from one struct
 
+Card: headway:notedeck/final-ship-dish
 Session constructors take their settings positionally at ~108 call sites, so a
 new one is set after creation, and a path that forgets it drops it silently.
 

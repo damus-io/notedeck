@@ -1,5 +1,6 @@
 # agentium-core tests PNS-ingest through one shared helper
 
+Card: headway:notedeck/mansion-chicken-syrup
 `test_support` wraps an inner note in its kind-1080 envelope, ingests it and
 waits for the decrypt; today engine.rs keeps that private and loaders re-write it.
 

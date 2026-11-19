@@ -1,5 +1,6 @@
 # An HTTP client installs its own crypto provider
 
+Card: headway:notedeck/sound-base-opinion
 `HyperHttpClient::new` panics in any test that didn't call `enostr::install_crypto`
 first; on a job thread the panic surfaces only as "the tool panicked".
 

@@ -1,5 +1,6 @@
 # A UI tool's answer reaches a caller outside the socket
 
+Card: headway:notedeck/august-wink-focus
 Only the socket hears a UI tool's answer; `route_call_tool` drops a `CallTool`'s
 `Data`, so an agent hears "sent", never "opened" or "no such note".
 

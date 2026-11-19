@@ -1,5 +1,6 @@
 # A read tool can fetch what nostrdb lacks
 
+Card: headway:notedeck/resist-explain-pig
 A `ToolContext` has no relay pool or one-shot fetch, so a nostr read tool
 answers only what this notedeck already pulled: an unseen note dead-ends.
 

@@ -1,5 +1,6 @@
 # bin_testing walks the resolved dependency graph with one shared helper
 
+Card: headway:notedeck/size-apple-spike
 Three graph tests each run `cargo metadata` and hand-roll the same edge walk.
 A shared graph (target, features, `reachable(roots)`) makes a new rule ~10 lines.
 

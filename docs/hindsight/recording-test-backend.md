@@ -1,5 +1,6 @@
 # A recording fake AiBackend in test_support
 
+Card: headway:notedeck/simple-race-leg
 Each Dave test needing a backend writes its own ~40-line no-op AiBackend impl
 (ScriptBackend, CompactProbe) just to see which turns and commands reached it.
 

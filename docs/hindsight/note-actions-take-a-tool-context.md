@@ -1,5 +1,6 @@
 # Columns' note actions run from a tool context
 
+Card: headway:notedeck/wait-marine-boss
 Columns' post, reaction and follow senders take a `PublishApi` and the account's
 `ContactState`, which a `ToolContext` lacks, so a tool re-writes each one.
 

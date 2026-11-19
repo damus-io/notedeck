@@ -1,5 +1,6 @@
 # One constructor for ExecutedTool and RunningTool
 
+Card: headway:notedeck/minimum-cluster-lesson
 Neither has `new` or `Default`; ~55 literals spell out every field, mostly in tests.
 `ExecutedTool::new(tool_name, summary)` would make a new field two lines, not 45.
 

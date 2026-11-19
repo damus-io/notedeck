@@ -1,5 +1,6 @@
 # agentium-sandbox lifecycle tests run without KVM
 
+Card: headway:notedeck/aware-column-tooth
 A fake microsandbox backend, so guest start/stop/reap/sweep run in every CI job.
 Without one they only run under /dev/kvm, in the opt-in #[ignore] boot suite.
 
