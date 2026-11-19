@@ -765,6 +765,7 @@ mod tests {
     //! function names, and the tool schema envelope) without a live API.
     use super::*;
     use crate::messages::AssistantMessage;
+    use crate::test_support::fake_openai::FakeOpenAi;
     use crate::tools::{dave_tools, ToolCall, ToolResponse};
     use notedeck_testing::fixtures::TempNdb;
 
@@ -915,13 +916,10 @@ mod tests {
         assert_eq!(tool_steps(&queued), 0);
     }
 
-    /// A backend whose endpoint accepts and never answers, so a request
-    /// stays in flight until it is stopped.
-    fn hanging_backend(ndb: &Ndb) -> (OpenAiBackend, std::net::TcpListener) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let client = Client::with_config(client_config(&base, None));
-        (OpenAiBackend::new(client, ndb.clone()), listener)
+    /// A backend on `endpoint`, which a test keeps alive beside it.
+    fn backend_on(endpoint: &FakeOpenAi, ndb: &Ndb) -> OpenAiBackend {
+        let client = Client::with_config(client_config(endpoint.base_url(), None));
+        OpenAiBackend::new(client, ndb.clone())
     }
 
     /// Send `messages` on session "s" and collect the turn's responses
@@ -973,41 +971,19 @@ mod tests {
             .collect()
     }
 
-    /// The head of the first request that reaches `listener`, up to the end
-    /// of its body, read on a thread; the connection is then dropped.
-    fn first_request(listener: std::net::TcpListener) -> std::thread::JoinHandle<String> {
-        use std::io::Read;
-        std::thread::spawn(move || {
-            let (mut conn, _) = listener.accept().unwrap();
-            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                .unwrap();
-            let mut seen = Vec::new();
-            let mut buf = [0u8; 4096];
-            // The body is JSON naming the model; stop once its last brace is in.
-            while !String::from_utf8_lossy(&seen).trim_end().ends_with('}') {
-                let n = conn.read(&mut buf).unwrap();
-                assert!(n > 0, "the connection closed before the body arrived");
-                seen.extend_from_slice(&buf[..n]);
-            }
-            String::from_utf8_lossy(&seen).into_owned()
-        })
-    }
-
     #[tokio::test]
     async fn a_backend_for_an_endpoint_sends_its_url_key_and_model() {
         let TempNdb { dir: _dir, ndb } = TempNdb::new();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let seen = FakeOpenAi::silent();
         let endpoint = Endpoint {
-            provider: "local".into(),
-            base_url: format!("http://{}/v9", listener.local_addr().unwrap()),
+            base_url: format!("http://{}/v9", seen.addr()),
             api_key: Some("sk-provider".into()),
-            model: "qwen3".into(),
+            ..seen.endpoint("qwen3")
         };
-        let seen = first_request(listener);
         let backend = OpenAiBackend::for_endpoint(&endpoint, ndb.clone());
 
         let stream = request(&backend, run_of(0));
-        let request = tokio::task::spawn_blocking(move || seen.join().unwrap())
+        let request = tokio::task::spawn_blocking(move || seen.request())
             .await
             .unwrap();
         stream.task.unwrap().abort();
@@ -1029,19 +1005,13 @@ mod tests {
     #[tokio::test]
     async fn a_system_prompt_leads_every_request() {
         let TempNdb { dir: _dir, ndb } = TempNdb::new();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = Endpoint {
-            provider: "local".into(),
-            base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
-            api_key: None,
-            model: "qwen3".into(),
-        };
-        let seen = first_request(listener);
+        let seen = FakeOpenAi::silent();
+        let endpoint = seen.endpoint("qwen3");
         let backend = OpenAiBackend::for_endpoint(&endpoint, ndb.clone())
             .with_system_prompt("You are the butler.".into());
 
         let stream = request(&backend, run_of(0));
-        let request = tokio::task::spawn_blocking(move || seen.join().unwrap())
+        let request = tokio::task::spawn_blocking(move || seen.request())
             .await
             .unwrap();
         stream.task.unwrap().abort();
@@ -1084,7 +1054,8 @@ mod tests {
     #[tokio::test]
     async fn a_run_stops_at_its_step_cap_without_asking_the_model() {
         let TempNdb { dir: _dir, ndb } = TempNdb::new();
-        let (backend, _listener) = hanging_backend(&ndb);
+        let endpoint = FakeOpenAi::hanging();
+        let backend = backend_on(&endpoint, &ndb);
         let backend = backend.with_max_steps(2);
 
         // One round under the cap still goes out.
@@ -1102,7 +1073,8 @@ mod tests {
     #[tokio::test]
     async fn a_stop_ends_the_request_in_flight_and_every_round_after_it() {
         let TempNdb { dir: _dir, ndb } = TempNdb::new();
-        let (backend, _listener) = hanging_backend(&ndb);
+        let endpoint = FakeOpenAi::hanging();
+        let backend = backend_on(&endpoint, &ndb);
         let stopped = [format!("reply: {STOPPED}")];
 
         // The user's message goes out and hangs; the stop ends it.
@@ -1119,20 +1091,9 @@ mod tests {
         stream.task.unwrap().abort();
     }
 
-    /// An endpoint on a local port that answers one request.
-    struct OneReply {
-        /// Its base URL.
-        base_url: String,
-        /// Joins to the request it got.
-        server: std::thread::JoinHandle<String>,
-    }
-
     /// An endpoint on a local port that streams one reply: a tool call, then
     /// a last chunk reporting `prompt_tokens` of usage.
-    fn streams_a_tool_call_costing(prompt_tokens: u32) -> OneReply {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    fn streams_a_tool_call_costing(prompt_tokens: u32) -> FakeOpenAi {
         let call = serde_json::json!({
             "id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
             "choices": [{ "index": 0, "finish_reason": null, "delta": { "tool_calls": [{
@@ -1146,29 +1107,7 @@ mod tests {
             "usage": { "prompt_tokens": prompt_tokens, "completion_tokens": 0,
                        "total_tokens": prompt_tokens }
         });
-        let server = std::thread::spawn(move || {
-            let (mut conn, _) = listener.accept().unwrap();
-            conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                .unwrap();
-            let mut seen = Vec::new();
-            let mut buf = [0u8; 4096];
-            while !String::from_utf8_lossy(&seen).trim_end().ends_with('}') {
-                let n = conn.read(&mut buf).unwrap();
-                assert!(n > 0, "the connection closed before the body arrived");
-                seen.extend_from_slice(&buf[..n]);
-            }
-            write!(
-                conn,
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n\
-                 data: {call}\n\ndata: {usage}\n\ndata: [DONE]\n\n"
-            )
-            .unwrap();
-            String::from_utf8_lossy(&seen).into_owned()
-        });
-        OneReply {
-            base_url: base,
-            server,
-        }
+        FakeOpenAi::streaming(vec![call, usage])
     }
 
     /// A reply whose usage spends the run's budget doesn't get its tool calls
@@ -1177,12 +1116,10 @@ mod tests {
     async fn a_run_stops_once_its_usage_spends_its_budget() {
         let TempNdb { dir: _dir, ndb } = TempNdb::new();
         // 10k prompt tokens on Sonnet 5.5 ($2/MTok) is 2 cents.
-        let OneReply { base_url, server } = streams_a_tool_call_costing(10_000);
+        let server = streams_a_tool_call_costing(10_000);
         let endpoint = Endpoint {
             provider: "anthropic".into(),
-            base_url,
-            api_key: None,
-            model: "claude-sonnet-5-5".into(),
+            ..server.endpoint("claude-sonnet-5-5")
         };
         let budget = Budget {
             max_steps: 10,
@@ -1193,7 +1130,7 @@ mod tests {
         let over = format!("failed: {}", cost_limit_message(Cost::from_cents(2.0), 1));
 
         let responses = turn(&backend, run_of(0)).await;
-        let request = tokio::task::spawn_blocking(move || server.join().unwrap())
+        let request = tokio::task::spawn_blocking(move || server.request())
             .await
             .unwrap();
         assert!(
@@ -1229,7 +1166,8 @@ mod tests {
     #[tokio::test]
     async fn a_sub_agents_spend_counts_toward_the_run() {
         let TempNdb { dir: _dir, ndb } = TempNdb::new();
-        let (backend, _listener) = hanging_backend(&ndb);
+        let endpoint = FakeOpenAi::hanging();
+        let backend = backend_on(&endpoint, &ndb);
         let backend = backend.with_budget(&Budget {
             max_steps: 10,
             max_cost_cents: Some(4),
@@ -1268,7 +1206,8 @@ mod tests {
     #[tokio::test]
     async fn a_run_stops_at_its_time_limit() {
         let TempNdb { dir: _dir, ndb } = TempNdb::new();
-        let (mut backend, _listener) = hanging_backend(&ndb);
+        let endpoint = FakeOpenAi::hanging();
+        let mut backend = backend_on(&endpoint, &ndb);
         let limit = std::time::Duration::from_millis(200);
         backend.timeout = Some(limit);
         let timed_out = [format!("failed: {}", time_limit_message(limit))];

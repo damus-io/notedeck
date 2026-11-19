@@ -544,6 +544,7 @@ impl ChildModel for OpenAiChild<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::fake_openai::FakeOpenAi;
     use agentium_core::agent_spec::web::{WEB_FETCH, WEB_SEARCH};
     use std::collections::VecDeque;
 
@@ -889,29 +890,14 @@ mod tests {
         ));
     }
 
-    /// A local OpenAI-compatible endpoint that answers one request.
-    struct FakeProvider {
-        endpoint: Endpoint,
-        /// Joins to the request it got.
-        server: std::thread::JoinHandle<String>,
-    }
-
     /// An OpenAI-compatible endpoint on a local port that answers one chat
     /// completion with `answer` and hands back the request it got.
-    fn one_completion(answer: &str) -> FakeProvider {
-        one_completion_on("tiny", answer, None)
+    fn one_completion(answer: &str) -> FakeOpenAi {
+        one_completion_reporting(answer, None)
     }
 
-    /// [`one_completion`] from `model`, reporting `usage` when given.
-    fn one_completion_on(model: &str, answer: &str, usage: Option<Value>) -> FakeProvider {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = Endpoint {
-            provider: "local".into(),
-            base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
-            api_key: None,
-            model: model.into(),
-        };
+    /// [`one_completion`], reporting `usage` when given.
+    fn one_completion_reporting(answer: &str, usage: Option<Value>) -> FakeOpenAi {
         let mut body = json!({
             "id": "c1",
             "object": "chat.completion",
@@ -926,27 +912,7 @@ mod tests {
         if let Some(usage) = usage {
             body["usage"] = usage;
         }
-        let body = body.to_string();
-        let server = std::thread::spawn(move || {
-            let (mut conn, _) = listener.accept().unwrap();
-            conn.set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut seen = Vec::new();
-            let mut buf = [0u8; 4096];
-            while !String::from_utf8_lossy(&seen).trim_end().ends_with('}') {
-                let n = conn.read(&mut buf).unwrap();
-                assert!(n > 0, "the connection closed before the body arrived");
-                seen.extend_from_slice(&buf[..n]);
-            }
-            write!(
-                conn,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .unwrap();
-            String::from_utf8_lossy(&seen).into_owned()
-        });
-        FakeProvider { endpoint, server }
+        FakeOpenAi::completion(body)
     }
 
     /// The job a parent's round runs: one real request to the child's own
@@ -956,9 +922,8 @@ mod tests {
     #[test]
     fn the_job_asks_the_childs_endpoint_and_answers_its_summary() {
         notedeck::enostr::install_crypto();
-        let FakeProvider { endpoint, server } =
-            one_completion("Acme: $9/mo, 4 people, seed-funded.");
-        let agent = Arc::new(SubAgent::new(researcher(), endpoint, None).unwrap());
+        let server = one_completion("Acme: $9/mo, 4 people, seed-funded.");
+        let agent = Arc::new(SubAgent::new(researcher(), server.endpoint("tiny"), None).unwrap());
         let ndb_testing::TempNdb { dir: _dir, ndb } = ndb_testing::TempNdb::new();
         let job = agent.job("Who sells idea journals?".into(), ndb);
         let answer = job(&JobCtx::detached("c1", ToolCancel::default())).unwrap();
@@ -971,7 +936,7 @@ mod tests {
             app.value,
             json!({ "researcher": "researcher", "summary": "Acme: $9/mo, 4 people, seed-funded." })
         );
-        let request = server.join().unwrap();
+        let request = server.request();
         assert!(request.contains("Who sells idea journals?"), "{request}");
         assert!(request.contains("fixed competitor") || request.contains("team size"));
         assert!(request.contains("\"web_search\"") && request.contains("\"web_fetch\""));
@@ -989,13 +954,13 @@ mod tests {
         // Haiku 5.5: 10 cents per million in, 50 out.
         let usage = json!({ "prompt_tokens": 100_000, "completion_tokens": 10_000,
                             "total_tokens": 110_000 });
-        let FakeProvider { endpoint, server } =
-            one_completion_on("claude-haiku-5-5", "Acme.", Some(usage));
+        let server = one_completion_reporting("Acme.", Some(usage));
+        let endpoint = server.endpoint("claude-haiku-5-5");
         let agent = Arc::new(SubAgent::new(researcher(), endpoint, None).unwrap());
         let ndb_testing::TempNdb { dir: _dir, ndb } = ndb_testing::TempNdb::new();
         let ctx = JobCtx::detached("c1", ToolCancel::default());
         let answer = agent.job("q".into(), ndb)(&ctx).unwrap();
-        server.join().unwrap();
+        server.request();
 
         let ToolResponses::App(app) = answer else {
             panic!("an app answer: {answer:?}");

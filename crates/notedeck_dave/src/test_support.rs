@@ -14,6 +14,8 @@
 //! app's input the first time it shows it, so a hosted test presses Esc
 //! through the chrome, as a user does.
 
+pub mod fake_openai;
+
 use crate::backend::{BackendType, RemoteOnlyBackend};
 use crate::config::{AiMode, AiProvider, DaveSettings};
 use crate::conversation::subscribe_conversation_events;
