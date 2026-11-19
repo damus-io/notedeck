@@ -75,7 +75,7 @@ pub mod worktree;
 
 use agentium_core::agent_spec::AgentSpec;
 use backend::{
-    AiBackend, BackendChoice, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend,
+    BackendChoice, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend,
     RemoteOnlyBackend,
 };
 use chrono::{Duration, Local};
@@ -245,8 +245,10 @@ pub struct Dave {
     avatar: Option<DaveAvatar>,
     /// Shared tools available to all sessions
     tools: Arc<HashMap<String, Tool>>,
-    /// AI backends keyed by type — multiple may be available simultaneously
-    backends: HashMap<BackendType, Box<dyn AiBackend>>,
+    /// The host's AI backends, one per type — multiple may be available
+    /// simultaneously. A session's backend comes through
+    /// [`spec_runner::SessionBackends`], never this by its type alone.
+    backends: spec_runner::HostBackends,
     /// Which agentic backends are available (detected from PATH at startup)
     available_backends: Vec<BackendType>,
     /// Model configuration
@@ -432,19 +434,6 @@ impl PendingWorktreeRemoval {
     }
 }
 
-/// Calculate an anonymous user_id from a keypair
-/// Look up a backend by type from the map, falling back to Remote.
-fn get_backend(
-    backends: &HashMap<BackendType, Box<dyn AiBackend>>,
-    bt: BackendType,
-) -> &dyn AiBackend {
-    backends
-        .get(&bt)
-        .or_else(|| backends.get(&BackendType::Remote))
-        .unwrap()
-        .as_ref()
-}
-
 impl Dave {
     pub fn avatar_mut(&mut self) -> Option<&mut DaveAvatar> {
         self.avatar.as_mut()
@@ -520,7 +509,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
 
         // Create backends for all available agentic CLIs + the configured primary
-        let mut backends: HashMap<BackendType, Box<dyn AiBackend>> = HashMap::new();
+        let mut backends = spec_runner::HostBackends::default();
 
         for &bt in &available_backends {
             match bt {
@@ -1084,11 +1073,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             None
         };
 
-        let backend = spec_runner::SessionBackends {
-            host: &self.backends,
-            runners: &self.spec_runners,
-        }
-        .for_session(self.session_manager.get(id));
+        let backend = spec_runner::SessionBackends::new(&self.backends, &self.spec_runners)
+            .for_session(self.session_manager.get(id));
         let deleted = update::delete_session(
             &mut self.session_manager,
             &mut self.focus_queue,
@@ -1353,7 +1339,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 host_tools: self.host_tools.as_deref().unwrap_or_default(),
                 ndb: host.ndb,
             };
-            let fallback = get_backend(&self.backends, session.backend_type);
+            let fallback = self.backends.for_type(session.backend_type);
             stream_events::dispatch_spec_turn(
                 session,
                 &slug,
@@ -1367,16 +1353,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         // Only dispatch if we have the backend this session needs.
-        // Without this guard, get_backend falls back to Remote which
+        // Without this guard, for_type falls back to Remote which
         // immediately disconnects, causing an infinite redispatch loop.
-        if !self.backends.contains_key(&session.backend_type) {
+        if !self.backends.runs(session.backend_type) {
             return;
         }
-        dispatch_turn(
-            session,
-            get_backend(&self.backends, session.backend_type),
-            &ctx,
-        );
+        dispatch_turn(session, self.backends.for_type(session.backend_type), &ctx);
     }
 
     /// Whether any session under `sid`'s agent spec, `sid` included, is
@@ -1660,11 +1642,8 @@ impl notedeck::App for Dave {
             });
             if let Some(id) = expired {
                 tracing::warn!("pending session {} timed out, removing", id);
-                let backend = spec_runner::SessionBackends {
-                    host: &self.backends,
-                    runners: &self.spec_runners,
-                }
-                .for_session(self.session_manager.get(id));
+                let backend = spec_runner::SessionBackends::new(&self.backends, &self.spec_runners)
+                    .for_session(self.session_manager.get(id));
                 update::delete_session(
                     &mut self.session_manager,
                     &mut self.focus_queue,
@@ -1774,10 +1753,7 @@ impl notedeck::App for Dave {
         for session_id in sessions_needing_compact {
             dispatch_compact_for_session(
                 &mut self.session_manager,
-                spec_runner::SessionBackends {
-                    host: &self.backends,
-                    runners: &self.spec_runners,
-                },
+                spec_runner::SessionBackends::new(&self.backends, &self.spec_runners),
                 session_id,
                 waker,
             );

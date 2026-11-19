@@ -162,10 +162,7 @@ impl Dave {
         waker: &notedeck::Waker,
     ) {
         let applies = self.poll_remote_conversation_actions(ndb);
-        let backends = SessionBackends {
-            host: &self.backends,
-            runners: &self.spec_runners,
-        };
+        let backends = SessionBackends::new(&self.backends, &self.spec_runners);
         for apply in applies.mode_changes {
             backends
                 .for_session(self.session_manager.get(apply.session))

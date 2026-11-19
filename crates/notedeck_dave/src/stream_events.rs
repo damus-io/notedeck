@@ -154,12 +154,9 @@ impl Dave {
             // the channel disconnecting. Non-persistent backends end a turn by
             // dropping the sender (see the disconnect branch below). A spec
             // session streams from its runner's backend, whatever its type.
-            let persistent_stream = SessionBackends {
-                host: &self.backends,
-                runners: &self.spec_runners,
-            }
-            .for_session(self.session_manager.get(session_id))
-            .persistent_stream();
+            let persistent_stream = SessionBackends::new(&self.backends, &self.spec_runners)
+                .for_session(self.session_manager.get(session_id))
+                .persistent_stream();
             let ctx = ApplyCtx {
                 host,
                 persistent_stream,
@@ -307,10 +304,7 @@ impl Dave {
                 tracing::warn!("Compact: a remote Codex session can't be compacted");
                 return;
             }
-            let backends = SessionBackends {
-                host: &self.backends,
-                runners: &self.spec_runners,
-            };
+            let backends = SessionBackends::new(&self.backends, &self.spec_runners);
             dispatch_compact_to_backend(&mut self.session_manager, backends, sid, host.waker);
             return;
         }
@@ -2552,7 +2546,7 @@ mod tests {
             }
             assert_eq!(status(&mut test, sid), AgentStatus::Working);
 
-            let backend = crate::get_backend(&test.dave.backends, BackendType::OpenAI);
+            let backend = test.dave.backends.for_type(BackendType::OpenAI);
             crate::update::execute_interrupt(
                 &test.dave.session_manager,
                 backend,
@@ -2765,7 +2759,7 @@ mod tests {
                 drop(stream);
                 drain_until_steps(&mut test, sid, 1);
 
-                let backend = crate::get_backend(&test.dave.backends, BackendType::OpenAI);
+                let backend = test.dave.backends.for_type(BackendType::OpenAI);
                 crate::update::execute_interrupt(
                     &test.dave.session_manager,
                     backend,
@@ -3072,7 +3066,7 @@ mod tests {
                 ask_moves(&mut test, stream, &["m"]);
                 assert_eq!(status(&mut test, sid), AgentStatus::NeedsInput);
 
-                let backend = crate::get_backend(&test.dave.backends, BackendType::OpenAI);
+                let backend = test.dave.backends.for_type(BackendType::OpenAI);
                 crate::update::execute_interrupt(
                     &test.dave.session_manager,
                     backend,

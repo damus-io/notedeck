@@ -355,8 +355,8 @@ impl Dave {
         if session.pending_created_at.is_some() {
             return OpenMessageDelivery::Draft("the session is still connecting");
         }
-        let runnable = self.backends.contains_key(&session.backend_type)
-            || session.details.agent_spec.is_some();
+        let runnable =
+            self.backends.runs(session.backend_type) || session.details.agent_spec.is_some();
         if !session.is_remote() && !runnable {
             return OpenMessageDelivery::Draft("no local backend runs this session");
         }
@@ -730,10 +730,10 @@ impl Dave {
                         .map(|s| s.id)
                         .collect();
                     for id in to_delete {
-                        let backend = crate::spec_runner::SessionBackends {
-                            host: &self.backends,
-                            runners: &self.spec_runners,
-                        }
+                        let backend = crate::spec_runner::SessionBackends::new(
+                            &self.backends,
+                            &self.spec_runners,
+                        )
                         .for_session(self.session_manager.get(id));
                         update::delete_session(
                             &mut self.session_manager,

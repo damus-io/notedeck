@@ -203,6 +203,53 @@ fn build(from: BuiltFrom, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerE
     })
 }
 
+/// The host's backends, one per [`BackendType`], behind a private map so
+/// nothing outside this module picks one by type alone: a session's backend
+/// comes from [`SessionBackends::for_session`], and only a caller that has no
+/// session (or deliberately wants the host's backend) asks [`Self::for_type`].
+/// Remote is always present once the host is built, and is the fallback for
+/// a type the host has no backend for.
+#[derive(Default)]
+pub(crate) struct HostBackends {
+    map: HashMap<BackendType, Box<dyn AiBackend>>,
+}
+
+impl HostBackends {
+    /// Install `backend` as the host's backend for `bt`, replacing any
+    /// already there.
+    pub(crate) fn insert(&mut self, bt: BackendType, backend: Box<dyn AiBackend>) {
+        self.map.insert(bt, backend);
+    }
+
+    /// Whether the host has a backend of its own for `bt` (no Remote
+    /// fallback): a session of a type the host doesn't run must not be
+    /// dispatched, or the fallback disconnects it and it redispatches forever.
+    pub(crate) fn runs(&self, bt: BackendType) -> bool {
+        self.map.contains_key(&bt)
+    }
+
+    /// The host's backend for `bt`, falling back to Remote when the host
+    /// has none of that type.
+    ///
+    /// # Panics
+    /// When the host has neither `bt` nor Remote, which a built [`crate::Dave`]
+    /// never is.
+    pub(crate) fn for_type(&self, bt: BackendType) -> &dyn AiBackend {
+        self.map
+            .get(&bt)
+            .or_else(|| self.map.get(&BackendType::Remote))
+            .expect("the host always has a Remote backend")
+            .as_ref()
+    }
+
+    /// Drop every backend, Remote included, so a test can install exactly
+    /// the ones it wants.
+    #[cfg(test)]
+    pub(crate) fn clear(&mut self) {
+        self.map.clear();
+    }
+}
+
 /// Every backend a session can run on: the host's, one per [`BackendType`],
 /// and the spec runners'. Call sites that act on a session pick its backend
 /// through [`SessionBackends::for_session`], never by its `BackendType`
@@ -210,18 +257,21 @@ fn build(from: BuiltFrom, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerE
 /// the runner that holds its run.
 #[derive(Clone, Copy)]
 pub(crate) struct SessionBackends<'a> {
-    /// The host's backends, by type.
-    pub(crate) host: &'a HashMap<BackendType, Box<dyn AiBackend>>,
-    /// The spec runners built so far.
-    pub(crate) runners: &'a SpecRunners,
+    host: &'a HostBackends,
+    runners: &'a SpecRunners,
 }
 
 impl<'a> SessionBackends<'a> {
+    /// The host's backends and the spec runners built so far.
+    pub(crate) fn new(host: &'a HostBackends, runners: &'a SpecRunners) -> Self {
+        Self { host, runners }
+    }
+
     /// The backend that runs `session`: its spec's runner's when it runs
     /// under one, else the host's backend of its type (falling back to
-    /// Remote, as [`crate::get_backend`] does). A spec session whose runner
-    /// isn't built yet has no run to stop or clean up, so the host's backend
-    /// answers for it.
+    /// Remote, as [`HostBackends::for_type`] does). A spec session whose
+    /// runner isn't built yet has no run to stop or clean up, so the host's
+    /// backend answers for it.
     pub(crate) fn for_session(self, session: Option<&ChatSession>) -> &'a dyn AiBackend {
         let spec_backend = session
             .and_then(|s| s.details.agent_spec.as_deref())
@@ -231,7 +281,7 @@ impl<'a> SessionBackends<'a> {
             return backend;
         }
         let bt = session.map_or(BackendType::Remote, |s| s.backend_type);
-        crate::get_backend(self.host, bt)
+        self.host.for_type(bt)
     }
 }
 
@@ -441,6 +491,31 @@ mod tests {
         }
     }
 
+    /// The host answers a type it has no backend for with its Remote
+    /// backend, and [`HostBackends::runs`] says it has none of its own.
+    #[test]
+    fn host_backends_for_type_falls_back_to_remote() {
+        let remote = RecordingBackend::new();
+        let remote_log = remote.log();
+        let claude = RecordingBackend::new();
+        let claude_log = claude.log();
+        let mut host = HostBackends::default();
+        host.insert(BackendType::Remote, Box::new(remote));
+        host.insert(BackendType::Claude, Box::new(claude));
+
+        assert!(host.runs(BackendType::Claude));
+        assert!(!host.runs(BackendType::OpenAI));
+
+        let waker = notedeck::Waker::noop();
+        host.for_type(BackendType::OpenAI)
+            .interrupt_session("s".into(), waker.clone());
+        assert_eq!(remote_log.interrupts(), 1, "OpenAI fell back to Remote");
+        host.for_type(BackendType::Claude)
+            .interrupt_session("s".into(), waker);
+        assert_eq!(claude_log.interrupts(), 1, "Claude answered for itself");
+        assert_eq!(remote_log.interrupts(), 1);
+    }
+
     /// A butler session's turn goes to the butler's runner, offered the
     /// butler's tools (never the host backend or Dave's own tools), and its
     /// stop reaches the same runner.
@@ -466,11 +541,8 @@ mod tests {
             "the session's calls are checked against the spec's catalog"
         );
 
-        let backend = SessionBackends {
-            host: &run.test.dave.backends,
-            runners: &run.test.dave.spec_runners,
-        }
-        .for_session(run.test.dave.session_manager.get(run.sid));
+        let backend = SessionBackends::new(&run.test.dave.backends, &run.test.dave.spec_runners)
+            .for_session(run.test.dave.session_manager.get(run.sid));
         backend.interrupt_session("dave-session-x".into(), run.test.waker.clone());
         assert_eq!(run.runner.interrupts(), 1);
         assert_eq!(run.host.interrupts(), 0);
