@@ -12,7 +12,9 @@
 //!
 //! `cargo test -p bin_testing --test cdylibs`
 
-use std::process::Command;
+mod support;
+
+use support::graph::metadata;
 
 /// The one crate allowed a shared-library target: the leaf Android loads.
 const ANDROID_LIB: &str = "notedeck_android";
@@ -28,24 +30,7 @@ struct SharedLib {
 
 /// Every workspace target with a `cdylib` or `dylib` crate type.
 fn shared_libs() -> Vec<SharedLib> {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let out = Command::new(cargo)
-        .args([
-            "metadata",
-            "--no-deps",
-            "--offline",
-            "--format-version",
-            "1",
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("cargo metadata runs");
-    assert!(
-        out.status.success(),
-        "cargo metadata failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).expect("metadata json");
+    let meta = metadata(&["--no-deps", "--offline"]);
 
     let mut libs = Vec::new();
     for pkg in meta["packages"].as_array().expect("packages") {

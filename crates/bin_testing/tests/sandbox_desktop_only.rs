@@ -18,8 +18,9 @@
 //!
 //! `cargo test -p bin_testing --test sandbox_desktop_only`
 
-use std::collections::{HashMap, HashSet};
-use std::process::Command;
+mod support;
+
+use support::graph::{Features, Metadata};
 
 /// Targets that must never see microsandbox.
 const MOBILE_TARGETS: &[&str] = &["aarch64-linux-android", "aarch64-apple-ios"];
@@ -38,117 +39,22 @@ fn is_microsandbox(name: &str) -> bool {
     name == "microsandbox" || name.starts_with("microsandbox-") || name.starts_with("msb_krun")
 }
 
-/// `cargo metadata` for `target`, every workspace feature on.
-struct Graph {
-    meta: serde_json::Value,
-}
-
-/// One resolved package: its name and the ids it builds against.
-struct Node<'a> {
-    name: &'a str,
-    features: Vec<&'a str>,
-    /// Normal and build dependencies; dev ones never reach a shipped build.
-    deps: Vec<&'a str>,
-}
-
-impl Graph {
-    fn new(target: &str) -> Self {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let out = Command::new(cargo)
-            .args([
-                "metadata",
-                "--format-version",
-                "1",
-                "--all-features",
-                "--filter-platform",
-                target,
-            ])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .expect("cargo metadata runs");
-        assert!(
-            out.status.success(),
-            "cargo metadata failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        Self {
-            meta: serde_json::from_slice(&out.stdout).expect("metadata json"),
-        }
-    }
-
-    fn nodes(&self) -> HashMap<&str, Node<'_>> {
-        let names: HashMap<&str, &str> = self.meta["packages"]
-            .as_array()
-            .expect("packages")
-            .iter()
-            .map(|p| (p["id"].as_str().unwrap(), p["name"].as_str().unwrap()))
-            .collect();
-        self.meta["resolve"]["nodes"]
-            .as_array()
-            .expect("resolve nodes")
-            .iter()
-            .map(|n| {
-                let id = n["id"].as_str().unwrap();
-                let deps = n["deps"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|d| {
-                        d["dep_kinds"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .any(|k| k["kind"].as_str() != Some("dev"))
-                    })
-                    .map(|d| d["pkg"].as_str().unwrap())
-                    .collect();
-                let features = n["features"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|f| f.as_str().unwrap())
-                    .collect();
-                let node = Node {
-                    name: names[id],
-                    features,
-                    deps,
-                };
-                (id, node)
-            })
-            .collect()
-    }
-
-    fn members(&self) -> Vec<&str> {
-        self.meta["workspace_members"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|m| m.as_str().unwrap())
-            .collect()
-    }
-}
-
-/// Every id reachable from `roots` through normal and build dependencies.
-fn reachable<'a>(nodes: &HashMap<&'a str, Node<'a>>, roots: &[&'a str]) -> HashSet<&'a str> {
-    let mut seen = HashSet::new();
-    let mut queue = roots.to_vec();
-    while let Some(id) = queue.pop() {
-        if seen.insert(id) {
-            queue.extend(nodes[id].deps.iter().copied());
-        }
-    }
-    seen
+/// The workspace's graph for `target`, every workspace feature on: the
+/// widest graph any feature combination could reach.
+fn resolve(target: &str) -> Metadata {
+    Metadata::resolve(target, Features::All)
 }
 
 #[test]
 fn no_mobile_build_resolves_microsandbox() {
     let mut report = Vec::new();
     for target in MOBILE_TARGETS {
-        let graph = Graph::new(target);
-        let nodes = graph.nodes();
-        for id in reachable(&nodes, &graph.members()) {
-            if is_microsandbox(nodes[id].name) {
-                report.push(format!("{target}: {}", nodes[id].name));
+        let meta = resolve(target);
+        let graph = meta.graph();
+        for id in graph.reachable(&graph.members) {
+            let name = graph.nodes[id].name;
+            if is_microsandbox(name) {
+                report.push(format!("{target}: {name}"));
             }
         }
     }
@@ -164,12 +70,16 @@ fn no_mobile_build_resolves_microsandbox() {
 #[test]
 fn only_the_sandbox_crate_depends_on_microsandbox() {
     for target in DESKTOP_TARGETS {
-        let graph = Graph::new(target);
-        let nodes = graph.nodes();
+        let meta = resolve(target);
+        let graph = meta.graph();
         let mut direct = Vec::new();
-        for member in graph.members() {
-            let node = &nodes[member];
-            if node.deps.iter().any(|d| is_microsandbox(nodes[d].name)) {
+        for member in &graph.members {
+            let node = &graph.nodes[member];
+            if node
+                .deps
+                .iter()
+                .any(|d| is_microsandbox(graph.nodes[d].name))
+            {
                 direct.push(node.name);
             }
         }
@@ -185,17 +95,19 @@ fn only_the_sandbox_crate_depends_on_microsandbox() {
 #[test]
 fn ios_safe_crates_never_reach_the_sandbox_crate() {
     for target in DESKTOP_TARGETS.iter().chain(MOBILE_TARGETS) {
-        let graph = Graph::new(target);
-        let nodes = graph.nodes();
+        let meta = resolve(target);
+        let graph = meta.graph();
         for safe in IOS_SAFE {
             let root = graph
-                .members()
-                .into_iter()
-                .find(|m| nodes[m].name == *safe)
+                .members
+                .iter()
+                .copied()
+                .find(|m| graph.nodes[m].name == *safe)
                 .unwrap_or_else(|| panic!("{safe} is a workspace member"));
-            let reaches = reachable(&nodes, &[root])
-                .into_iter()
-                .any(|id| nodes[id].name == SANDBOX_CRATE || is_microsandbox(nodes[id].name));
+            let reaches = graph.reachable(&[root]).into_iter().any(|id| {
+                let name = graph.nodes[id].name;
+                name == SANDBOX_CRATE || is_microsandbox(name)
+            });
             assert!(
                 !reaches,
                 "{target}: {safe} reaches {SANDBOX_CRATE}; it must stay iOS-safe"
@@ -207,9 +119,10 @@ fn ios_safe_crates_never_reach_the_sandbox_crate() {
 #[test]
 fn microsandbox_never_downloads_into_home_at_build_time() {
     for target in DESKTOP_TARGETS {
-        let graph = Graph::new(target);
-        let nodes = graph.nodes();
-        let top = nodes
+        let meta = resolve(target);
+        let graph = meta.graph();
+        let top = graph
+            .nodes
             .values()
             .find(|n| n.name == "microsandbox")
             .unwrap_or_else(|| panic!("{target}: microsandbox resolves on desktop"));
@@ -220,4 +133,16 @@ fn microsandbox_never_downloads_into_home_at_build_time() {
              default features off (see crates/agentium-sandbox/Cargo.toml)"
         );
     }
+}
+
+/// The shared walk counts a root as reachable from itself, which the
+/// iOS-safe check above relies on to see a root that is itself the sandbox
+/// crate.
+#[test]
+fn reachable_includes_its_roots() {
+    let meta = resolve(DESKTOP_TARGETS[0]);
+    let graph = meta.graph();
+    let core = graph.ids_named(IOS_SAFE);
+    assert_eq!(core.len(), 1, "agentium-core resolves once");
+    assert!(graph.reachable(&core).contains(core[0]));
 }

@@ -16,8 +16,9 @@
 //!
 //! `cargo test -p bin_testing --test guest_no_c`
 
-use std::collections::{HashMap, HashSet};
-use std::process::Command;
+mod support;
+
+use support::graph::{Features, Metadata};
 
 /// The crates the guest binary is built from.
 const GUEST_ROOTS: &[&str] = &["notedeck-agent-guest", "notedeck-agent-proto"];
@@ -34,85 +35,33 @@ struct Offender {
     reason: String,
 }
 
-/// `cargo metadata` resolved for `target`.
-fn metadata(target: &str) -> serde_json::Value {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let out = Command::new(cargo)
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--filter-platform",
-            target,
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("cargo metadata runs");
-    assert!(
-        out.status.success(),
-        "cargo metadata failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("metadata json")
-}
-
 /// Every crate the guest builds for `target` (normal and build
-/// dependencies, not dev ones) that builds C.
+/// dependencies, not dev ones) that builds C. Default features: what a
+/// plain build of the guest resolves.
 fn offenders(target: &str) -> Vec<Offender> {
-    let meta = metadata(target);
-    let packages: HashMap<&str, &serde_json::Value> = meta["packages"]
-        .as_array()
-        .expect("packages")
-        .iter()
-        .map(|p| (p["id"].as_str().expect("id"), p))
-        .collect();
-    let nodes: HashMap<&str, &serde_json::Value> = meta["resolve"]["nodes"]
-        .as_array()
-        .expect("resolve nodes")
-        .iter()
-        .map(|n| (n["id"].as_str().expect("id"), n))
-        .collect();
-
-    let mut seen = HashSet::new();
-    let mut queue: Vec<&str> = packages
-        .iter()
-        .filter(|(_, p)| GUEST_ROOTS.contains(&p["name"].as_str().unwrap_or_default()))
-        .map(|(id, _)| *id)
-        .collect();
+    let meta = Metadata::resolve(target, Features::Default);
+    let graph = meta.graph();
+    let roots = graph.ids_named(GUEST_ROOTS);
     assert_eq!(
-        queue.len(),
+        roots.len(),
         GUEST_ROOTS.len(),
         "both guest crates are in the workspace"
     );
 
     let mut found = Vec::new();
-    while let Some(id) = queue.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        let package = packages[id];
-        let name = package["name"].as_str().unwrap_or_default();
-        if let Some(links) = package["links"].as_str() {
+    for id in graph.reachable(&roots) {
+        let node = &graph.nodes[id];
+        if let Some(links) = node.links {
             found.push(Offender {
-                package: name.to_owned(),
+                package: node.name.to_owned(),
                 reason: format!("links the native library {links:?}"),
             });
         }
-        if C_BUILDERS.contains(&name) {
+        if C_BUILDERS.contains(&node.name) {
             found.push(Offender {
-                package: name.to_owned(),
+                package: node.name.to_owned(),
                 reason: "drives a C compiler".to_owned(),
             });
-        }
-        for dep in nodes[id]["deps"].as_array().expect("deps") {
-            let built = dep["dep_kinds"]
-                .as_array()
-                .expect("dep_kinds")
-                .iter()
-                .any(|k| k["kind"].as_str() != Some("dev"));
-            if built {
-                queue.push(dep["pkg"].as_str().expect("pkg"));
-            }
         }
     }
     found
@@ -129,6 +78,7 @@ fn the_guest_builds_no_c() {
             ));
         }
     }
+    report.sort();
     assert!(
         report.is_empty(),
         "the sandbox guest's graph builds C, so it no longer cross-compiles with \
