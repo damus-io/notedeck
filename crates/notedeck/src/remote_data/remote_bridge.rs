@@ -1373,7 +1373,6 @@ mod tests {
 
     #[test]
     fn unrelated_outbox_event_does_not_emit_scoped_facts() {
-        crate::app::install_crypto();
         let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let author = FullKeypair::generate();
         let author_relay = "wss://author-route.example.com";
@@ -1457,7 +1456,6 @@ mod tests {
 
     #[test]
     fn max_websocket_limit_control_does_not_require_selected_account() {
-        crate::app::install_crypto();
         let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let (input_sender, _input_receiver) = mpsc::unbounded_channel();
         let (event_sender, _event_receiver) = std::sync::mpsc::channel();

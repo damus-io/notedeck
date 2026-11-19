@@ -82,6 +82,9 @@ pub struct HyperHttpClient {
 impl HyperHttpClient {
     /// Build a client once so repeated relay metadata fetches do not reload
     /// TLS roots and rebuild connector state per request.
+    ///
+    /// Installs the process-level rustls crypto provider if none is set yet
+    /// (see [`enostr::install_crypto`]), so a caller never has to remember to.
     pub fn new() -> Self {
         Self::build(None)
     }
@@ -93,11 +96,18 @@ impl HyperHttpClient {
     /// check and the connect (DNS rebinding). An IP literal in strict
     /// dotted or IPv6 form skips resolution and isn't checked here; check
     /// those per URL with [`HyperHttpClient::req_guarded`].
+    ///
+    /// Installs the process crypto provider if none is set, as [`Self::new`].
     pub fn with_addr_check(allow: AddrCheck) -> Self {
         Self::build(Some(allow))
     }
 
+    /// The one constructor both public ones go through. It installs the
+    /// process-level rustls provider first: building the TLS config panics
+    /// without one, and a test or job thread that skipped the app's startup
+    /// would otherwise see only "the tool panicked".
     fn build(allow: Option<AddrCheck>) -> Self {
+        enostr::install_crypto();
         let mut http = HttpConnector::new_with_resolver(CheckedResolver {
             gai: GaiResolver::new(),
             allow,
@@ -390,7 +400,6 @@ mod tests {
     /// and a client refusing loopback refuses both.
     #[tokio::test]
     async fn an_address_check_refuses_names_that_resolve_to_refused_addresses() {
-        enostr::install_crypto();
         let port = local_server().await;
         let open = HyperHttpClient::new();
         let checked = HyperHttpClient::with_addr_check(|ip| !ip.is_loopback());

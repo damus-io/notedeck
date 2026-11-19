@@ -20,7 +20,6 @@ use tempfile::TempDir;
 use tokio::sync::Notify;
 
 fn test_remote_state(ndb: &Ndb, job_pool: &JobPool) -> RemoteState {
-    crate::app::install_crypto();
     RemoteState::new_with_config(
         ndb,
         job_pool.spawner(),

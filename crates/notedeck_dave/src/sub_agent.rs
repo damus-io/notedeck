@@ -921,7 +921,6 @@ mod tests {
     /// answer.
     #[test]
     fn the_job_asks_the_childs_endpoint_and_answers_its_summary() {
-        notedeck::enostr::install_crypto();
         let server = one_completion("Acme: $9/mo, 4 people, seed-funded.");
         let agent = Arc::new(SubAgent::new(researcher(), server.endpoint("tiny"), None).unwrap());
         let ndb_testing::TempNdb { dir: _dir, ndb } = ndb_testing::TempNdb::new();
@@ -950,7 +949,6 @@ mod tests {
     /// the parent's budget.
     #[test]
     fn the_jobs_answer_reports_what_the_child_spent() {
-        notedeck::enostr::install_crypto();
         // Haiku 5.5: 10 cents per million in, 50 out.
         let usage = json!({ "prompt_tokens": 100_000, "completion_tokens": 10_000,
                             "total_tokens": 110_000 });

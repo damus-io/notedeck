@@ -3368,7 +3368,6 @@ mod tests {
             /// error.)
             #[test]
             fn a_research_question_asks_then_runs_off_the_frame() {
-                notedeck::enostr::install_crypto();
                 // A port nothing listens on: bound, then dropped.
                 let base_url = {
                     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

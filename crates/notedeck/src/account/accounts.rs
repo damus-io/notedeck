@@ -869,7 +869,6 @@ mod tests {
                 &mut unknown_ids,
             );
             let job_pool = JobPool::new(1);
-            crate::app::install_crypto();
             let remote = RemoteState::new_with_config(
                 &ndb,
                 job_pool.spawner(),

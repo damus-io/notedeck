@@ -77,21 +77,6 @@ mod tests {
         task::JoinHandle,
     };
 
-    /// Installs a process-level rustls crypto provider for HTTP client tests.
-    fn install_crypto_provider_for_tests() {
-        #[cfg(windows)]
-        {
-            let provider = rustls::crypto::ring::default_provider();
-            let _ = provider.install_default();
-        }
-
-        #[cfg(not(windows))]
-        {
-            let provider = rustls::crypto::aws_lc_rs::default_provider();
-            let _ = provider.install_default();
-        }
-    }
-
     /// A local HTTP server that answers one request: where it listens, and
     /// the task to await once the request was served.
     struct OneShotHttpServer {
@@ -166,7 +151,6 @@ mod tests {
     /// Ensures non-2xx NIP-11 HTTP responses map to a dedicated `HttpStatus` error.
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_maps_non_success_status_to_http_status_error() {
-        install_crypto_provider_for_tests();
         let OneShotHttpServer {
             addr,
             handle: server,
@@ -189,7 +173,6 @@ mod tests {
     /// Ensures a valid 2xx NIP-11 document returns parsed raw limitation fields.
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_parses_limitation_fields_on_success() {
-        install_crypto_provider_for_tests();
         let OneShotHttpServer {
             addr,
             handle: server,
@@ -214,7 +197,6 @@ mod tests {
     /// Ensures invalid JSON bodies on 2xx responses map to `Json` parse errors.
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_maps_invalid_json_to_json_error() {
-        install_crypto_provider_for_tests();
         let OneShotHttpServer {
             addr,
             handle: server,
@@ -237,7 +219,6 @@ mod tests {
     /// Ensures NIP-11 responses without a `limitation` object produce default raw limits.
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_defaults_when_limitation_is_missing() {
-        install_crypto_provider_for_tests();
         let OneShotHttpServer {
             addr,
             handle: server,
@@ -261,8 +242,6 @@ mod tests {
     /// Ensures transport-level connection failures map to the `Http` fetch error variant.
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_maps_transport_failure_to_http_error() {
-        install_crypto_provider_for_tests();
-
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind localhost");

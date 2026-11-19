@@ -647,7 +647,6 @@ mod tests {
     /// With no instance set, a search says how to set one, and runs nothing.
     #[tokio::test]
     async fn a_search_with_no_instance_says_how_to_set_one() {
-        notedeck::enostr::install_crypto();
         let client = WebClient::new(None);
         let call = AppToolCall {
             name: WEB_SEARCH.into(),

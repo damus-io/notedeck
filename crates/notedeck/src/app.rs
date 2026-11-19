@@ -1288,26 +1288,12 @@ impl Notedeck {
 
 /// Installs the default TLS crypto provider for rustls.
 ///
-/// This function selects the crypto provider based on the target platform:
-/// - **Windows**: Uses `ring` because `aws-lc-rs` requires cmake and NASM,
-///   which adds significant friction for Windows developers.
-/// - **Other platforms**: Uses `aws-lc-rs` for optimal performance.
+/// Delegates to [`enostr::install_crypto`], the one copy of the platform
+/// choice (ring on Windows, aws-lc-rs elsewhere). Idempotent.
 ///
-/// Must be called once at application startup before any TLS operations.
+/// Called once at application startup before any TLS operations.
 pub fn install_crypto() {
-    // On Windows, use ring (fewer build requirements than aws-lc-rs which needs cmake/NASM)
-    #[cfg(windows)]
-    {
-        let provider = rustls::crypto::ring::default_provider();
-        let _ = provider.install_default();
-    }
-
-    // On non-Windows platforms, use aws-lc-rs for optimal performance
-    #[cfg(not(windows))]
-    {
-        let provider = rustls::crypto::aws_lc_rs::default_provider();
-        let _ = provider.install_default();
-    }
+    enostr::install_crypto();
 }
 
 pub struct NotedeckRef<'a> {
