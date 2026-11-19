@@ -1623,6 +1623,7 @@ mod tests {
     use crate::collapse_state::CollapseState;
     use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::{SessionId, SessionSource};
+    use crate::test_support::{RecordingBackend, Reply};
     use notedeck::test_harness::PressKey;
 
     fn create_named_agent_session(
@@ -2773,88 +2774,29 @@ mod tests {
     // Interrupt: the chord's `s` and the Stop button must be the same thing
     // =========================================================================
 
-    /// A fake backend with Claude's persistent-stream semantics — the property
+    /// A backend with Claude's persistent-stream semantics — the property
     /// that makes the interrupt path's local teardown destructive.
     ///
     /// The session actor owns ONE response channel for the whole session, so
     /// `stream_request` hands back a receiver only on the turn that spawns the
     /// actor and `None` on every turn after. An interrupt aborts the in-flight
     /// turn but leaves the actor (and its channel) alive, so a caller that drops
-    /// its receiver never gets another one.
-    struct PersistentStreamFake {
-        /// The one receiver this backend will ever hand out, taken on the first
-        /// `stream_request` (the turn that "spawns the actor").
-        rx: std::sync::Mutex<Option<std::sync::mpsc::Receiver<crate::DaveApiResponse>>>,
-        interrupts: std::sync::atomic::AtomicUsize,
+    /// its receiver never gets another one. The log keeps the sender a live
+    /// actor would hold ([`BackendLog::take_stream`]), so a test can push a
+    /// response the way it would and prove the channel still works.
+    ///
+    /// [`BackendLog::take_stream`]: crate::test_support::BackendLog::take_stream
+    fn persistent_backend() -> RecordingBackend {
+        RecordingBackend::new().replying(Reply::Handed).persistent()
     }
 
-    /// A [`PersistentStreamFake`] and its actor-side sender.
-    struct FakeActor {
-        /// The backend.
-        backend: PersistentStreamFake,
-        /// The sender a live actor would hold, so a test can push a response
-        /// the way it would and prove the channel still works.
-        actor_tx: std::sync::mpsc::Sender<crate::DaveApiResponse>,
-    }
-
-    impl FakeActor {
-        /// A fresh backend plus the actor-side sender of its one channel.
-        fn new() -> Self {
-            let (actor_tx, rx) = std::sync::mpsc::channel();
-            Self {
-                backend: PersistentStreamFake {
-                    rx: std::sync::Mutex::new(Some(rx)),
-                    interrupts: std::sync::atomic::AtomicUsize::new(0),
-                },
-                actor_tx,
-            }
-        }
-    }
-
-    impl PersistentStreamFake {
-        fn interrupt_count(&self) -> usize {
-            self.interrupts.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl crate::backend::AiBackend for PersistentStreamFake {
-        fn stream_request(
-            &self,
-            _messages: Vec<crate::Message>,
-            _tools: std::sync::Arc<std::collections::HashMap<String, crate::tools::Tool>>,
-            _model: Option<String>,
-            _user_id: String,
-            _session_id: String,
-            _session_env: std::collections::BTreeMap<String, String>,
-            _cwd: Option<PathBuf>,
-            _resume_session_id: Option<String>,
-            _permission_mode: PermissionMode,
-            _waker: notedeck::Waker,
-        ) -> crate::backend::ResponseStream {
-            crate::backend::ResponseStream {
-                rx: self.rx.lock().unwrap().take(),
-                task: None,
-            }
-        }
-
-        fn persistent_stream(&self) -> bool {
-            true
-        }
-
-        fn cleanup_session(&self, _session_id: String) {}
-
-        fn interrupt_session(&self, _session_id: String, _waker: notedeck::Waker) {
-            self.interrupts
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-
-        fn set_permission_mode(
-            &self,
-            _session_id: String,
-            _mode: PermissionMode,
-            _waker: notedeck::Waker,
-        ) {
-        }
+    /// The sender of the channel `backend` handed its first turn: what the
+    /// session actor holds.
+    fn actor_tx(backend: &RecordingBackend) -> std::sync::mpsc::Sender<crate::DaveApiResponse> {
+        backend
+            .log()
+            .take_stream()
+            .expect("the first turn minted the actor's channel")
     }
 
     /// Dispatch a turn the way `Dave::send_user_message_for` does, through
@@ -2911,13 +2853,14 @@ mod tests {
     #[test]
     fn interrupt_keeps_the_session_stream_alive() {
         let ctx = egui::Context::default();
-        let FakeActor { backend, actor_tx } = FakeActor::new();
+        let backend = persistent_backend();
         let mut sm = SessionManager::new();
         let id = session_mid_turn(&mut sm, &backend);
+        let actor_tx = actor_tx(&backend);
 
         execute_interrupt(&sm, &backend, &ctx);
         assert_eq!(
-            backend.interrupt_count(),
+            backend.log().interrupts(),
             1,
             "the backend was asked to abort"
         );
@@ -2949,7 +2892,7 @@ mod tests {
     #[test]
     fn interrupt_keeps_a_pending_permission_answerable() {
         let ctx = egui::Context::default();
-        let FakeActor { backend, .. } = FakeActor::new();
+        let backend = persistent_backend();
         let mut sm = SessionManager::new();
         let id = session_mid_turn(&mut sm, &backend);
 
@@ -3086,12 +3029,10 @@ mod tests {
             "clicking Stop must raise Interrupt, got {action:?}"
         );
 
-        let FakeActor {
-            backend: stop_backend,
-            actor_tx: stop_tx,
-        } = FakeActor::new();
+        let stop_backend = persistent_backend();
         let mut stop_sm = SessionManager::new();
         let stop_id = session_mid_turn(&mut stop_sm, &stop_backend);
+        let stop_tx = actor_tx(&stop_backend);
         let mut overlay = crate::DaveOverlay::None;
         let mut show_list = false;
         crate::ui::handle_ui_action(
@@ -3102,7 +3043,7 @@ mod tests {
             &mut show_list,
             &ctx,
         );
-        assert_eq!(stop_backend.interrupt_count(), 1, "Stop aborted the turn");
+        assert_eq!(stop_backend.log().interrupts(), 1, "Stop aborted the turn");
 
         // --- Esc `S`: type the real keys, follow the keybinding.
         let key_action = press_escape_shift_s();
@@ -3114,12 +3055,10 @@ mod tests {
             "Esc S must trigger Interrupt, got {key_action:?}"
         );
 
-        let FakeActor {
-            backend: s_backend,
-            actor_tx: s_tx,
-        } = FakeActor::new();
+        let s_backend = persistent_backend();
         let mut s_sm = SessionManager::new();
         let s_id = session_mid_turn(&mut s_sm, &s_backend);
+        let s_tx = actor_tx(&s_backend);
         let mut scene = AgentScene::new();
         let mut focus_queue = FocusQueue::new();
         let collapse_state = crate::collapse_state::CollapseState::new();
@@ -3136,7 +3075,7 @@ mod tests {
             &mut home_session,
             &ctx,
         );
-        assert_eq!(s_backend.interrupt_count(), 1, "Esc s aborted the turn");
+        assert_eq!(s_backend.log().interrupts(), 1, "Esc s aborted the turn");
 
         // --- Both sessions are still reachable by their actor, and agree.
         let (stop, s) = (stop_sm.get(stop_id).unwrap(), s_sm.get(s_id).unwrap());

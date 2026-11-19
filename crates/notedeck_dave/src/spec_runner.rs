@@ -238,17 +238,12 @@ impl<'a> SessionBackends<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::ResponseStream;
-    use crate::messages::DaveApiResponse;
-    use crate::tools::Tool;
+    use crate::test_support::{BackendLog, RecordingBackend, Reply};
     use crate::Message;
     use agentium_core::agent_spec::web::ASK_RESEARCHER;
     use agentium_core::agent_spec::Approval;
     use agentium_core::config::{BackendProfile, ProfileBackend};
-    use notedeck::Waker;
-    use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     /// The account's `anthropic` provider as an OpenAI profile, so the
     /// built-ins resolve without a key in the test's env.
@@ -394,67 +389,14 @@ mod tests {
         assert!(text.contains("butler, researcher"), "{text}");
     }
 
-    /// What a probe backend saw.
-    #[derive(Default)]
-    struct Seen {
-        /// The tool names each turn offered, sorted.
-        offered: Mutex<Vec<Vec<String>>>,
-        interrupts: AtomicUsize,
-        mode_changes: AtomicUsize,
-    }
-
-    /// A backend that records each turn's tools, each interrupt and each
-    /// permission-mode change.
-    struct Probe(Arc<Seen>);
-
-    impl AiBackend for Probe {
-        fn stream_request(
-            &self,
-            _messages: Vec<Message>,
-            tools: Arc<HashMap<String, Tool>>,
-            _model: Option<String>,
-            _user_id: String,
-            _session_id: String,
-            _session_env: BTreeMap<String, String>,
-            _cwd: Option<std::path::PathBuf>,
-            _resume_session_id: Option<String>,
-            _permission_mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) -> ResponseStream {
-            let mut names: Vec<String> = tools.keys().cloned().collect();
-            names.sort();
-            self.0.offered.lock().unwrap().push(names);
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _ = tx.send(DaveApiResponse::Token("ok".into()));
-            ResponseStream {
-                rx: Some(rx),
-                task: None,
-            }
-        }
-
-        fn cleanup_session(&self, _session_id: String) {}
-
-        fn interrupt_session(&self, _session_id: String, _waker: Waker) {
-            self.0.interrupts.fetch_add(1, Ordering::SeqCst);
-        }
-
-        fn set_permission_mode(
-            &self,
-            _session_id: String,
-            _mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) {
-            self.0.mode_changes.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
     /// A Dave whose one session runs under `spec`, with the butler's runner
-    /// on a probe and every host backend a probe too; `sid` has sent "go".
+    /// on a [`RecordingBackend`] and the host's OpenAI backend one too;
+    /// `sid` has sent "go".
     struct SpecSession {
         test: crate::tests::TestDave,
         sid: crate::session::SessionId,
-        runner: Arc<Seen>,
-        host: Arc<Seen>,
+        runner: Arc<BackendLog>,
+        host: Arc<BackendLog>,
     }
 
     fn send_under(spec: &str) -> SpecSession {
@@ -468,19 +410,22 @@ mod tests {
             .agent_spec = Some(spec.into());
 
         let butler = build_named("butler", &test.ndb).unwrap();
-        let runner = Arc::<Seen>::default();
+        let says_ok = || RecordingBackend::new().replying(Reply::Says("ok".into()));
+        let runner_backend = says_ok();
+        let runner = runner_backend.log();
         test.dave.spec_runners.insert(
             "butler",
             SpecRunner {
-                backend: Box::new(Probe(Arc::clone(&runner))),
+                backend: Box::new(runner_backend),
                 tools: butler.tools,
                 built_from: butler.built_from,
             },
         );
-        let host = Arc::<Seen>::default();
+        let host_backend = says_ok();
+        let host = host_backend.log();
         test.dave
             .backends
-            .insert(BackendType::OpenAI, Box::new(Probe(Arc::clone(&host))));
+            .insert(BackendType::OpenAI, Box::new(host_backend));
 
         let parts = test.parts();
         assert!(parts
@@ -502,11 +447,12 @@ mod tests {
     #[test]
     fn a_spec_sessions_turn_and_stop_go_to_its_runner() {
         let run = send_under("butler");
-        assert!(run.host.offered.lock().unwrap().is_empty(), "host idle");
-        let offered = run.runner.offered.lock().unwrap();
-        let [tools] = offered.as_slice() else {
-            panic!("one turn on the runner, got {}", offered.len());
+        assert!(run.host.turns().is_empty(), "host idle");
+        let turns = run.runner.turns();
+        let [turn] = turns.as_slice() else {
+            panic!("one turn on the runner, got {}", turns.len());
         };
+        let tools = &turn.tools;
         assert!(tools.contains(&"headway_comment_card".to_string()));
         assert!(tools.contains(&ASK_RESEARCHER.to_string()));
         assert!(
@@ -526,8 +472,8 @@ mod tests {
         }
         .for_session(run.test.dave.session_manager.get(run.sid));
         backend.interrupt_session("dave-session-x".into(), run.test.waker.clone());
-        assert_eq!(run.runner.interrupts.load(Ordering::SeqCst), 1);
-        assert_eq!(run.host.interrupts.load(Ordering::SeqCst), 0);
+        assert_eq!(run.runner.interrupts(), 1);
+        assert_eq!(run.host.interrupts(), 0);
     }
 
     /// A turn on a spec's runner records where the spec's tools run on the
@@ -596,10 +542,10 @@ mod tests {
         let waker = test.waker.clone();
         test.dave.apply_remote_conversation_actions(&ndb, &waker);
 
-        assert_eq!(run.runner.interrupts.load(Ordering::SeqCst), 1);
-        assert_eq!(run.runner.mode_changes.load(Ordering::SeqCst), 1);
-        assert_eq!(run.host.interrupts.load(Ordering::SeqCst), 0);
-        assert_eq!(run.host.mode_changes.load(Ordering::SeqCst), 0);
+        assert_eq!(run.runner.interrupts(), 1);
+        assert_eq!(run.runner.mode_changes().len(), 1);
+        assert_eq!(run.host.interrupts(), 0);
+        assert_eq!(run.host.mode_changes().len(), 0);
     }
 
     /// A session under a spec this host lacks fails its turn with why, and
@@ -607,8 +553,8 @@ mod tests {
     #[test]
     fn an_unknown_spec_fails_the_turn() {
         let run = send_under("scout");
-        assert!(run.host.offered.lock().unwrap().is_empty(), "host idle");
-        assert!(run.runner.offered.lock().unwrap().is_empty(), "butler idle");
+        assert!(run.host.turns().is_empty(), "host idle");
+        assert!(run.runner.turns().is_empty(), "butler idle");
         let session = run.test.dave.session_manager.get(run.sid).unwrap();
         let error = session
             .chat

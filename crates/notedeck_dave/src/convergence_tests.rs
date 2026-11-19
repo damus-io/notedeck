@@ -25,7 +25,7 @@
 //! fixes it; that card un-ignores it.
 
 use crate::backend::shared::prepare_prompt_and_images;
-use crate::backend::{AiBackend, BackendType, ResponseStream};
+use crate::backend::BackendType;
 use crate::config::AiMode;
 use crate::conversation::{
     deliver_notes, handle_remote_permission_response, process_conversation_notes,
@@ -45,8 +45,9 @@ use crate::stream_events::{
     apply_response, dispatch_turn, handle_stream_end, reconcile_ended_turns, ApplyCtx, DispatchCtx,
     HostCtx,
 };
+use crate::test_support::RecordingBackend;
 use crate::tests::{test_config, test_secret_key, TestDave};
-use crate::tools::{Tool, ToolResponses};
+use crate::tools::ToolResponses;
 use crate::ui::{
     handle_send_action, handle_ui_action, DaveAction, SendActionResult, UiActionResult,
 };
@@ -63,7 +64,6 @@ use agentium_core::session_events::{
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
 };
-use claude_agent_sdk_rs::PermissionMode;
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteKey, SubscriptionStream, Transaction};
 use notedeck::Waker;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -216,7 +216,9 @@ impl Host {
                     session_env: &session_env,
                     profiles: &profiles,
                 };
-                dispatch_turn(session, &ScriptBackend, &ctx);
+                // The script plays the backend: its responses arrive as
+                // [`Step::Backend`], so the turn hands back no stream.
+                dispatch_turn(session, &RecordingBackend::new(), &ctx);
                 self.needs_send.remove(&sid);
             }
             Step::Backend(res) => {
@@ -596,37 +598,6 @@ enum RemoteAnswer {
     Deny(&'static str),
     /// Answer its question set with each question's first option.
     FirstOptions,
-}
-
-/// The backend a script plays: its responses arrive as [`Step::Backend`], so
-/// starting a turn hands back no stream of its own.
-struct ScriptBackend;
-
-impl AiBackend for ScriptBackend {
-    fn stream_request(
-        &self,
-        _messages: Vec<Message>,
-        _tools: Arc<HashMap<String, Tool>>,
-        _model: Option<String>,
-        _user_id: String,
-        _session_id: String,
-        _session_env: BTreeMap<String, String>,
-        _cwd: Option<PathBuf>,
-        _resume_session_id: Option<String>,
-        _permission_mode: PermissionMode,
-        _waker: Waker,
-    ) -> ResponseStream {
-        ResponseStream {
-            rx: None,
-            task: None,
-        }
-    }
-
-    fn cleanup_session(&self, _session_id: String) {}
-
-    fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
-
-    fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _waker: Waker) {}
 }
 
 /// Counts the notes matching a filter as they commit to an ndb: the scenario
@@ -1236,7 +1207,7 @@ fn hold_answer(tentative: DaveAction) -> Step {
         let result = handle_ui_action(
             tentative,
             &mut host.sessions,
-            &ScriptBackend,
+            &RecordingBackend::new(),
             &mut DaveOverlay::None,
             &mut false,
             &egui::Context::default(),
@@ -1252,7 +1223,7 @@ fn send_held_answer(message: &'static str) -> Step {
         host.session().input = message.to_string();
         let SendActionResult::NeedsRelayPublish(publish) = handle_send_action(
             &mut host.sessions,
-            &ScriptBackend,
+            &RecordingBackend::new(),
             &egui::Context::default(),
         ) else {
             panic!("a held answer to a published request publishes a response");

@@ -1357,7 +1357,6 @@ mod tests {
     use crate::tests::{test_config, test_secret_key, TestDave, TestParts};
     use crate::SessionManager;
     use nostrdb::{IngestMetadata, Ndb};
-    use notedeck::Waker;
     use std::collections::HashSet;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -2219,59 +2218,17 @@ mod tests {
     // Open with a message (OpenUri `msg`)
     // =========================================================================
 
-    /// A backend that records how many turns it was asked to dispatch and never
-    /// streams anything back.
-    struct CountingBackend {
-        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl crate::backend::AiBackend for CountingBackend {
-        fn stream_request(
-            &self,
-            _messages: Vec<crate::Message>,
-            _tools: std::sync::Arc<std::collections::HashMap<String, crate::tools::Tool>>,
-            _model: Option<String>,
-            _user_id: String,
-            _session_id: String,
-            _session_env: std::collections::BTreeMap<String, String>,
-            _cwd: Option<PathBuf>,
-            _resume_session_id: Option<String>,
-            _permission_mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) -> crate::backend::ResponseStream {
-            self.requests
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            crate::backend::ResponseStream {
-                rx: None,
-                task: None,
-            }
-        }
-
-        fn cleanup_session(&self, _session_id: String) {}
-
-        fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
-
-        fn set_permission_mode(
-            &self,
-            _session_id: String,
-            _mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) {
-        }
-    }
-
-    /// Replace `dave`'s backends with one [`CountingBackend`] serving Claude
-    /// sessions, returning its dispatch counter.
-    fn install_counting_backend(dave: &mut Dave) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    /// Replace `dave`'s backends with one silent
+    /// [`RecordingBackend`](crate::test_support::RecordingBackend) serving
+    /// Claude sessions, returning its log.
+    fn install_recording_backend(
+        dave: &mut Dave,
+    ) -> std::sync::Arc<crate::test_support::BackendLog> {
+        let backend = crate::test_support::RecordingBackend::new();
+        let log = backend.log();
         dave.backends.clear();
-        dave.backends.insert(
-            BackendType::Claude,
-            Box::new(CountingBackend {
-                requests: requests.clone(),
-            }),
-        );
-        requests
+        dave.backends.insert(BackendType::Claude, Box::new(backend));
+        log
     }
 
     /// Ingest `event` into `ndb` and wait until it is queryable.
@@ -2336,7 +2293,7 @@ mod tests {
             waker,
             ..
         } = &mut test;
-        let requests = install_counting_backend(dave);
+        let requests = install_recording_backend(dave);
         let sid = dave.session_manager.new_session(
             PathBuf::from("/tmp/proj"),
             AiMode::Agentic,
@@ -2371,7 +2328,7 @@ mod tests {
             "one user message"
         );
         assert_eq!(
-            requests.load(std::sync::atomic::Ordering::SeqCst),
+            requests.turns().len(),
             1,
             "dispatched to the backend exactly once"
         );
@@ -2477,7 +2434,7 @@ mod tests {
             waker,
             ..
         } = &mut test;
-        let requests = install_counting_backend(dave);
+        let requests = install_recording_backend(dave);
 
         let host = HostCtx::signing(ndb, sk, waker);
         let tomb = state_event("dead-sess", &dave.hostname.clone(), "deleted", sk);
@@ -2495,7 +2452,7 @@ mod tests {
         let session = dave.session_manager.get(sid).unwrap();
         assert_eq!(session.input, msg, "the message waits in the draft");
         assert!(user_texts(dave, sid).is_empty(), "nothing was sent");
-        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(requests.turns().len(), 0);
     }
 
     /// A live local session no backend on this device runs can't take the
@@ -2505,7 +2462,7 @@ mod tests {
     fn open_message_drafts_when_no_backend_runs_the_session() {
         let mut test = TestDave::new();
         let dave = &mut test.dave;
-        install_counting_backend(dave);
+        install_recording_backend(dave);
         let claude = dave.session_manager.new_session(
             PathBuf::from("/tmp/proj"),
             AiMode::Agentic,

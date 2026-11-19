@@ -15,6 +15,9 @@
 //! through the chrome, as a user does.
 
 pub mod fake_openai;
+pub mod recording_backend;
+
+pub use recording_backend::{BackendLog, RecordedTurn, RecordingBackend, Reply};
 
 use crate::backend::{BackendType, RemoteOnlyBackend};
 use crate::config::{AiMode, AiProvider, DaveSettings};

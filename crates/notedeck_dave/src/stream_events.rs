@@ -1583,6 +1583,7 @@ mod tests {
     use super::*;
     use crate::config::AiMode;
     use crate::messages::SubagentStatus;
+    use crate::test_support::{BackendLog, RecordedTurn, RecordingBackend, Reply};
     use crate::tests::{test_config, test_secret_key};
     use nostrdb::Ndb;
     use std::path::PathBuf;
@@ -2136,62 +2137,6 @@ mod tests {
         assert_eq!(f.session.status(), AgentStatus::Done);
     }
 
-    /// A backend that records what the status bar's COMPACT asks of it: the
-    /// last user message of each turn it is handed, and how many times it
-    /// was asked to compact directly.
-    struct CompactProbe {
-        turns: std::sync::mpsc::Sender<String>,
-        compacts: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl AiBackend for CompactProbe {
-        fn stream_request(
-            &self,
-            messages: Vec<Message>,
-            _tools: Arc<HashMap<String, Tool>>,
-            _model: Option<String>,
-            _user_id: String,
-            _session_id: String,
-            _session_env: BTreeMap<String, String>,
-            _cwd: Option<std::path::PathBuf>,
-            _resume_session_id: Option<String>,
-            _permission_mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) -> crate::backend::ResponseStream {
-            let last_user = messages.iter().rev().find_map(|m| match m {
-                Message::User(u) => Some(u.text.clone()),
-                _ => None,
-            });
-            let _ = self.turns.send(last_user.unwrap_or_default());
-            crate::backend::ResponseStream {
-                rx: None,
-                task: None,
-            }
-        }
-
-        fn cleanup_session(&self, _session_id: String) {}
-
-        fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
-
-        fn set_permission_mode(
-            &self,
-            _session_id: String,
-            _mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) {
-        }
-
-        fn compact_session(
-            &self,
-            _session_id: String,
-            _waker: Waker,
-        ) -> Option<std::sync::mpsc::Receiver<DaveApiResponse>> {
-            self.compacts
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            None
-        }
-    }
-
     /// What one COMPACT press did: the turns the backend was handed and the
     /// direct compacts it was asked for.
     struct CompactRun {
@@ -2208,22 +2153,16 @@ mod tests {
     }
 
     /// Press COMPACT on one fresh session on `backend`, made remote when
-    /// `remote`, with a [`CompactProbe`] standing in for that backend.
+    /// `remote`, with a [`RecordingBackend`] standing in for that backend.
     fn press_compact(backend: BackendType, remote: bool) -> CompactRun {
         let mut test = crate::tests::TestDave::new();
         let [sid] = test.add_sessions(["/tmp/compact"], backend);
         if remote {
             test.dave.session_manager.get_mut(sid).unwrap().source = session::SessionSource::Remote;
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        test.dave.backends.insert(
-            backend,
-            Box::new(CompactProbe {
-                turns: tx,
-                compacts: compacts.clone(),
-            }),
-        );
+        let recorder = RecordingBackend::new();
+        let log = recorder.log();
+        test.dave.backends.insert(backend, Box::new(recorder));
         let parts = test.parts();
         parts.dave.compact_active(&parts.host);
         let last_user = match test.dave.session_manager.get(sid).unwrap().chat.last() {
@@ -2234,8 +2173,12 @@ mod tests {
             _ => None,
         };
         CompactRun {
-            turns: rx.try_iter().collect(),
-            compacts: compacts.load(std::sync::atomic::Ordering::SeqCst),
+            turns: log
+                .turns()
+                .into_iter()
+                .map(|t| t.last_user.unwrap_or_default())
+                .collect(),
+            compacts: log.compacts(),
             last_user,
         }
     }
@@ -2281,58 +2224,10 @@ mod tests {
         assert!(run.last_user.is_none());
     }
 
-    /// What one probed turn handed the backend.
-    struct ProbedTurn {
-        model: Option<String>,
-        env: BTreeMap<String, String>,
-    }
-
-    /// A backend that records the model and env of each turn it is handed.
-    struct TurnProbe {
-        turns: std::sync::mpsc::Sender<ProbedTurn>,
-    }
-
-    impl AiBackend for TurnProbe {
-        fn stream_request(
-            &self,
-            _messages: Vec<Message>,
-            _tools: Arc<HashMap<String, Tool>>,
-            model: Option<String>,
-            _user_id: String,
-            _session_id: String,
-            session_env: BTreeMap<String, String>,
-            _cwd: Option<std::path::PathBuf>,
-            _resume_session_id: Option<String>,
-            _permission_mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) -> crate::backend::ResponseStream {
-            let _ = self.turns.send(ProbedTurn {
-                model,
-                env: session_env,
-            });
-            crate::backend::ResponseStream {
-                rx: None,
-                task: None,
-            }
-        }
-
-        fn cleanup_session(&self, _session_id: String) {}
-
-        fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
-
-        fn set_permission_mode(
-            &self,
-            _session_id: String,
-            _mode: claude_agent_sdk_rs::PermissionMode,
-            _waker: Waker,
-        ) {
-        }
-    }
-
     /// What sending one message on a Claude session under profile `hydra`
     /// did, with `profiles` as the account's profiles.
     struct ProfileRun {
-        turns: Vec<ProbedTurn>,
+        turns: Vec<RecordedTurn>,
         chat: Vec<Message>,
         status: crate::agent_status::AgentStatus,
     }
@@ -2346,10 +2241,11 @@ mod tests {
             session.details.hostname = "monad".to_string();
         }
         test.dave.backend_profiles = profiles;
-        let (tx, rx) = std::sync::mpsc::channel();
+        let recorder = RecordingBackend::new();
+        let log = recorder.log();
         test.dave
             .backends
-            .insert(BackendType::Claude, Box::new(TurnProbe { turns: tx }));
+            .insert(BackendType::Claude, Box::new(recorder));
 
         let parts = test.parts();
         assert!(parts.dave.add_user_message_for_session(
@@ -2364,7 +2260,7 @@ mod tests {
         let session = test.dave.session_manager.get_mut(sid).unwrap();
         session.update_status();
         ProfileRun {
-            turns: rx.try_iter().collect(),
+            turns: log.turns(),
             chat: session.chat.clone(),
             status: session.status(),
         }
@@ -2432,52 +2328,7 @@ mod tests {
         use crate::agent_status::AgentStatus;
         use crate::tool_round::{ToolJob, CANCELLED};
         use std::sync::mpsc;
-        use std::sync::Mutex;
         use std::time::{Duration, Instant};
-
-        /// A backend whose next turn streams what the test sends, ending
-        /// when the test drops its sender.
-        struct HandedStream {
-            next: Mutex<Option<mpsc::Receiver<DaveApiResponse>>>,
-            /// The names of the tools the last request offered, sorted.
-            offered: Arc<Mutex<Vec<String>>>,
-        }
-
-        impl AiBackend for HandedStream {
-            fn stream_request(
-                &self,
-                _messages: Vec<Message>,
-                tools: Arc<HashMap<String, Tool>>,
-                _model: Option<String>,
-                _user_id: String,
-                _session_id: String,
-                _session_env: BTreeMap<String, String>,
-                _cwd: Option<std::path::PathBuf>,
-                _resume_session_id: Option<String>,
-                _permission_mode: claude_agent_sdk_rs::PermissionMode,
-                _waker: Waker,
-            ) -> crate::backend::ResponseStream {
-                let mut names: Vec<String> = tools.keys().cloned().collect();
-                names.sort();
-                *self.offered.lock().unwrap() = names;
-                crate::backend::ResponseStream {
-                    rx: self.next.lock().unwrap().take(),
-                    task: None,
-                }
-            }
-
-            fn cleanup_session(&self, _session_id: String) {}
-
-            fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
-
-            fn set_permission_mode(
-                &self,
-                _session_id: String,
-                _mode: claude_agent_sdk_rs::PermissionMode,
-                _waker: Waker,
-            ) {
-            }
-        }
 
         /// A Dave whose one OpenAI session `sid` has sent "go" and is
         /// streaming the turn `stream` feeds.
@@ -2485,8 +2336,8 @@ mod tests {
             test: crate::tests::TestDave,
             sid: SessionId,
             stream: mpsc::Sender<DaveApiResponse>,
-            /// The tools the turn's request offered (see [`HandedStream`]).
-            offered: Arc<Mutex<Vec<String>>>,
+            /// What the turn's backend was asked.
+            log: Arc<BackendLog>,
         }
 
         fn mid_turn() -> MidTurn {
@@ -2498,15 +2349,11 @@ mod tests {
             let mut test = crate::tests::TestDave::new();
             let [sid] = test.add_sessions(["/tmp/tools"], BackendType::OpenAI);
             test.dave.session_manager.get_mut(sid).unwrap().spec_tools = spec_tools;
-            let (stream, rx) = mpsc::channel();
-            let offered = Arc::default();
-            test.dave.backends.insert(
-                BackendType::OpenAI,
-                Box::new(HandedStream {
-                    next: Mutex::new(Some(rx)),
-                    offered: Arc::clone(&offered),
-                }),
-            );
+            let recorder = RecordingBackend::new().replying(Reply::Handed);
+            let log = recorder.log();
+            test.dave
+                .backends
+                .insert(BackendType::OpenAI, Box::new(recorder));
             let parts = test.parts();
             assert!(parts.dave.add_user_message_for_session(
                 sid,
@@ -2515,11 +2362,12 @@ mod tests {
                 Vec::new()
             ));
             parts.dave.send_user_message_for(sid, &parts.host);
+            let stream = log.take_stream().expect("the turn's stream");
             MidTurn {
                 test,
                 sid,
                 stream,
-                offered,
+                log,
             }
         }
 
@@ -3062,12 +2910,10 @@ mod tests {
                     mut test,
                     sid,
                     stream,
-                    offered,
+                    log,
                 } = mid_turn_under(Some(headway_tools()));
-                assert_eq!(
-                    *offered.lock().unwrap(),
-                    ["headway_move_card", "headway_show_board"]
-                );
+                let offered = log.turns().remove(0).tools;
+                assert_eq!(offered, ["headway_move_card", "headway_show_board"]);
                 stream
                     .send(DaveApiResponse::ToolCalls(vec![app_call(
                         "s",
@@ -3377,14 +3223,11 @@ mod tests {
                     mut test,
                     sid,
                     stream,
-                    offered,
+                    log,
                 } = mid_turn_under(Some(butler_with_researcher(base_url)));
-                assert!(offered
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|t| t == "ask_researcher"));
-                assert!(!offered.lock().unwrap().iter().any(|t| t == "web_fetch"));
+                let offered = log.turns().remove(0).tools;
+                assert!(offered.iter().any(|t| t == "ask_researcher"));
+                assert!(!offered.iter().any(|t| t == "web_fetch"));
                 let question = ToolCall::new(
                     "q".into(),
                     ToolCalls::App(AppToolCall {
@@ -3604,9 +3447,10 @@ mod tests {
                     mut test,
                     sid,
                     stream,
-                    offered,
+                    log,
                 } = mid_turn_under(Some(tools));
-                assert!(offered.lock().unwrap().iter().any(|n| n == "Write"));
+                let offered = log.turns().remove(0).tools;
+                assert!(offered.iter().any(|n| n == "Write"));
                 let tree = tempfile::tempdir().unwrap();
                 let agentic = test
                     .dave
@@ -3673,13 +3517,10 @@ mod tests {
                     mut test,
                     sid,
                     stream,
-                    offered,
+                    log,
                 } = mid_turn();
-                assert!(!offered
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|n| n.starts_with("headway")));
+                let offered = log.turns().remove(0).tools;
+                assert!(!offered.iter().any(|n| n.starts_with("headway")));
                 stream
                     .send(DaveApiResponse::ToolCalls(vec![app_call(
                         "x",
