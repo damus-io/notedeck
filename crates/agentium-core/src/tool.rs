@@ -10,8 +10,51 @@
 //! lets a single [`ToolSpec`] build an OpenAI `FunctionObject` or an MCP
 //! `tools/list` entry.
 
+use std::fmt;
+
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+mod fields;
+
+pub use fields::serde_fields;
+
+/// A tool's typed input that describes its own arguments, so the
+/// [`ToolSpec`] a model is shown is built from the struct its calls parse
+/// into (see [`ToolSpec::for_input`]) rather than written out beside it.
+///
+/// [`args`](Self::args) still holds what serde can't know (each argument's
+/// description, its JSON type, whether it is required, how it reads on a
+/// command line); the names are checked against serde's own field list, so
+/// the two can't drift apart unnoticed.
+pub trait ToolInput: DeserializeOwned {
+    /// One [`ToolArg`] per field, named as serde reads it, in the order the
+    /// model is shown them.
+    fn args() -> Vec<ToolArg>;
+}
+
+/// Where a [`ToolSpec`]'s arguments and the fields of the type its calls
+/// parse into disagree (see [`ToolSpec::arg_drift`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgDrift {
+    /// Fields the type reads that the spec never describes: a model is never
+    /// told it may send them.
+    pub missing: Vec<&'static str>,
+    /// Arguments the spec describes that the type doesn't read: a model is
+    /// told about them and its value is refused or dropped.
+    pub extra: Vec<&'static str>,
+}
+
+impl fmt::Display for ArgDrift {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "undescribed fields {:?}, unread arguments {:?}",
+            self.missing, self.extra
+        )
+    }
+}
 
 /// The JSON type of a tool argument, as advertised in the tool's schema.
 #[derive(Debug, Clone)]
@@ -427,6 +470,22 @@ impl ToolSpec {
         }
     }
 
+    /// Declare a [`ToolKind::Data`] tool whose calls parse into `T`, its
+    /// arguments the ones `T` describes ([`ToolInput::args`]).
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when those arguments don't name exactly the fields
+    /// serde reads into `T` (see [`arg_drift`](Self::arg_drift)).
+    pub fn for_input<T: ToolInput>(name: &'static str, description: &'static str) -> Self {
+        let spec = Self::new(name, description, T::args());
+        #[cfg(debug_assertions)]
+        if let Some(drift) = spec.arg_drift::<T>() {
+            panic!("{name}'s arguments drifted from its input type: {drift}");
+        }
+        spec
+    }
+
     /// Mark this spec as a [`ToolKind::Ui`] tool.
     pub fn ui(mut self) -> Self {
         self.kind = ToolKind::Ui;
@@ -712,6 +771,39 @@ impl ToolSpec {
 
         Value::Object(parameters)
     }
+
+    /// Where this spec's arguments and the fields serde reads into `T`
+    /// disagree, or `None` when they name the same set. Order isn't
+    /// compared: the spec's is the order the model is shown.
+    ///
+    /// `None` too when `T` has no field list to compare against (a
+    /// `#[serde(flatten)]` struct, a [`Value`]; see [`serde_fields`]), so a
+    /// `None` here is only proof of agreement for a plain struct.
+    pub fn arg_drift<T: DeserializeOwned>(&self) -> Option<ArgDrift> {
+        self.drift_from(serde_fields::<T>()?)
+    }
+
+    /// Where this spec's arguments and `fields`, the names a type reads,
+    /// disagree: [`arg_drift`](Self::arg_drift) for a type known only by
+    /// its field list.
+    pub fn drift_from(&self, fields: &[&'static str]) -> Option<ArgDrift> {
+        let described = |field: &&str| self.arguments.iter().any(|arg| arg.name == *field);
+        let missing: Vec<&'static str> = fields
+            .iter()
+            .copied()
+            .filter(|field| !described(field))
+            .collect();
+        let extra: Vec<&'static str> = self
+            .arguments
+            .iter()
+            .map(|arg| arg.name)
+            .filter(|name| !fields.contains(name))
+            .collect();
+        if missing.is_empty() && extra.is_empty() {
+            return None;
+        }
+        Some(ArgDrift { missing, extra })
+    }
 }
 
 /// Write `arg`'s `x-nd-` keys onto its property of
@@ -896,5 +988,77 @@ mod tests {
         );
         let schema = spec.json_schema().to_string();
         assert!(!schema.contains("x-nd-"), "{schema}");
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct ShowInput {
+        card: String,
+        #[serde(default)]
+        json: bool,
+    }
+
+    impl ToolInput for ShowInput {
+        fn args() -> Vec<ToolArg> {
+            vec![
+                ToolArg::new("card", ToolArgType::String, "The card.").required(true),
+                ToolArg::new("json", ToolArgType::Boolean, "Print JSON."),
+            ]
+        }
+    }
+
+    /// A spec built from its input type carries the type's arguments, in
+    /// their order, and agrees with the type.
+    #[test]
+    fn a_spec_built_from_its_input_agrees_with_it() {
+        let spec = ToolSpec::for_input::<ShowInput>("demo_show", "Show a thing.");
+        let names: Vec<_> = spec.arguments().iter().map(ToolArg::name).collect();
+        assert_eq!(names, ["card", "json"]);
+        assert_eq!(spec.arg_drift::<ShowInput>(), None);
+    }
+
+    /// A hand-written spec that names a field the type doesn't read, and
+    /// leaves out one it does, says which on each side.
+    #[test]
+    fn drift_names_both_sides() {
+        let spec = ToolSpec::new(
+            "demo_show",
+            "Show a thing.",
+            vec![
+                ToolArg::new("card", ToolArgType::String, "The card."),
+                ToolArg::new("jsno", ToolArgType::Boolean, "Print JSON."),
+            ],
+        );
+        assert_eq!(
+            spec.arg_drift::<ShowInput>(),
+            Some(ArgDrift {
+                missing: vec!["json"],
+                extra: vec!["jsno"],
+            })
+        );
+        // A type with no field list can't drift: there's nothing to compare.
+        assert_eq!(spec.arg_drift::<Value>(), None);
+    }
+
+    struct Typo;
+
+    impl<'de> Deserialize<'de> for Typo {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            ShowInput::deserialize(d).map(|_| Typo)
+        }
+    }
+
+    impl ToolInput for Typo {
+        fn args() -> Vec<ToolArg> {
+            vec![ToolArg::new("card", ToolArgType::String, "The card.")]
+        }
+    }
+
+    /// A debug build refuses to build a spec that drifted from its input.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "demo_show's arguments drifted from its input type")]
+    fn for_input_refuses_drift_in_a_debug_build() {
+        ToolSpec::for_input::<Typo>("demo_show", "Show a thing.");
     }
 }

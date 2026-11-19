@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use notedeck::{
-    App, AppAction, AppResponse, AppTool, Notedeck, RegisteredTool, ToolContext, ToolInvocation,
-    ToolKind, ToolOutcome, ToolSpec,
+    App, AppAction, AppResponse, AppTool, ArgDrift, Notedeck, RegisteredTool, ToolContext,
+    ToolInvocation, ToolKind, ToolOutcome, ToolSpec,
 };
 use notedeck_chrome::{Chrome, NotedeckApp, ToolPlace};
 
@@ -432,4 +432,89 @@ async fn a_current_ref_tool_is_runnable_on_the_current_ref() {
         archive.keys.map(|keys| keys.to_string()).as_deref(),
         Some("a")
     );
+}
+
+/// Every data tool the built-in apps register: Columns', Headway's and
+/// Dave's always, and Notebook's when it is built in.
+fn built_in_data_tools(ctx: &mut notedeck::AppContext<'_>) -> Vec<RegisteredTool> {
+    let dave = notedeck_dave::Dave::new(None, ctx.ndb.clone(), ctx.waker.clone(), ctx.path);
+    let mut tools = notedeck_columns::nostr_tools::tools();
+    tools.extend(App::tools(&notedeck_headway::Headway::new()));
+    tools.extend(App::tools(&dave));
+    #[cfg(feature = "notebook")]
+    tools.extend(NotedeckApp::Notebook(Box::default()).tools());
+    tools
+}
+
+/// A drift that is meant: two tools share one `Args` type, and `field`
+/// is read only by `owner`, the other one. The tool's spec leaves it out
+/// because the tool ignores it.
+struct SharedArg {
+    tool: &'static str,
+    field: &'static str,
+    owner: &'static str,
+}
+
+/// Every [`SharedArg`] among the built-in tools.
+const SHARED_ARGS: &[SharedArg] = &[
+    SharedArg {
+        tool: "agentium_approve",
+        field: "interrupt",
+        owner: "agentium_deny",
+    },
+    SharedArg {
+        tool: "agentium_unlink",
+        field: "issue_url",
+        owner: "agentium_link",
+    },
+];
+
+/// Every built-in data tool's spec names exactly the fields serde reads
+/// into its `Args`: no argument a model is told about is refused or
+/// dropped, and none it may send is left undescribed. The one exception is
+/// a [`SharedArg`], pinned exactly so it can't hide another drift. A tool
+/// whose `Args` has no field list (a `#[serde(flatten)]` struct, a
+/// `Value`) can't be checked, so the test also says how many were.
+#[tokio::test]
+async fn every_data_tool_describes_exactly_its_args() {
+    let dir = tempfile::TempDir::new().expect("tmp dir");
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let egui_ctx = egui::Context::default();
+    let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
+    let tools = built_in_data_tools(&mut notedeck.app_context());
+
+    let drifted: Vec<String> = tools
+        .iter()
+        .filter_map(|tool| {
+            let drift = tool.arg_drift();
+            let meant = SHARED_ARGS.iter().find(|s| s.tool == tool.name());
+            let expected = meant.map(|s| ArgDrift {
+                missing: vec![s.field],
+                extra: Vec::new(),
+            });
+            (drift != expected).then(|| format!("{}: {drift:?}", tool.name()))
+        })
+        .collect();
+    assert!(drifted.is_empty(), "drifted:\n{}", drifted.join("\n"));
+
+    // A shared field is one its owner reads and describes.
+    for shared in SHARED_ARGS {
+        let owner = tools
+            .iter()
+            .find(|tool| tool.name() == shared.owner)
+            .unwrap_or_else(|| panic!("{} is registered", shared.owner));
+        let described = owner.spec().arguments().iter().map(|arg| arg.name());
+        assert!(described.clone().any(|name| name == shared.field));
+        assert_eq!(owner.arg_drift(), None, "{}", shared.owner);
+    }
+
+    // A floor, measured: 40 of the 78 tools were checkable when this test
+    // was written (the rest flatten a shared args struct into theirs). A
+    // tool added or made checkable raises the count; one that falls below
+    // means a checked tool's `Args` stopped having a field list.
+    let checked = tools
+        .iter()
+        .filter(|tool| tool.args_fields().is_some())
+        .count();
+    assert!(checked >= 40, "only {checked} of {} checked", tools.len());
 }

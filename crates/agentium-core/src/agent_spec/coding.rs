@@ -50,67 +50,47 @@
 //! that crate too, so both ends read one definition.
 
 use crate::file_update::{FileUpdate, FileUpdateType};
-use crate::tool::{Capability, ToolArg, ToolArgType, ToolSpec};
+use crate::tool::{Capability, ToolArg, ToolArgType, ToolInput, ToolSpec};
 
 pub use notedeck_agent_proto::call::{BASH, EDIT, GLOB, GREP, READ, WRITE};
 
-/// Read a file's text.
-pub fn read() -> ToolSpec {
-    ToolSpec::new(
-        READ,
-        "Read a file and return its lines, numbered as cat -n numbers them. For a long \
-         file, pass offset and limit to read part of it.",
+/// The file path every file tool takes first.
+fn file_path() -> ToolArg {
+    ToolArg::new(
+        "file_path",
+        ToolArgType::String,
+        "The file's absolute path.",
+    )
+    .required(true)
+}
+
+impl ToolInput for ReadInput {
+    fn args() -> Vec<ToolArg> {
         vec![
-            ToolArg::new(
-                "file_path",
-                ToolArgType::String,
-                "The file's absolute path.",
-            )
-            .required(true),
+            file_path(),
             ToolArg::new(
                 "offset",
                 ToolArgType::Integer,
                 "The 1-based line to start reading from.",
             ),
             ToolArg::new("limit", ToolArgType::Integer, "How many lines to read."),
-        ],
-    )
-    .read_only()
-    .capability(Capability::Observe)
+        ]
+    }
 }
 
-/// Write a whole file.
-pub fn write() -> ToolSpec {
-    ToolSpec::new(
-        WRITE,
-        "Write a file, replacing it if it exists. Prefer Edit to change part of an \
-         existing file.",
+impl ToolInput for WriteInput {
+    fn args() -> Vec<ToolArg> {
         vec![
-            ToolArg::new(
-                "file_path",
-                ToolArgType::String,
-                "The file's absolute path.",
-            )
-            .required(true),
+            file_path(),
             ToolArg::new("content", ToolArgType::String, "The file's new content.").required(true),
-        ],
-    )
-    .capability(Capability::MutateWorkspace)
+        ]
+    }
 }
 
-/// Replace exact text in a file.
-pub fn edit() -> ToolSpec {
-    ToolSpec::new(
-        EDIT,
-        "Replace exact text in a file. old_string must match the file exactly, \
-         whitespace included, and occur once unless replace_all is set.",
+impl ToolInput for EditInput {
+    fn args() -> Vec<ToolArg> {
         vec![
-            ToolArg::new(
-                "file_path",
-                ToolArgType::String,
-                "The file's absolute path.",
-            )
-            .required(true),
+            file_path(),
             ToolArg::new("old_string", ToolArgType::String, "The text to replace.").required(true),
             ToolArg::new(
                 "new_string",
@@ -123,17 +103,12 @@ pub fn edit() -> ToolSpec {
                 ToolArgType::Boolean,
                 "Replace every occurrence of old_string, not just one.",
             ),
-        ],
-    )
-    .capability(Capability::MutateWorkspace)
+        ]
+    }
 }
 
-/// Search file contents with a regular expression.
-pub fn grep() -> ToolSpec {
-    ToolSpec::new(
-        GREP,
-        "Search file contents with a regular expression. Returns the matching files by \
-         default; set output_mode to see the matching lines or counts.",
+impl ToolInput for GrepInput {
+    fn args() -> Vec<ToolArg> {
         vec![
             ToolArg::new("pattern", ToolArgType::String, "The regular expression.").required(true),
             ToolArg::new(
@@ -157,17 +132,12 @@ pub fn grep() -> ToolSpec {
                 ToolArgType::Integer,
                 "Return at most this many results.",
             ),
-        ],
-    )
-    .read_only()
-    .capability(Capability::Observe)
+        ]
+    }
 }
 
-/// Find files by name.
-pub fn glob() -> ToolSpec {
-    ToolSpec::new(
-        GLOB,
-        "Find files whose path matches a glob pattern, e.g. \"src/**/*.rs\".",
+impl ToolInput for GlobInput {
+    fn args() -> Vec<ToolArg> {
         vec![
             ToolArg::new("pattern", ToolArgType::String, "The glob pattern.").required(true),
             ToolArg::new(
@@ -175,17 +145,12 @@ pub fn glob() -> ToolSpec {
                 ToolArgType::String,
                 "The directory to search; the working tree when left out.",
             ),
-        ],
-    )
-    .read_only()
-    .capability(Capability::Observe)
+        ]
+    }
 }
 
-/// Run a shell command.
-pub fn bash() -> ToolSpec {
-    ToolSpec::new(
-        BASH,
-        "Run a shell command in the working tree and return its output and exit status.",
+impl ToolInput for BashInput {
+    fn args() -> Vec<ToolArg> {
         vec![
             ToolArg::new("command", ToolArgType::String, "The command to run.").required(true),
             ToolArg::new(
@@ -198,7 +163,67 @@ pub fn bash() -> ToolSpec {
                 ToolArgType::Integer,
                 "How long it may run, in milliseconds.",
             ),
-        ],
+        ]
+    }
+}
+
+/// Read a file's text.
+pub fn read() -> ToolSpec {
+    ToolSpec::for_input::<ReadInput>(
+        READ,
+        "Read a file and return its lines, numbered as cat -n numbers them. For a long \
+         file, pass offset and limit to read part of it.",
+    )
+    .read_only()
+    .capability(Capability::Observe)
+}
+
+/// Write a whole file.
+pub fn write() -> ToolSpec {
+    ToolSpec::for_input::<WriteInput>(
+        WRITE,
+        "Write a file, replacing it if it exists. Prefer Edit to change part of an \
+         existing file.",
+    )
+    .capability(Capability::MutateWorkspace)
+}
+
+/// Replace exact text in a file.
+pub fn edit() -> ToolSpec {
+    ToolSpec::for_input::<EditInput>(
+        EDIT,
+        "Replace exact text in a file. old_string must match the file exactly, \
+         whitespace included, and occur once unless replace_all is set.",
+    )
+    .capability(Capability::MutateWorkspace)
+}
+
+/// Search file contents with a regular expression.
+pub fn grep() -> ToolSpec {
+    ToolSpec::for_input::<GrepInput>(
+        GREP,
+        "Search file contents with a regular expression. Returns the matching files by \
+         default; set output_mode to see the matching lines or counts.",
+    )
+    .read_only()
+    .capability(Capability::Observe)
+}
+
+/// Find files by name.
+pub fn glob() -> ToolSpec {
+    ToolSpec::for_input::<GlobInput>(
+        GLOB,
+        "Find files whose path matches a glob pattern, e.g. \"src/**/*.rs\".",
+    )
+    .read_only()
+    .capability(Capability::Observe)
+}
+
+/// Run a shell command.
+pub fn bash() -> ToolSpec {
+    ToolSpec::for_input::<BashInput>(
+        BASH,
+        "Run a shell command in the working tree and return its output and exit status.",
     )
     .capability(Capability::Shell)
 }
@@ -250,6 +275,7 @@ pub fn file_update(call: &CodingCall) -> Option<FileUpdate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::serde_fields;
     use serde_json::Value;
 
     /// One call of every tool with every argument set.
@@ -297,31 +323,31 @@ mod tests {
             .unwrap()
     }
 
-    fn keys(value: &Value) -> Vec<&str> {
-        let mut keys: Vec<&str> = value
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(|k| k.as_str())
-            .collect();
-        keys.sort();
-        keys
+    /// `spec` describes exactly the fields serde reads into `T`, and that is
+    /// a real comparison: `T` has a field list to compare against.
+    fn assert_agrees<T: ToolInput>(spec: ToolSpec) {
+        assert!(serde_fields::<T>().is_some(), "{}", spec.name());
+        assert_eq!(spec.arg_drift::<T>(), None, "{}", spec.name());
     }
 
     /// The schema the model is shown and the struct a call parses into
     /// name the same fields, so nothing the model is told about is dropped
     /// and nothing it may send is left undescribed.
     #[test]
-    fn each_schema_names_exactly_its_inputs_fields() {
+    fn each_spec_describes_exactly_its_inputs_fields() {
+        assert_agrees::<ReadInput>(read());
+        assert_agrees::<WriteInput>(write());
+        assert_agrees::<EditInput>(edit());
+        assert_agrees::<GrepInput>(grep());
+        assert_agrees::<GlobInput>(glob());
+        assert_agrees::<BashInput>(bash());
+    }
+
+    /// The schema's required fields are all a call needs.
+    #[test]
+    fn the_required_arguments_are_enough_to_call() {
         for call in every_argument() {
             let params = spec_of(call.name()).json_schema();
-            assert_eq!(
-                keys(&params["properties"]),
-                keys(&call.input()),
-                "{}",
-                call.name()
-            );
-            // And the schema's required fields are all a call needs.
             let required: serde_json::Map<String, Value> = params["required"]
                 .as_array()
                 .unwrap()

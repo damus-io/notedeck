@@ -53,7 +53,8 @@ use crate::{Accounts, AppAction, AppId, DataPath, ExplicitPublishApi, NoteCache}
 /// crate-root `notedeck::ToolSpec`) keep resolving for the browser-level tool
 /// machinery below, which builds specs from these types.
 pub use agentium_core::tool::{
-    Capability, ModelReach, StreamMode, ToolArg, ToolArgType, ToolKind, ToolSpec,
+    serde_fields, ArgDrift, Capability, ModelReach, StreamMode, ToolArg, ToolArgType, ToolInput,
+    ToolKind, ToolSpec,
 };
 
 /// The canonical [`QueryCall`] — the single nostrdb query tool — is likewise
@@ -282,8 +283,10 @@ pub trait AppTool: Send + Sync {
     /// The tool's typed result, serialized back to the backend as JSON.
     type Output: Serialize;
 
-    /// The portable [`ToolSpec`] advertised for this tool. Keep it in sync with
-    /// [`Args`](Self::Args) by hand (a future revision may derive it).
+    /// The portable [`ToolSpec`] advertised for this tool. Its arguments name
+    /// exactly [`Args`](Self::Args)' fields: build it with
+    /// [`ToolSpec::for_input`] when `Args` is a [`ToolInput`], and
+    /// [`RegisteredTool::arg_drift`] says where a hand-written one disagrees.
     fn spec(&self) -> ToolSpec;
 
     /// Run the tool against `cx` with typed `args`, returning typed output or a
@@ -501,6 +504,10 @@ enum Handler {
 pub struct RegisteredTool {
     spec: ToolSpec,
     handler: Handler,
+    /// [`serde_fields`] of the tool's `Args` type, which only the
+    /// constructor knows (see [`args_fields`](Self::args_fields)). A fn
+    /// pointer, so registering a tool computes nothing.
+    args_fields: fn() -> Option<&'static [&'static str]>,
     /// The app that contributed it, once the shell has said (see
     /// [`owned_by`](Self::owned_by)).
     owner: Option<AppId>,
@@ -535,6 +542,7 @@ impl RegisteredTool {
         Self {
             spec,
             handler: Handler::Call(handler),
+            args_fields: serde_fields::<T::Args>,
             owner: None,
         }
     }
@@ -571,6 +579,7 @@ impl RegisteredTool {
         Self {
             spec,
             handler: Handler::Call(handler),
+            args_fields: serde_fields::<T::Args>,
             owner: None,
         }
     }
@@ -591,6 +600,7 @@ impl RegisteredTool {
         Self {
             spec,
             handler: Handler::Stream(handler),
+            args_fields: serde_fields::<T::Args>,
             owner: None,
         }
     }
@@ -627,6 +637,19 @@ impl RegisteredTool {
     /// The portable spec advertised for this tool.
     pub fn spec(&self) -> &ToolSpec {
         &self.spec
+    }
+
+    /// The names serde reads into the tool's `Args`, or `None` when `Args`
+    /// has no field list (see [`serde_fields`]).
+    pub fn args_fields(&self) -> Option<&'static [&'static str]> {
+        (self.args_fields)()
+    }
+
+    /// Where the tool's spec and the fields of its `Args` type disagree, or
+    /// `None` when they agree or `Args` has no field list to compare (see
+    /// [`ToolSpec::arg_drift`]).
+    pub fn arg_drift(&self) -> Option<ArgDrift> {
+        self.spec.drift_from(self.args_fields()?)
     }
 
     /// The tool's registered name (shorthand for `self.spec().name()`).
