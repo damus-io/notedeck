@@ -1529,34 +1529,54 @@ pub fn load_run_configs_from_ndb(
     map
 }
 
-/// Load every live backend profile from kind-31992 events in ndb, keyed by
-/// slug.
+/// Load an account's PNS-wrapped replaceable records of `kind`, keyed by
+/// d-tag: each d-tag's newest revision, read with `from_note`.
 ///
-/// Profiles are account-wide, so unlike run configs nothing narrows them to a
-/// host. `query_replaceable` keeps each slug's newest revision by
+/// `query_replaceable` keeps each d-tag's newest revision by
 /// `(created_at, id)` — a total order, so a same-second tie resolves the same
-/// way on every device — and a slug whose newest revision is a tombstone is
-/// absent rather than resurrected by an older upsert. The map then fixes the
-/// output order, since `query_replaceable` hands back a per-run-randomized bag.
-pub fn load_backend_profiles_from_ndb(
+/// way on every device. `from_note` answers `None` for a tombstone (or a note
+/// it can't read), so a d-tag whose newest revision is deleted is absent
+/// rather than resurrected by an older upsert. The map then fixes the output
+/// order, since `query_replaceable` hands back a per-run-randomized bag.
+pub fn load_account_records<T>(
     ndb: &Ndb,
     txn: &Transaction,
     author: &nostrdb_net::Pubkey,
-) -> std::collections::BTreeMap<String, crate::config::BackendProfile> {
-    use crate::config::AI_BACKEND_PROFILE_KIND;
-    use crate::session_events::backend_profile_from_note;
-
+    kind: u32,
+    from_note: impl Fn(&nostrdb::Note) -> Option<T>,
+) -> std::collections::BTreeMap<String, T> {
     let filter = Filter::new()
-        .kinds([AI_BACKEND_PROFILE_KIND as u64])
+        .kinds([kind as u64])
         .authors([author.bytes()])
         .build();
     query_replaceable(ndb, txn, &[filter])
         .into_iter()
         .filter_map(|key| ndb.get_note_by_key(txn, key).ok())
-        // None for tombstones
-        .filter_map(|note| backend_profile_from_note(&note))
-        .map(|profile| (profile.slug.clone(), profile))
+        .filter_map(|note| {
+            let record = from_note(&note)?;
+            let d_tag = crate::session_events::get_tag_value(&note, "d")?;
+            Some((d_tag.to_owned(), record))
+        })
         .collect()
+}
+
+/// Load every live backend profile from kind-31992 events in ndb, keyed by
+/// slug (the d-tag); see [`load_account_records`].
+///
+/// Profiles are account-wide, so unlike run configs nothing narrows them to a
+/// host.
+pub fn load_backend_profiles_from_ndb(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &nostrdb_net::Pubkey,
+) -> std::collections::BTreeMap<String, crate::config::BackendProfile> {
+    load_account_records(
+        ndb,
+        txn,
+        author,
+        crate::config::AI_BACKEND_PROFILE_KIND,
+        crate::session_events::backend_profile_from_note,
+    )
 }
 
 /// Look up the latest valid revision of a single session by d-tag.

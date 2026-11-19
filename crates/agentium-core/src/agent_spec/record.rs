@@ -37,7 +37,7 @@
 
 use std::collections::BTreeMap;
 
-use nostrdb::{Filter, Ndb, Note, Transaction};
+use nostrdb::{Ndb, Note, Transaction};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -352,24 +352,20 @@ fn parse_number<T: std::str::FromStr>(name: &str, value: &str) -> Result<T, Stri
 }
 
 /// The account's spec records by slug, each slug's newest revision; a slug
-/// whose newest revision is a tombstone is absent. `query_replaceable` keeps
-/// the newest by `(created_at, id)`, and the map fixes the order of the bag
-/// it hands back.
+/// whose newest revision is a tombstone is absent. See
+/// [`load_account_records`](crate::session_loader::load_account_records).
 pub fn load_agent_spec_records_from_ndb(
     ndb: &Ndb,
     txn: &Transaction,
     author: &nostrdb_net::Pubkey,
 ) -> BTreeMap<String, SpecRecord> {
-    let filter = Filter::new()
-        .kinds([AI_AGENT_SPEC_KIND as u64])
-        .authors([author.bytes()])
-        .build();
-    nostrdb_net::query_replaceable(ndb, txn, &[filter])
-        .into_iter()
-        .filter_map(|key| ndb.get_note_by_key(txn, key).ok())
-        .filter_map(|note| agent_spec_record_from_note(&note))
-        .map(|record| (record.slug.clone(), record))
-        .collect()
+    crate::session_loader::load_account_records(
+        ndb,
+        txn,
+        author,
+        AI_AGENT_SPEC_KIND,
+        agent_spec_record_from_note,
+    )
 }
 
 #[cfg(test)]

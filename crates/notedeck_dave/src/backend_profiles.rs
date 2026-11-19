@@ -14,105 +14,56 @@
 //! the same `hydra` here. A session naming a profile this host lacks fails its
 //! turn ([`missing_profile_error`]) instead of running on the plain backend.
 
+use crate::account_records::{AccountRecord, AccountRecords};
 use agentium_core::agent_spec::provider::{self, Endpoint, ProviderError};
 use agentium_core::agent_spec::ModelRef;
-use agentium_core::config::BackendProfile;
-use agentium_core::session_loader::load_backend_profiles_from_ndb;
+use agentium_core::config::{BackendProfile, AI_BACKEND_PROFILE_KIND};
+use agentium_core::session_events::backend_profile_from_note;
 use std::collections::BTreeMap;
 
 /// The selected account's backend profiles, keyed by slug, and the ndb
 /// subscription that refreshes them.
-#[derive(Default)]
-pub(crate) struct BackendProfiles {
-    profiles: BTreeMap<String, BackendProfile>,
-    sub: Option<nostrdb::Subscription>,
+pub(crate) type BackendProfiles = AccountRecords<BackendProfile>;
+
+/// A kind-31992 note, `None` for a tombstone.
+impl AccountRecord for BackendProfile {
+    const KIND: u32 = AI_BACKEND_PROFILE_KIND;
+    const NAME: &'static str = "backend profile";
+
+    fn from_note(note: &nostrdb::Note) -> Option<Self> {
+        backend_profile_from_note(note)
+    }
 }
 
-impl BackendProfiles {
+impl AccountRecords<BackendProfile> {
     /// The Claude profile named `slug`, if the account has one. An OpenAI
     /// profile of that slug is no answer: a Claude session can't run under it.
     pub(crate) fn claude(&self, slug: &str) -> Option<&BackendProfile> {
-        self.profiles.get(slug).filter(|p| p.is_claude())
+        self.records().get(slug).filter(|p| p.is_claude())
     }
 
     /// Every Claude profile, in slug order: the backend picker's rows.
     pub(crate) fn claude_profiles(&self) -> impl Iterator<Item = &BackendProfile> {
-        self.profiles.values().filter(|p| p.is_claude())
+        self.records().values().filter(|p| p.is_claude())
     }
 
     /// Where an agent spec's `model` sends its requests: an OpenAI profile of
     /// the account's, else a built-in keyed from this process's env. See
     /// [`provider::resolve`].
     pub(crate) fn resolve_provider(&self, model: &ModelRef) -> Result<Endpoint, ProviderError> {
-        provider::resolve(model, &self.profiles, |var| std::env::var(var).ok())
+        provider::resolve(model, self.records(), |var| std::env::var(var).ok())
     }
 
     /// Every profile, Claude and OpenAI, by slug: what a spec's sub-agent
     /// resolves its own model against.
     pub(crate) fn all(&self) -> &BTreeMap<String, BackendProfile> {
-        &self.profiles
-    }
-
-    /// Whether the live kind-31992 subscription is set up.
-    pub(crate) fn is_subscribed(&self) -> bool {
-        self.sub.is_some()
-    }
-
-    /// Subscribe to `account`'s kind-31992 profile notes (the PNS-unwrapped
-    /// inner notes), so [`poll`](Self::poll) sees every revision and
-    /// tombstone as it lands.
-    pub(crate) fn subscribe(&mut self, ndb: &nostrdb::Ndb, account: nostrdb_net::Pubkey) {
-        let filter = nostrdb::Filter::new()
-            .kinds([agentium_core::config::AI_BACKEND_PROFILE_KIND as u64])
-            .authors([account.bytes()])
-            .build();
-        match ndb.subscribe(&[filter]) {
-            Ok(sub) => {
-                self.sub = Some(sub);
-                tracing::info!("subscribed for backend profile events in ndb");
-            }
-            Err(e) => {
-                tracing::warn!("failed to subscribe for backend profile events: {:?}", e);
-            }
-        }
-    }
-
-    /// Replace the profiles with `account`'s newest live revision of each, as
-    /// nostrdb has them now.
-    pub(crate) fn load(&mut self, ndb: &nostrdb::Ndb, account: &nostrdb_net::Pubkey) {
-        let txn = match nostrdb::Transaction::new(ndb) {
-            Ok(txn) => txn,
-            Err(err) => {
-                tracing::warn!("failed to open txn for backend profile load: {err:?}");
-                return;
-            }
-        };
-        self.profiles = load_backend_profiles_from_ndb(ndb, &txn, account);
-        // Slugs only: a profile's env holds its secrets.
-        tracing::info!("loaded {} backend profiles from ndb", self.profiles.len());
-    }
-
-    /// Reload when a profile note (an upsert or a tombstone) has landed since
-    /// the last poll. A whole reload rather than a fold of the new notes: the
-    /// loader already resolves each slug's newest revision and its
-    /// tombstones, and an account has a handful of profiles at most.
-    pub(crate) fn poll(&mut self, ndb: &nostrdb::Ndb, account: &nostrdb_net::Pubkey) {
-        let Some(sub) = self.sub else {
-            return;
-        };
-        if ndb.poll_for_notes(sub, 64).is_empty() {
-            return;
-        }
-        self.load(ndb, account);
+        self.records()
     }
 
     /// Profiles for a test, without ndb.
     #[cfg(test)]
     pub(crate) fn from_profiles(profiles: impl IntoIterator<Item = BackendProfile>) -> Self {
-        Self {
-            profiles: profiles.into_iter().map(|p| (p.slug.clone(), p)).collect(),
-            sub: None,
-        }
+        Self::from_records(profiles, |p| &p.slug)
     }
 }
 
@@ -155,10 +106,10 @@ mod tests {
     /// tombstone takes it away again.
     #[tokio::test]
     async fn profiles_follow_upserts_and_tombstones() {
-        let test = crate::tests::TestDave::new();
+        let mut test = crate::tests::TestDave::new();
         let mut profiles = BackendProfiles::default();
-        profiles.subscribe(&test.ndb, test.account);
-        profiles.load(&test.ndb, &test.account);
+        profiles.subscribe(&mut test.ndb, test.account);
+        profiles.load(&test.ndb);
         assert!(profiles.claude("hydra").is_none());
 
         let mut hydra = BackendProfile::new("hydra", "Hydra");
@@ -174,7 +125,7 @@ mod tests {
             &test.sk,
         );
         await_profile_note(&test.ndb, waiter).await;
-        profiles.poll(&test.ndb, &test.account);
+        assert!(profiles.poll(&test.ndb));
         let loaded = profiles.claude("hydra").expect("the upsert arrives");
         assert_eq!(loaded.env["ANTHROPIC_BASE_URL"], "https://llm.hydra.host");
 
@@ -186,7 +137,7 @@ mod tests {
             &test.sk,
         );
         await_profile_note(&test.ndb, waiter).await;
-        profiles.poll(&test.ndb, &test.account);
+        assert!(profiles.poll(&test.ndb));
         assert!(
             profiles.claude("hydra").is_none(),
             "the tombstone removes it"

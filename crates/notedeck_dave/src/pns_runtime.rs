@@ -2,6 +2,7 @@
 //! buckets swapped in and out as the account picker changes, and the ndb
 //! subscriptions each account's sessions are discovered through.
 
+use crate::agent_specs::AgentSpecs;
 use crate::backend_profiles::BackendProfiles;
 use crate::conversation::subscribe_conversation_events;
 use crate::conversation_feed::ConversationFeed;
@@ -59,6 +60,7 @@ pub(crate) struct PnsLocalRuntime {
     run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     run_config_sub: Option<nostrdb::Subscription>,
     backend_profiles: BackendProfiles,
+    agent_specs: AgentSpecs,
     inspector_snapshot_sub: Option<nostrdb::Subscription>,
     pending_reap: Vec<std::process::Child>,
 }
@@ -97,6 +99,7 @@ impl PnsLocalRuntime {
             run_configs: HashMap::new(),
             run_config_sub: None,
             backend_profiles: BackendProfiles::default(),
+            agent_specs: AgentSpecs::default(),
             inspector_snapshot_sub: None,
             pending_reap: Vec::new(),
         }
@@ -143,14 +146,30 @@ impl Dave {
             .keypair()
             .secret_key
             .is_some();
-        let next_state = PnsLocalState {
-            account,
-            has_secret_key,
-        };
+        self.apply_pns_local_state(
+            ctx.ndb,
+            PnsLocalState {
+                account,
+                has_secret_key,
+            },
+        );
+    }
 
+    /// [`ensure_pns_local_state`](Self::ensure_pns_local_state) once the
+    /// selected account is known: swap the account's runtime in and follow
+    /// its subscriptions. A no-op when `next_state` is already current.
+    pub(crate) fn apply_pns_local_state(
+        &mut self,
+        ndb: &mut nostrdb::Ndb,
+        next_state: PnsLocalState,
+    ) {
         if self.pns_local_state.as_ref() == Some(&next_state) {
             return;
         }
+        let PnsLocalState {
+            account,
+            has_secret_key,
+        } = next_state;
 
         if self.ai_mode == AiMode::Agentic {
             self.save_active_pns_local_runtime();
@@ -173,19 +192,17 @@ impl Dave {
         }
 
         if self.session_state_sub.is_none() && self.session_command_sub.is_none() {
-            self.subscribe_pns_local_events(ctx.ndb, account);
+            self.subscribe_pns_local_events(ndb, account);
         }
         if self.run_config_sub.is_none() {
-            self.subscribe_pns_run_configs(ctx.ndb, account);
+            self.subscribe_pns_run_configs(ndb, account);
         }
-        if !self.backend_profiles.is_subscribed() {
-            self.backend_profiles.subscribe(ctx.ndb, account);
-        }
-        if !self.agent_specs.is_subscribed() {
-            self.agent_specs.subscribe(ctx.ndb, account);
-        }
+        // Account-wide records: each store follows `account` (a no-op when it
+        // already does), so one that outlived a switch moves over with it.
+        self.backend_profiles.subscribe(ndb, account);
+        self.agent_specs.subscribe(ndb, account);
         if self.inspector_snapshot_sub.is_none() {
-            self.subscribe_inspector_snapshots(ctx.ndb, account);
+            self.subscribe_inspector_snapshots(ndb, account);
         }
         // Restore this account's sessions off the render thread (see
         // `session_restore_loader`). Dispatch once per account — a re-selected
@@ -201,9 +218,9 @@ impl Dave {
             }
             self.session_restore_loader.restore_account(account);
         }
-        self.load_run_configs(ctx.ndb, account);
-        self.backend_profiles.load(ctx.ndb, &account);
-        self.agent_specs.load(ctx.ndb, &account);
+        self.load_run_configs(ndb, account);
+        self.backend_profiles.load(ndb);
+        self.agent_specs.load(ndb);
     }
 
     fn take_pns_local_runtime(&mut self) -> PnsLocalRuntime {
@@ -245,6 +262,7 @@ impl Dave {
             run_configs: std::mem::take(&mut self.run_configs),
             run_config_sub: self.run_config_sub.take(),
             backend_profiles: std::mem::take(&mut self.backend_profiles),
+            agent_specs: std::mem::take(&mut self.agent_specs),
             inspector_snapshot_sub: self.inspector_snapshot_sub.take(),
             pending_reap: std::mem::take(&mut self.pending_reap),
         }
@@ -292,6 +310,7 @@ impl Dave {
         self.run_configs = runtime.run_configs;
         self.run_config_sub = runtime.run_config_sub;
         self.backend_profiles = runtime.backend_profiles;
+        self.agent_specs = runtime.agent_specs;
         self.inspector_snapshot_sub = runtime.inspector_snapshot_sub;
         self.pending_reap = runtime.pending_reap;
     }

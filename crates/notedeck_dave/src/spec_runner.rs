@@ -367,9 +367,9 @@ mod tests {
         use agentium_core::agent_spec::builtin;
         use agentium_core::agent_spec::record::build_agent_spec_event_at;
 
-        let test = crate::tests::TestDave::new();
+        let mut test = crate::tests::TestDave::new();
         let mut specs = AgentSpecs::default();
-        specs.subscribe(&test.ndb, test.account);
+        specs.subscribe(&mut test.ndb, test.account);
         let mut runners = SpecRunners::default();
         let first = runner_from(&mut runners, &specs, &test.ndb, false);
         assert_eq!(first.spec, builtin::find("butler").unwrap());
@@ -381,7 +381,7 @@ mod tests {
             build_agent_spec_event_at(&researcher, Some(1_770_000_000), &test.sk).unwrap(),
         )
         .await;
-        specs.poll(&test.ndb, &test.account);
+        assert!(specs.poll(&test.ndb));
         let busy = runner_from(&mut runners, &specs, &test.ndb, true);
         assert_eq!(busy, first, "kept while a session is mid-run");
         let idle = runner_from(&mut runners, &specs, &test.ndb, false);
@@ -394,7 +394,7 @@ mod tests {
             build_agent_spec_event_at(&butler, Some(1_770_000_001), &test.sk).unwrap(),
         )
         .await;
-        specs.poll(&test.ndb, &test.account);
+        assert!(specs.poll(&test.ndb));
         let edited = runner_from(&mut runners, &specs, &test.ndb, false);
         assert_eq!(edited.spec, butler);
         assert_eq!(

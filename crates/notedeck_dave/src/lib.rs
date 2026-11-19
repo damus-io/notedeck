@@ -1,3 +1,4 @@
+mod account_records;
 mod agent_specs;
 mod agent_status;
 mod auto_accept;
@@ -1480,11 +1481,9 @@ impl notedeck::App for Dave {
         self.poll_run_config_events(ctx.ndb);
 
         // And for backend profile and agent spec revisions, which every host of
-        // the account shares.
-        if let Some(state) = &self.pns_local_state {
-            self.backend_profiles.poll(ctx.ndb, &state.account);
-            self.agent_specs.poll(ctx.ndb, &state.account);
-        }
+        // the account shares. Each store polls the account it follows.
+        self.backend_profiles.poll(ctx.ndb);
+        self.agent_specs.poll(ctx.ndb);
 
         // Fold remote sessions' inspector snapshots into their Details tab
         self.poll_inspector_snapshots(&host);
