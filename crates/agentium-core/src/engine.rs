@@ -1076,20 +1076,11 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{await_note, spawn_relay, TempNdb, TEST_SECKEY};
+    use crate::test_support::{
+        await_note, pns_ingest, pns_seed, pns_wrap, spawn_relay, TempNdb, TEST_SECKEY,
+    };
     use std::time::Duration;
     use tempfile::TempDir;
-
-    /// PNS-wrap `inner_json` under the [`TEST_SECKEY`] identity and ingest the
-    /// kind-1080 envelope, mirroring how an inbound relay event reaches ndb: the
-    /// engine's registered device key lets ndb decrypt it into the queryable
-    /// inner event.
-    fn pns_seed(ndb: &Ndb, inner_json: &str) {
-        let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
-        let wrapped = crate::session_events::wrap_pns(inner_json, &pns).expect("wrap pns");
-        ndb.process_event(&format!(r#"["EVENT","_seed",{wrapped}]"#))
-            .expect("ingest pns envelope");
-    }
 
     /// PNS-wrap a freshly-built inner event and publish its envelope through
     /// `engine`'s [`Session`] to its connected relay. Models the controller's
@@ -1097,13 +1088,11 @@ mod tests {
     /// ingest but don't publish, so the caller wraps the returned inner event and
     /// sends it through the same [`Session`] a standalone engine owns.
     fn publish_prepared(engine: &Engine, built: &crate::session_events::BuiltEvent, relay: &str) {
-        let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
-        let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns).expect("wrap pns");
         engine
             .session
             .as_ref()
             .expect("standalone engine has a session")
-            .publish(wrapped, vec![relay.to_string()]);
+            .publish(pns_wrap(built), vec![relay.to_string()]);
     }
 
     /// The `message` field from the newest `permission_response` event on
@@ -1138,7 +1127,6 @@ mod tests {
     async fn read_api_lists_and_reads_a_session() {
         use crate::session_events::{
             build_live_event, build_session_state_event, LiveEventTags, ThreadingState,
-            AI_SESSION_STATE_KIND,
         };
 
         let eng_dir = TempDir::new().expect("tmp dir");
@@ -1162,7 +1150,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("state event");
-        pns_seed(engine.ndb(), &state.note_json);
+        pns_ingest(engine.ndb(), &state).await;
 
         let mut threading = ThreadingState::new();
         let msg = build_live_event(
@@ -1175,29 +1163,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("live event");
-        pns_seed(engine.ndb(), &msg.note_json);
-
-        // Both inner events must decrypt and index before we read them.
-        assert!(
-            await_note(
-                engine.ndb(),
-                state.note_id,
-                AI_SESSION_STATE_KIND as u64,
-                Duration::from_secs(5)
-            )
-            .await,
-            "session-state event should decrypt into the db"
-        );
-        assert!(
-            await_note(
-                engine.ndb(),
-                msg.note_id,
-                AI_CONVERSATION_KIND as u64,
-                Duration::from_secs(5)
-            )
-            .await,
-            "conversation event should decrypt into the db"
-        );
+        pns_ingest(engine.ndb(), &msg).await;
 
         let sessions = engine.list_sessions();
         assert_eq!(sessions.len(), 1, "one session should be listed");
@@ -1234,7 +1200,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("live event");
-        pns_seed(engine.ndb(), &msg.note_json);
+        pns_seed(engine.ndb(), &msg);
 
         let woke = tokio::time::timeout(Duration::from_secs(5), watch.changed())
             .await
@@ -1285,7 +1251,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("state event");
-        pns_seed(engine.ndb(), &state.note_json);
+        pns_seed(engine.ndb(), &state);
         fold_next(&engine, &mut watch, &mut fold).await;
         let views = fold.views();
         assert_eq!(views.len(), 1);
@@ -1303,7 +1269,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("live event");
-        pns_seed(engine.ndb(), &msg.note_json);
+        pns_seed(engine.ndb(), &msg);
         fold_next(&engine, &mut watch, &mut fold).await;
         assert!(
             fold.views()[0].last_activity > 1_770_000_000,
@@ -1338,7 +1304,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("state event");
-        pns_seed(engine.ndb(), &state.note_json);
+        pns_seed(engine.ndb(), &state);
 
         let woke = tokio::time::timeout(Duration::from_secs(5), watch.changed())
             .await
@@ -1549,17 +1515,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("request event");
-        pns_seed(engine.ndb(), &req.note_json);
-        assert!(
-            await_note(
-                engine.ndb(),
-                req.note_id,
-                AI_CONVERSATION_KIND as u64,
-                Duration::from_secs(5)
-            )
-            .await,
-            "the permission request must be queryable before responding"
-        );
+        pns_ingest(engine.ndb(), &req).await;
 
         engine
             .respond_permission(
@@ -1627,17 +1583,7 @@ mod tests {
             &TEST_SECKEY,
         )
         .expect("request event");
-        pns_seed(engine.ndb(), &req.note_json);
-        assert!(
-            await_note(
-                engine.ndb(),
-                req.note_id,
-                AI_CONVERSATION_KIND as u64,
-                Duration::from_secs(5)
-            )
-            .await,
-            "the question request must be queryable before answering"
-        );
+        pns_ingest(engine.ndb(), &req).await;
 
         // The request must round-trip into a QuestionSet view for the answer
         // formatting to resolve labels (rather than fall back to raw answers).
@@ -1868,7 +1814,7 @@ mod tests {
                 &TEST_SECKEY,
             )
             .expect("state event");
-            pns_seed(engine.ndb(), &state.note_json);
+            pns_seed(engine.ndb(), &state);
             state.note_id
         };
         // Send into a session with `status`, and whether the note is queued.

@@ -376,37 +376,8 @@ pub fn load_agent_spec_records_from_ndb(
 mod tests {
     use super::*;
     use crate::agent_spec::{Approval, SandboxGit};
-    use crate::test_support::{await_note, pubkey_of, TempNdb, TEST_SECKEY};
+    use crate::test_support::{pns_ingest, pns_ndb, pubkey_of, TempNdb, TEST_SECKEY};
     use crate::tool::Capability;
-    use std::time::Duration;
-
-    /// A TempNdb that decrypts [`TEST_SECKEY`]'s PNS envelopes.
-    fn pns_ndb() -> TempNdb {
-        let db = TempNdb::new();
-        db.ndb.add_key(&TEST_SECKEY);
-        db
-    }
-
-    /// PNS-wrap `built` as the account, ingest it, and wait for the inner
-    /// note; answers the envelope as it would go on the wire.
-    async fn pns_ingest(ndb: &Ndb, built: &BuiltEvent) -> String {
-        let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
-        let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns).unwrap();
-        ndb.process_event(&format!(r#"["EVENT","_pns",{wrapped}]"#))
-            .unwrap();
-        assert!(
-            await_note(
-                ndb,
-                built.note_id,
-                built.kind as u64,
-                Duration::from_secs(5)
-            )
-            .await,
-            "inner kind-{} note never decrypted",
-            built.kind
-        );
-        wrapped
-    }
 
     fn load(db: &TempNdb) -> BTreeMap<String, SpecRecord> {
         let txn = Transaction::new(&db.ndb).unwrap();

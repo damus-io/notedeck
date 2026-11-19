@@ -1765,7 +1765,7 @@ fn load_recent_paths_by_host_with_author(
 mod tests {
     use super::*;
     use crate::file_update::FileUpdateType;
-    use crate::test_support::{pubkey_of, test_config};
+    use crate::test_support::{pns_ingest, pns_ndb, pubkey_of, test_config};
     use nostrdb::{IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -4255,36 +4255,6 @@ mod tests {
 
     /// Mixed-case hex: nostrdb's hex decode would also lowercase it.
     const HYDRA_TOKEN: &str = "DEADbeef00112233445566778899aabbccddeeff00112233445566778899AABB";
-
-    /// PNS-wrap `built` under [`TEST_SECKEY`] and ingest the kind-1080
-    /// envelope, as an inbound relay event arrives, then wait for ndb to
-    /// decrypt it into the inner note. Returns the envelope JSON.
-    async fn pns_ingest(ndb: &Ndb, built: &crate::session_events::BuiltEvent) -> String {
-        use crate::test_support::{await_note, TEST_SECKEY};
-        let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
-        let wrapped = crate::session_events::wrap_pns(&built.note_json, &pns).unwrap();
-        ndb.process_event(&format!(r#"["EVENT","_pns",{wrapped}]"#))
-            .unwrap();
-        assert!(
-            await_note(
-                ndb,
-                built.note_id,
-                built.kind as u64,
-                std::time::Duration::from_secs(5)
-            )
-            .await,
-            "inner kind-{} note never decrypted",
-            built.kind
-        );
-        wrapped
-    }
-
-    /// A TempNdb that decrypts [`TEST_SECKEY`]'s PNS envelopes.
-    fn pns_ndb() -> crate::test_support::TempNdb {
-        let db = crate::test_support::TempNdb::new();
-        db.ndb.add_key(&crate::test_support::TEST_SECKEY);
-        db
-    }
 
     /// Build -> PNS wrap -> ingest -> load gives back the identical profile,
     /// token included byte for byte, and the envelope on the wire carries none

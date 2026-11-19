@@ -13,6 +13,8 @@ use futures_util::StreamExt;
 use nostrdb::{Filter, Ndb, NoteBuildOptions, NoteBuilder, SubscriptionStream, Transaction};
 use nostrdb_net::relay::server::{self, RelayHandle};
 
+use crate::session_events::BuiltEvent;
+
 pub(crate) use ndb_testing::{test_config, TempNdb};
 
 /// A fixed, deterministic secret key for signing test events. Doubles as the
@@ -67,4 +69,51 @@ pub(crate) async fn await_note(ndb: &Ndb, id: [u8; 32], kind: u64, timeout: Dura
     .await;
 
     found.unwrap_or(false)
+}
+
+/// A [`TempNdb`] that decrypts [`TEST_SECKEY`]'s PNS envelopes, so a
+/// [`pns_seed`]ed or [`pns_ingest`]ed note becomes queryable in it.
+pub(crate) fn pns_ndb() -> TempNdb {
+    let db = TempNdb::new();
+    db.ndb.add_key(&TEST_SECKEY);
+    db
+}
+
+/// PNS-wrap `built` under [`TEST_SECKEY`] into its kind-1080 envelope JSON,
+/// as it would go on the wire.
+pub(crate) fn pns_wrap(built: &BuiltEvent) -> String {
+    let pns = nostrdb_net::pns::derive_pns_keys(&TEST_SECKEY);
+    crate::session_events::wrap_pns(&built.note_json, &pns).expect("wrap pns")
+}
+
+/// PNS-wrap `built` and ingest the envelope, as an inbound relay event arrives,
+/// **without** waiting for ndb to decrypt it. Returns the envelope JSON.
+///
+/// For a test that subscribes first and proves the subscription wakes (a
+/// watch), or one that awaits the note later; otherwise use [`pns_ingest`].
+/// `ndb` must hold [`TEST_SECKEY`] (see [`pns_ndb`]) or the inner note never
+/// appears.
+pub(crate) fn pns_seed(ndb: &Ndb, built: &BuiltEvent) -> String {
+    let wrapped = pns_wrap(built);
+    ndb.process_event(&format!(r#"["EVENT","_pns",{wrapped}]"#))
+        .expect("ingest pns envelope");
+    wrapped
+}
+
+/// [`pns_seed`] `built`, then wait (5 s) for ndb to decrypt the inner note,
+/// failing the test if it never does. Returns the envelope JSON.
+pub(crate) async fn pns_ingest(ndb: &Ndb, built: &BuiltEvent) -> String {
+    let wrapped = pns_seed(ndb, built);
+    assert!(
+        await_note(
+            ndb,
+            built.note_id,
+            built.kind as u64,
+            Duration::from_secs(5)
+        )
+        .await,
+        "inner kind-{} note never decrypted",
+        built.kind
+    );
+    wrapped
 }
