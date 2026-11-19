@@ -884,12 +884,11 @@ fn token(text: &str) -> Step {
 }
 
 fn running(tool_use_id: &str, tool_name: &str, summary: &str) -> Step {
-    Step::Backend(DaveApiResponse::ToolRunning(RunningTool {
-        tool_use_id: tool_use_id.to_string(),
-        tool_name: tool_name.to_string(),
-        summary: summary.to_string(),
-        description: None,
-    }))
+    Step::Backend(DaveApiResponse::ToolRunning(RunningTool::new(
+        tool_use_id,
+        tool_name,
+        summary,
+    )))
 }
 
 fn executed(
@@ -899,14 +898,10 @@ fn executed(
     parent_task_id: Option<&str>,
 ) -> Step {
     Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
-        tool_name: tool_name.to_string(),
-        summary: summary.to_string(),
         output: Some("ok".into()),
         parent_task_id: parent_task_id.map(str::to_string),
-        file_update: None,
         tool_use_id: Some(tool_use_id.to_string()),
-        description: None,
-        is_error: false,
+        ..ExecutedTool::new(tool_name, summary)
     }))
 }
 
@@ -947,14 +942,8 @@ async fn unpaired_tool_result() {
     script.extend([
         token("let me read it"),
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
-            tool_name: "Read".to_string(),
-            summary: "src/lib.rs".to_string(),
             output: Some("ok".into()),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Read", "src/lib.rs")
         })),
         token("it is short"),
         Step::StreamEnd,
@@ -1063,14 +1052,9 @@ async fn subagent_internal_tools() {
 async fn native_sub_agent_row() {
     let step = |tool: &str, subject: &str, is_error| {
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
-            tool_name: tool.to_string(),
-            summary: subject.to_string(),
-            output: None,
             parent_task_id: Some("q".to_string()),
-            file_update: None,
-            tool_use_id: None,
-            description: None,
             is_error,
+            ..ExecutedTool::new(tool, subject)
         }))
     };
     let mut script = Vec::from(user_turn("validate the idea"));
@@ -1790,14 +1774,9 @@ async fn reconcile_keeps_dropped_diff() {
     script.extend([
         running("t1", "Write", "big.rs"),
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
-            tool_name: "Write".to_string(),
-            summary: "big.rs".to_string(),
-            output: None,
-            parent_task_id: None,
             file_update: Some(edit),
             tool_use_id: Some("t1".to_string()),
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Write", "big.rs")
         })),
         Step::StreamEnd,
     ]);
@@ -1849,14 +1828,9 @@ async fn reconcile_keeps_capped_tool_output() {
     script.extend([
         running("t1", "Bash", "yes"),
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: "yes".to_string(),
             output: Some(output.clone().into()),
-            parent_task_id: None,
-            file_update: None,
             tool_use_id: Some("t1".to_string()),
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Bash", "yes")
         })),
         Step::StreamEnd,
     ]);
@@ -2545,14 +2519,10 @@ async fn reconcile_keeps_subagent_tool_output() {
             transcript: Default::default(),
         })),
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: "yes".to_string(),
             output: Some(output.clone().into()),
             parent_task_id: Some("s1".to_string()),
-            file_update: None,
             tool_use_id: Some("t1".to_string()),
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Bash", "yes")
         })),
         Step::Backend(DaveApiResponse::SubagentCompleted {
             task_id: "s1".to_string(),

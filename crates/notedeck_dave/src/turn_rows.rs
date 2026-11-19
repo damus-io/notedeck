@@ -174,12 +174,7 @@ mod tests {
     }
 
     fn running(id: &str) -> Message {
-        Message::ToolRunning(RunningTool {
-            tool_use_id: id.to_string(),
-            tool_name: "Bash".to_string(),
-            summary: "ls".to_string(),
-            description: None,
-        })
+        Message::ToolRunning(RunningTool::new(id, "Bash", "ls"))
     }
 
     fn subagent(task_id: &str) -> Message {

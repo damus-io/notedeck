@@ -4383,14 +4383,8 @@ mod tests {
         session.turn_rows.reindex(&session.chat);
 
         let result = crate::messages::ExecutedTool {
-            tool_name: "Read".to_string(),
-            summary: "42 lines".to_string(),
-            output: None,
             parent_task_id: Some("task-1".to_string()),
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Read", "42 lines")
         };
 
         // Should be folded (returns None)
@@ -4412,16 +4406,7 @@ mod tests {
     #[test]
     fn fold_tool_result_no_parent() {
         let mut session = test_session();
-        let result = crate::messages::ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: "exit 0".to_string(),
-            output: None,
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
-        };
+        let result = crate::messages::ExecutedTool::new("Bash", "exit 0");
 
         // Should NOT be folded (returns Some)
         let not_folded = session.fold_tool_result(result);
@@ -4434,24 +4419,13 @@ mod tests {
     // ---- in-flight running tool rows ----
 
     fn running_tool(id: &str, name: &str, summary: &str) -> crate::messages::RunningTool {
-        crate::messages::RunningTool {
-            tool_use_id: id.to_string(),
-            tool_name: name.to_string(),
-            summary: summary.to_string(),
-            description: None,
-        }
+        crate::messages::RunningTool::new(id, name, summary)
     }
 
     fn executed_tool(id: &str, name: &str) -> crate::messages::ExecutedTool {
         crate::messages::ExecutedTool {
-            tool_name: name.to_string(),
-            summary: format!("{name} done"),
-            output: None,
-            parent_task_id: None,
-            file_update: None,
             tool_use_id: Some(id.to_string()),
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new(name, format!("{name} done"))
         }
     }
 
@@ -4527,14 +4501,8 @@ mod tests {
     fn fold_tool_result_nonexistent_parent_returns_result() {
         let mut session = test_session();
         let result = crate::messages::ExecutedTool {
-            tool_name: "Read".to_string(),
-            summary: "42 lines".to_string(),
-            output: None,
             parent_task_id: Some("nonexistent-task".to_string()),
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Read", "42 lines")
         };
         // Parent doesn't exist — should return the result unfolded
         let not_folded = session.fold_tool_result(result);

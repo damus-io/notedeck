@@ -308,16 +308,9 @@ pub(crate) mod tests {
 
     /// A `tool_result` message carrying an [`ExecutedTool`], as the loader builds.
     fn tool_result(name: &str, summary: &str) -> Message {
-        Message::ToolResponse(ToolResponse::executed_tool(ExecutedTool {
-            tool_name: name.into(),
-            summary: summary.into(),
-            output: None,
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
-        }))
+        Message::ToolResponse(ToolResponse::executed_tool(ExecutedTool::new(
+            name, summary,
+        )))
     }
 
     /// A show-everything filter: no role filter, no tail, tools shown. Note this is deliberately *not* the parsed default (which

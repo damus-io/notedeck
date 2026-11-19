@@ -615,10 +615,8 @@ fn handle_stream_message(
                     if !is_subagent_tool(name) && name != "TodoWrite" && is_foreground {
                         let summary = format_tool_summary(name, input, &serde_json::Value::Null);
                         let _ = response_tx.send(DaveApiResponse::ToolRunning(RunningTool {
-                            tool_use_id: id.clone(),
-                            tool_name: name.clone(),
-                            summary,
                             description: tool_description(name, input),
+                            ..RunningTool::new(id.clone(), name.clone(), summary)
                         }));
                         waker.wake();
                     }

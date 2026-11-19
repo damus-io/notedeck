@@ -280,14 +280,9 @@ impl<'a> ChildRow<'a> {
     /// it failed.
     pub(crate) fn step(&self, step: ChildStep<'_>) {
         self.ctx.report(DaveApiResponse::ToolResult(ExecutedTool {
-            tool_name: step.call.tool_name().to_owned(),
-            summary: step_subject(step.call),
-            output: None,
             parent_task_id: Some(self.ctx.call_id().to_owned()),
-            file_update: None,
-            tool_use_id: None,
-            description: None,
             is_error: matches!(step.response, ToolResponses::Error(_)),
+            ..ExecutedTool::new(step.call.tool_name().to_owned(), step_subject(step.call))
         }));
     }
 

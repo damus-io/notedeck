@@ -188,14 +188,8 @@ mod tests {
 
     fn result(update: Option<FileUpdate>) -> ExecutedTool {
         ExecutedTool {
-            tool_name: "Edit".into(),
-            summary: String::new(),
-            output: None,
-            parent_task_id: None,
             file_update: update,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Edit", String::new())
         }
     }
 

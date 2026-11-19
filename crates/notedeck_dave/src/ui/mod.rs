@@ -3304,14 +3304,8 @@ mod tests {
         use crate::messages::{ExecutedTool, SubagentInfo, SubagentStatus, TranscriptKind};
 
         let read = |path: &str| ExecutedTool {
-            tool_name: "Read".into(),
-            summary: path.into(),
-            output: None,
             parent_task_id: Some("toolu_explore".into()),
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Read", path)
         };
         let mut info = SubagentInfo {
             task_id: "toolu_explore".into(),
@@ -3667,15 +3661,12 @@ mod tests {
         use crate::file_update::{FileUpdate, FileUpdateType};
         use crate::messages::{ExecutedTool, SubagentInfo, SubagentStatus};
 
-        let result = |update: FileUpdate| ExecutedTool {
-            tool_name: "Edit".into(),
-            summary: update.file_path.clone(),
-            output: None,
-            parent_task_id: None,
-            file_update: Some(update),
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+        let result = |update: FileUpdate| {
+            let summary = update.file_path.clone();
+            ExecutedTool {
+                file_update: Some(update),
+                ..ExecutedTool::new("Edit", summary)
+            }
         };
         let edit = |path: &str, old: &str, new: &str| {
             result(FileUpdate::new(
@@ -3834,16 +3825,9 @@ mod tests {
                 "Work headway:dave/shrimp-guide-poet",
                 Vec::new(),
             )),
-            crate::Message::ToolResponse(crate::tools::ToolResponse::executed_tool(ExecutedTool {
-                tool_name: "Bash".into(),
-                summary: "headway show headway:dave/remember-company-setup".into(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            })),
+            crate::Message::ToolResponse(crate::tools::ToolResponse::executed_tool(
+                ExecutedTool::new("Bash", "headway show headway:dave/remember-company-setup"),
+            )),
             crate::Message::Assistant(reply),
         ]);
     }
@@ -4232,14 +4216,10 @@ mod tests {
         let bash = |command: &str, description: &str, is_error: bool| {
             Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(
                 ExecutedTool {
-                    tool_name: "Bash".into(),
-                    summary: format!("`{command}`"),
                     output: Some("ok\n".into()),
-                    parent_task_id: None,
-                    file_update: None,
-                    tool_use_id: None,
                     description: Some(description.into()),
                     is_error,
+                    ..ExecutedTool::new("Bash", format!("`{command}`"))
                 },
             ))
         };
@@ -4336,14 +4316,9 @@ mod tests {
         let described = |command: &str, description: Option<&str>, output: &str| {
             Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(
                 ExecutedTool {
-                    tool_name: "Bash".into(),
-                    summary: format!("`{command}`"),
                     output: Some(output.into()),
-                    parent_task_id: None,
-                    file_update: None,
-                    tool_use_id: None,
                     description: description.map(Into::into),
-                    is_error: false,
+                    ..ExecutedTool::new("Bash", format!("`{command}`"))
                 },
             ))
         };
@@ -4362,16 +4337,7 @@ mod tests {
             say("`Message::System` rows are simply never drawn, so every reply and every `/cd`-style notice was invisible. Filing a card, then fixing it."),
             Message::User("you can just fix it in the notedeck-headway worktree".into()),
             described("git worktree list", Some("List worktrees"), &lines(10)),
-            Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(ExecutedTool {
-                tool_name: "Skill".into(),
-                summary: "handoff autowork fix headway:dave/repeat-garage-liberty — slash command replies are never drawn".into(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            })),
+            Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(ExecutedTool::new("Skill", "handoff autowork fix headway:dave/repeat-garage-liberty — slash command replies are never drawn"))),
             say("The user named \"notedeck-headway\", and there is a literal `/Users/jb55/dev/notedeck-headway` worktree (branch `scene-map`). Checking it's free for an autowork handoff."),
             bash("cd /Users/jb55/dev/notedeck-headway && git status --porcelain | head -5; git worktree list | grep -c autowork", &lines(4)),
             say("Handed off. What the new session will do:\n\n- Fix: draw `Message::System` rows in agentic sessions as a quiet monospace notice.\n- Chat-mode sessions, where Dave's system prompt is also a `System` row, stay hidden."),
@@ -4644,16 +4610,9 @@ mod tests {
             Message::Assistant(AssistantMessage::from_text(text.to_owned()).with_sent_at(t))
         };
         let tool = |name: &str, summary: &str| {
-            Message::ToolResponse(crate::ToolResponse::executed_tool(ExecutedTool {
-                tool_name: name.to_string(),
-                summary: summary.to_string(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            }))
+            Message::ToolResponse(crate::ToolResponse::executed_tool(ExecutedTool::new(
+                name, summary,
+            )))
         };
         session.replace_chat(vec![
             user("why does the relay pool reconnect in a loop when a relay is down?", chat_time(12, 16, 12, 0)),

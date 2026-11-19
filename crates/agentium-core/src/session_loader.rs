@@ -705,6 +705,10 @@ pub fn render_conversation_note_with_content(
                         .with_sent_at(note.created_at()),
                 ));
             };
+            // Full literals here and for `tool_result` below rather than the
+            // `new` constructors: the decode reads every field off the note, so
+            // a field added to either struct must fail to compile until it is
+            // decoded too.
             Some(Message::ToolRunning(RunningTool {
                 tool_use_id: tool_use_id.to_string(),
                 tool_name: get_tag_value(note, "tool-name")
@@ -2205,14 +2209,8 @@ mod tests {
     /// A host-side executed tool row, as the live stream builds it.
     fn host_tool(tool_name: &str, summary: &str, tool_use_id: Option<&str>) -> Message {
         Message::ToolResponse(ToolResponse::executed_tool(ExecutedTool {
-            tool_name: tool_name.to_string(),
-            summary: summary.to_string(),
-            output: None,
-            parent_task_id: None,
-            file_update: None,
             tool_use_id: tool_use_id.map(str::to_string),
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new(tool_name, summary)
         }))
     }
 

@@ -691,6 +691,28 @@ pub struct ExecutedTool {
     pub is_error: bool,
 }
 
+impl ExecutedTool {
+    /// A successful result with only a name and summary: no output, diff,
+    /// parent, correlation id or description. Vary the rest with struct
+    /// update (`ExecutedTool { is_error: true, ..ExecutedTool::new("Bash",
+    /// "exit 1") }`), so a new optional field touches this constructor
+    /// rather than every caller. Code that derives or decodes *every* field
+    /// (`FinishedCall::executed_tool`, the kind-1988 note decode) spells out a
+    /// full literal instead, so a new field still fails to compile there.
+    pub fn new(tool_name: impl Into<String>, summary: impl Into<String>) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            summary: summary.into(),
+            output: None,
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: None,
+            description: None,
+            is_error: false,
+        }
+    }
+}
+
 /// An in-flight tool call surfaced at `tool_use` time, before its result lands.
 ///
 /// A generic agentic tool (Read/Bash/Grep/…) otherwise shows nothing in chat
@@ -713,6 +735,22 @@ pub struct RunningTool {
 }
 
 impl RunningTool {
+    /// A running row with no `description`; set one with struct update.
+    /// The kind-1988 `tool_call` decode spells out a full literal instead, so
+    /// a new field still fails to compile there.
+    pub fn new(
+        tool_use_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool_use_id: tool_use_id.into(),
+            tool_name: tool_name.into(),
+            summary: summary.into(),
+            description: None,
+        }
+    }
+
     /// Build the terminal [`ExecutedTool`] row for a running tool that never
     /// received a result (an interrupted turn), so the spinner stops. Carries
     /// only what the call-time row already knows — name, summary, description
@@ -720,14 +758,9 @@ impl RunningTool {
     /// call never reported one.
     pub fn to_executed(&self) -> ExecutedTool {
         ExecutedTool {
-            tool_name: self.tool_name.clone(),
-            summary: self.summary.clone(),
-            output: None,
-            parent_task_id: None,
-            file_update: None,
             tool_use_id: Some(self.tool_use_id.clone()),
             description: self.description.clone(),
-            is_error: false,
+            ..ExecutedTool::new(self.tool_name.clone(), self.summary.clone())
         }
     }
 }
@@ -1834,6 +1867,37 @@ mod tests {
     };
     use serde_json::json;
     use uuid::Uuid;
+
+    /// `new` sets only what it is given: every optional field empty, not an
+    /// error. Struct update callers rely on that being the neutral row.
+    #[test]
+    fn executed_and_running_tool_new_leave_the_rest_empty() {
+        let executed = super::ExecutedTool::new("Bash", "exit 0");
+        assert_eq!(executed.tool_name, "Bash");
+        assert_eq!(executed.summary, "exit 0");
+        assert!(executed.output.is_none());
+        assert!(executed.parent_task_id.is_none());
+        assert!(executed.file_update.is_none());
+        assert!(executed.tool_use_id.is_none());
+        assert!(executed.description.is_none());
+        assert!(!executed.is_error);
+
+        let running = super::RunningTool::new("t1", "Read", "src/lib.rs");
+        assert_eq!(running.tool_use_id, "t1");
+        assert_eq!(running.tool_name, "Read");
+        assert_eq!(running.summary, "src/lib.rs");
+        assert!(running.description.is_none());
+
+        // `to_executed` carries the running row's id and description over.
+        let finished = super::RunningTool {
+            description: Some("list files".into()),
+            ..running
+        }
+        .to_executed();
+        assert_eq!(finished.tool_use_id.as_deref(), Some("t1"));
+        assert_eq!(finished.description.as_deref(), Some("list files"));
+        assert!(!finished.is_error);
+    }
 
     #[test]
     fn permission_reply_message_surfaces_only_user_text() {

@@ -507,14 +507,8 @@ mod tests {
 
     fn tool(summary: &str, output: Option<&str>) -> ExecutedTool {
         ExecutedTool {
-            tool_name: "Bash".into(),
-            summary: summary.into(),
             output: output.map(Into::into),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Bash", summary)
         }
     }
 
@@ -535,12 +529,11 @@ mod tests {
     fn mentions_come_from_every_row_kind_newest_first() {
         let chat = vec![
             user("work headway:dave/shrimp-guide-poet please"),
-            Message::ToolRunning(RunningTool {
-                tool_use_id: "t1".into(),
-                tool_name: "Bash".into(),
-                summary: "headway move headway:dave/one-two-three --col done".into(),
-                description: None,
-            }),
+            Message::ToolRunning(RunningTool::new(
+                "t1",
+                "Bash",
+                "headway move headway:dave/one-two-three --col done",
+            )),
             Message::ToolResponse(ToolResponse::executed_tool(tool(
                 "sharefile page.html",
                 Some("https://media.example.com/episodes/misc/share/outputs-card.html\n"),

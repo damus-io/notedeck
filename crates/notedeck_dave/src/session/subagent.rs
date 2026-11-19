@@ -441,14 +441,8 @@ mod tests {
 
     fn tool(parent: &str, summary: &str) -> ExecutedTool {
         ExecutedTool {
-            tool_name: "Read".into(),
-            summary: summary.into(),
-            output: None,
             parent_task_id: Some(parent.into()),
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Read", summary)
         }
     }
 

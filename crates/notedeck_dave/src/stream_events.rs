@@ -1669,14 +1669,9 @@ mod tests {
 
     fn executed(tool_use_id: Option<&str>, parent_task_id: Option<&str>) -> ExecutedTool {
         ExecutedTool {
-            tool_name: "Grep".to_string(),
-            summary: "3 matches".to_string(),
-            output: None,
             parent_task_id: parent_task_id.map(str::to_string),
-            file_update: None,
             tool_use_id: tool_use_id.map(str::to_string),
-            description: None,
-            is_error: false,
+            ..ExecutedTool::new("Grep", "3 matches")
         }
     }
 
@@ -1756,12 +1751,9 @@ mod tests {
             agent_id: None,
             transcript: Default::default(),
         }));
-        f.apply(DaveApiResponse::ToolRunning(crate::messages::RunningTool {
-            tool_use_id: "t1".to_string(),
-            tool_name: "Grep".to_string(),
-            summary: "loader".to_string(),
-            description: None,
-        }));
+        f.apply(DaveApiResponse::ToolRunning(
+            crate::messages::RunningTool::new("t1", "Grep", "loader"),
+        ));
         f.apply(DaveApiResponse::Token("while ".to_string()));
         f.apply(DaveApiResponse::ToolResult(executed(None, Some("s1"))));
         f.apply(DaveApiResponse::Token("that runs, ".to_string()));

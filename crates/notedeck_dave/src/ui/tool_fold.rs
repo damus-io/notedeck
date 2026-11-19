@@ -200,14 +200,8 @@ mod tests {
 
     fn call(tool_name: &str, summary: &str, description: Option<&str>) -> ExecutedTool {
         ExecutedTool {
-            tool_name: tool_name.into(),
-            summary: summary.into(),
-            output: None,
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
             description: description.map(Into::into),
-            is_error: false,
+            ..ExecutedTool::new(tool_name, summary)
         }
     }
 
@@ -230,12 +224,7 @@ mod tests {
     }
 
     fn running() -> Message {
-        Message::ToolRunning(RunningTool {
-            tool_use_id: "t".into(),
-            tool_name: "Bash".into(),
-            summary: "`cargo test`".into(),
-            description: None,
-        })
+        Message::ToolRunning(RunningTool::new("t", "Bash", "`cargo test`"))
     }
 
     fn run(rows: Range<usize>, calls: usize) -> Option<ToolRun> {

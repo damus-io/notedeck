@@ -5054,38 +5054,14 @@ mod tests {
     fn executed_tool_fixtures() -> Vec<crate::messages::ExecutedTool> {
         vec![
             crate::messages::ExecutedTool {
-                tool_name: "Bash".to_string(),
-                summary: "`ls -la crates`".to_string(),
                 output: Some(
                     "total 24\ndrwxr-xr-x  notedeck\ndrwxr-xr-x  notedeck_dave\n-rw-r--r--  Cargo.toml"
                         .into(),
                 ),
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
+                ..crate::messages::ExecutedTool::new("Bash", "`ls -la crates`")
             },
-            crate::messages::ExecutedTool {
-                tool_name: "Bash".to_string(),
-                summary: "`true`".to_string(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            },
-            crate::messages::ExecutedTool {
-                tool_name: "Read".to_string(),
-                summary: "lib.rs (128 lines)".to_string(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            },
+            crate::messages::ExecutedTool::new("Bash", "`true`"),
+            crate::messages::ExecutedTool::new("Read", "lib.rs (128 lines)"),
         ]
     }
 
@@ -5110,14 +5086,8 @@ mod tests {
             "fixture must exceed the old small-diff threshold"
         );
         let results = vec![crate::messages::ExecutedTool {
-            tool_name: "Edit".to_string(),
-            summary: "lib.rs".to_string(),
-            output: None,
-            parent_task_id: None,
             file_update: Some(file_update),
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Edit", "lib.rs")
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 800.0))
@@ -5142,14 +5112,8 @@ mod tests {
     #[test]
     fn clicking_tool_summary_line_toggles_body() {
         let results = vec![crate::messages::ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: "`ls -la crates`".to_string(),
             output: Some("total 24\nCargo.toml".into()),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Bash", "`ls -la crates`")
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
@@ -5205,24 +5169,9 @@ mod tests {
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_running_tool_rows() {
         let running = vec![
-            crate::messages::RunningTool {
-                tool_use_id: "t1".to_string(),
-                tool_name: "Bash".to_string(),
-                summary: "`cargo test --all`".to_string(),
-                description: None,
-            },
-            crate::messages::RunningTool {
-                tool_use_id: "t2".to_string(),
-                tool_name: "Read".to_string(),
-                summary: "lib.rs (0 lines)".to_string(),
-                description: None,
-            },
-            crate::messages::RunningTool {
-                tool_use_id: "t3".to_string(),
-                tool_name: "Grep".to_string(),
-                summary: "'fn handle_stream_message'".to_string(),
-                description: None,
-            },
+            crate::messages::RunningTool::new("t1", "Bash", "`cargo test --all`"),
+            crate::messages::RunningTool::new("t2", "Read", "lib.rs (0 lines)"),
+            crate::messages::RunningTool::new("t3", "Grep", "'fn handle_stream_message'"),
         ];
         let mut harness = notedeck::test_harness::with_notedeck_style(
             notedeck::test_harness::lenient_builder()
@@ -5414,14 +5363,8 @@ mod tests {
         // times over. Distinct summaries so each keys its own block.
         let results: Vec<_> = (0..20)
             .map(|i| crate::messages::ExecutedTool {
-                tool_name: "Bash".to_string(),
-                summary: format!("`echo {i}`"),
                 output: Some(format!("{i}").into()),
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
+                ..crate::messages::ExecutedTool::new("Bash", format!("`echo {i}`"))
             })
             .collect();
 
@@ -5479,16 +5422,10 @@ mod tests {
             status: crate::messages::SubagentStatus::Completed,
             output: String::new(),
             max_output_size: 1000,
-            tool_results: vec![crate::messages::ExecutedTool {
-                tool_name: "Read".to_string(),
-                summary: "lib.rs (128 lines)".to_string(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            }],
+            tool_results: vec![crate::messages::ExecutedTool::new(
+                "Read",
+                "lib.rs (128 lines)",
+            )],
             background: false,
             agent_id: None,
             transcript: Default::default(),
@@ -5565,36 +5502,9 @@ mod tests {
         // (exercised directly in backend::tool_summary's unit tests); here we
         // render the resulting rows.
         let results = vec![
-            crate::messages::ExecutedTool {
-                tool_name: "Skill".to_string(),
-                summary: "headway show dave/measure-crawl-goat".to_string(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            },
-            crate::messages::ExecutedTool {
-                tool_name: "Agent".to_string(),
-                summary: "audit the login flow (Explore)".to_string(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            },
-            crate::messages::ExecutedTool {
-                tool_name: "SendMessage".to_string(),
-                summary: "→ researcher: assign task 1".to_string(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            },
+            crate::messages::ExecutedTool::new("Skill", "headway show dave/measure-crawl-goat"),
+            crate::messages::ExecutedTool::new("Agent", "audit the login flow (Explore)"),
+            crate::messages::ExecutedTool::new("SendMessage", "→ researcher: assign task 1"),
         ];
         let mut harness = notedeck::test_harness::with_notedeck_style(
             notedeck::test_harness::lenient_builder()
@@ -5639,16 +5549,7 @@ mod tests {
         assert_eq!(row_group(&system, true), Some(RowGroup::Prose));
         assert_eq!(row_group(&system, false), None);
         let tool = Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(
-            crate::messages::ExecutedTool {
-                tool_name: "Bash".into(),
-                summary: "`ls`".into(),
-                output: None,
-                parent_task_id: None,
-                file_update: None,
-                tool_use_id: None,
-                description: None,
-                is_error: false,
-            },
+            crate::messages::ExecutedTool::new("Bash", "`ls`"),
         ));
         assert_eq!(row_group(&tool, true), Some(RowGroup::Tool));
         assert_eq!(row_group(&tool, false), None);
@@ -5663,16 +5564,7 @@ mod tests {
     }
 
     fn tool_rows_ui(ui: &mut egui::Ui) {
-        let skill = crate::messages::ExecutedTool {
-            tool_name: "Skill".to_string(),
-            summary: "code-review e8f3670c5e5b".to_string(),
-            output: None,
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
-        };
+        let skill = crate::messages::ExecutedTool::new("Skill", "code-review e8f3670c5e5b");
         let subagent = SubagentInfo {
             task_id: "toolu_agent".to_string(),
             description: "code-review".to_string(),
@@ -5754,14 +5646,8 @@ mod tests {
         let summary = "'rust async tokio cancellation'";
         let output = "1. Tokio — Graceful Shutdown (tokio.rs)\n2. CancellationToken docs (docs.rs)\n3. \"How to cancel a future\" (users.rust-lang.org)";
         let results = vec![crate::messages::ExecutedTool {
-            tool_name: "WebSearch".to_string(),
-            summary: summary.to_string(),
             output: Some(output.into()),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("WebSearch", summary)
         }];
         let mut harness = notedeck::test_harness::with_notedeck_style(
             notedeck::test_harness::lenient_builder()
@@ -5795,14 +5681,8 @@ mod tests {
         let summary = "`headway --board commerce desc headway:commerce/gallery-mansion-suggest \"Drop the notification claim table; best-effort send + operator-review transition guard replaces it, no reaper, no queue\"`";
         let output = "ok (1 events)\n/Users/jb55/dev/hydra/commerce/apps/api/src/onboarding/onboarding.service.ts:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nexit 0";
         let results = vec![crate::messages::ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: summary.to_string(),
             output: Some(output.into()),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Bash", summary)
         }];
         let mut harness = notedeck::test_harness::with_notedeck_style(
             notedeck::test_harness::lenient_builder()
@@ -5841,14 +5721,8 @@ mod tests {
     fn snapshot_collapsed_bash_header_truncates() {
         let summary = "`headway --board commerce desc headway:commerce/gallery-mansion-suggest \"Drop the notification claim table; best-effort send + operator-review transition guard replaces it, no reaper, no queue\"`";
         let results = vec![crate::messages::ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: summary.to_string(),
             output: Some("ok (1 events)\nexit 0".into()),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Bash", summary)
         }];
         let mut harness = notedeck::test_harness::with_notedeck_style(
             notedeck::test_harness::lenient_builder()
@@ -5886,14 +5760,8 @@ mod tests {
         size: egui::Vec2,
     ) -> egui_kittest::Harness<'static> {
         let results = vec![crate::messages::ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: summary.to_string(),
             output: Some(output.into()),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Bash", summary)
         }];
         notedeck::test_harness::lenient_builder()
             .with_size(size)
@@ -6002,14 +5870,8 @@ mod tests {
             .map(|i| format!("{i:>4}  fn line_{i}() -> usize {{ {i} }}\n"))
             .collect();
         let results = vec![crate::messages::ExecutedTool {
-            tool_name: "Bash".to_string(),
-            summary: summary.to_string(),
             output: Some(output.into()),
-            parent_task_id: None,
-            file_update: None,
-            tool_use_id: None,
-            description: None,
-            is_error: false,
+            ..crate::messages::ExecutedTool::new("Bash", summary)
         }];
         let mut harness = notedeck::test_harness::with_notedeck_style(
             notedeck::test_harness::lenient_builder()

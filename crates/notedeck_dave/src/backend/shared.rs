@@ -244,6 +244,10 @@ pub(crate) struct FinishedCall<'a> {
 
 impl FinishedCall<'_> {
     /// The call's chat row.
+    ///
+    /// A full literal rather than `ExecutedTool::new` on purpose: this derives
+    /// every field from the call, so a field added to `ExecutedTool` must fail
+    /// to compile here until it is derived too.
     pub(crate) fn executed_tool(self) -> ExecutedTool {
         let summary = format_tool_summary(self.tool_name, self.tool_input, self.result_value);
         // Some tools' result content *is* the payload worth reading inline, not just
