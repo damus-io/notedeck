@@ -91,10 +91,10 @@ pub(super) struct Writer {
 
 impl Writer {
     /// The selected account's writer, or an error a person can act on. A
-    /// read-only context (no publisher) refuses too, so a command is never
+    /// read-only context (no `remote`) refuses too, so a command is never
     /// published where the caller asked for none.
     pub(super) fn new(cx: &ToolContext) -> Result<Self, String> {
-        if cx.publish.is_none() {
+        if cx.remote.is_none() {
             return Err("publishing is unavailable in this context".to_owned());
         }
         let secret = cx

@@ -88,10 +88,10 @@ fn account(cx: &ToolContext) -> Account {
 }
 
 /// The selected account's signing secret, or an error a person can act on.
-/// A read-only context (no publisher) refuses too, so a write is never made
+/// A read-only context (no `remote`) refuses too, so a write is never made
 /// where the caller asked for none.
 fn signer(cx: &ToolContext, account: &Account) -> Result<[u8; 32], String> {
-    if cx.publish.is_none() {
+    if cx.remote.is_none() {
         return Err("publishing is unavailable in this context".to_owned());
     }
     account

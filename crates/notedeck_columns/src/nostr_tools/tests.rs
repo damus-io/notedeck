@@ -4,14 +4,19 @@
 
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, SubscriptionStream};
 use nostrdb_net::{ClientMessage, FullKeypair};
-use notedeck::{RegisteredTool, ToolOutcome};
+use notedeck::{RegisteredTool, Started, ToolOutcome};
 use notedeck_testing::TestHost;
 use serde_json::{json, Value};
+use std::time::{Duration, Instant};
 
 use super::*;
 
 /// When the seeded world starts.
 const T0: u64 = 1_700_000_000;
+
+/// How long a test's reads wait on a fetch the test never answers: no
+/// relay runs here, so every miss costs this much.
+const MISS_BOUND: Duration = Duration::from_millis(50);
 
 /// The seeded world: who's who and the ids of the notes each wrote.
 struct World {
@@ -154,7 +159,7 @@ fn world_of(alice: FullKeypair, bob: FullKeypair, carol: FullKeypair) -> World {
 impl World {
     /// Call the tool named `name` with `args`, as a backend would.
     fn call(&mut self, name: &str, args: Value) -> Result<Value, String> {
-        let tool = tools()
+        let tool = tools_within(MISS_BOUND)
             .into_iter()
             .find(|t| t.name() == name)
             .expect("tool");
@@ -571,6 +576,7 @@ fn reply_threads_under_the_root_and_needs_the_parent() {
         .call("nostr_reply", json!({ "note": unseen, "content": "hi" }))
         .unwrap_err();
     assert!(err.contains("isn't in this notedeck's db"), "{err}");
+    assert!(err.contains("fetching it from the user's relays"), "{err}");
 }
 
 /// A reaction is a like by default, tags the note and its author, and
@@ -724,15 +730,20 @@ fn the_follow_button_and_the_follow_tools_write_the_same_contact_list() {
 }
 
 /// A zap answers the zap button's action for the note's author, in
-/// millisats; a note the db lacks has no known author and is refused.
+/// millisats; a note the db lacks has no known author, so it is fetched
+/// and the zap refused until it lands.
 #[test]
 fn zap_raises_the_zap_buttons_action_for_the_author() {
     use notedeck::{AppAction, NoteAction, ZapAction};
 
     let mut w = world();
-    let ctx = w.host.app_context();
+    let mut ctx = w.host.app_context();
     let root = nostrdb_net::NoteId::new(w.root);
-    let outcome = act::call_ui(&ctx, act::ZAP, &json!({ "note": root.hex(), "sats": 21 }));
+    let outcome = act::call_ui(
+        &mut ctx,
+        act::ZAP,
+        &json!({ "note": root.hex(), "sats": 21 }),
+    );
     let Some(ToolOutcome::Intent(AppAction::Note(NoteAction::Zap(ZapAction::Send(zap))))) = outcome
     else {
         panic!("a zap didn't raise the zap action");
@@ -742,10 +753,158 @@ fn zap_raises_the_zap_buttons_action_for_the_author() {
     assert_eq!(zap.specified_msats, Some(21_000));
 
     let unseen = nostrdb_net::NoteId::new([9; 32]).hex();
-    let Some(ToolOutcome::Error(err)) = act::call_ui(&ctx, act::ZAP, &json!({ "note": unseen }))
+    let Some(ToolOutcome::Error(err)) =
+        act::call_ui(&mut ctx, act::ZAP, &json!({ "note": unseen }))
     else {
         panic!("a zap of an unseen note went through");
     };
     assert!(err.contains("isn't in this notedeck's db"), "{err}");
-    assert!(act::call_ui(&ctx, open::OPEN_THREAD, &json!({})).is_none());
+    assert!(err.contains("try again"), "{err}");
+    assert!(act::call_ui(&mut ctx, open::OPEN_THREAD, &json!({})).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// fetch on a miss
+// ---------------------------------------------------------------------------
+
+impl World {
+    /// Start the read `name` with `args` as the socket or Dave does,
+    /// with fetches waited on for at most `bound`, and hand back its
+    /// pending job, which owns everything it needs: the call's context is
+    /// gone (and its REQ flushed) before the job runs.
+    fn start(&mut self, name: &str, args: Value, bound: Duration) -> notedeck::PendingCall {
+        let tool = tools_within(bound)
+            .into_iter()
+            .find(|t| t.name() == name)
+            .expect("tool");
+        let mut ctx = self.host.app_context();
+        let mut cx = ctx.tool_context();
+        match tool.start_rendered(&mut cx, &args) {
+            Started::Pending(pending) => pending,
+            Started::Done(_) => panic!("a read is a slow tool, so it starts pending"),
+        }
+    }
+
+    /// Ingest `frame` as if a relay had answered with it.
+    fn land(&mut self, frame: &str) {
+        let ctx = self.host.app_context();
+        ctx.ndb
+            .process_event_with(frame, IngestMetadata::new().client(true))
+            .expect("ingest");
+    }
+}
+
+/// A profile the db lacks is fetched: one that lands after the call was
+/// prepared (as a relay's answer would) is what the job answers.
+#[test]
+fn get_profile_answers_a_profile_that_lands_after_the_miss() {
+    let mut w = world();
+    let dave = FullKeypair::generate();
+    let pending = w.start(
+        "nostr_get_profile",
+        json!({ "who": dave.pubkey.hex() }),
+        Duration::from_secs(30),
+    );
+    w.land(&signed(&dave, 0, r#"{"name":"dave"}"#, T0, &[]));
+    let out = pending.run().result.expect("profile");
+    assert_eq!(out["found"], json!(true));
+    assert_eq!(out["name"], json!("dave"));
+}
+
+/// A profile nobody answers with is `found: false` once the bound passes,
+/// not a hang.
+#[test]
+fn get_profile_answers_not_found_when_the_fetch_times_out() {
+    let mut w = world();
+    let stranger = FullKeypair::generate().pubkey.hex();
+    let started = Instant::now();
+    let pending = w.start(
+        "nostr_get_profile",
+        json!({ "who": stranger }),
+        Duration::from_millis(200),
+    );
+    let out = pending.run().result.expect("profile");
+    assert_eq!(out["found"], json!(false));
+    let took = started.elapsed();
+    assert!(took >= Duration::from_millis(200), "{took:?}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
+}
+
+/// A profile the db has answers without waiting on any fetch.
+#[test]
+fn get_profile_answers_a_hit_without_waiting() {
+    let mut w = world();
+    let started = Instant::now();
+    let pending = w.start(
+        "nostr_get_profile",
+        json!({ "who": w.bob.pubkey.hex() }),
+        Duration::from_secs(30),
+    );
+    let out = pending.run().result.expect("profile");
+    assert_eq!(out["found"], json!(true));
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+/// A context that can't reach the relays answers from the db alone, at
+/// once.
+#[test]
+fn a_read_with_no_relays_answers_from_the_db_alone() {
+    let mut w = world();
+    let tool = tools_within(Duration::from_secs(30))
+        .into_iter()
+        .find(|t| t.name() == "nostr_get_profile")
+        .expect("tool");
+    let mut ctx = w.host.app_context();
+    let mut cx = ctx.tool_context();
+    cx.remote = None;
+    let started = Instant::now();
+    let stranger = FullKeypair::generate().pubkey.hex();
+    let ToolOutcome::Data(out) = tool.call(&mut cx, &json!({ "who": stranger })) else {
+        panic!("the read failed");
+    };
+    assert_eq!(out["found"], json!(false));
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+/// A thread whose note the db lacks is fetched: the note landing after
+/// the miss is the thread the job answers, its own parent named missing.
+#[test]
+fn load_thread_answers_a_note_that_lands_after_the_miss() {
+    let mut w = world();
+    let dave = FullKeypair::generate();
+    let reply = signed(
+        &dave,
+        1,
+        "late to the thread",
+        T0 + 40,
+        &[&["e", &hex::encode(w.root), "", "root"]],
+    );
+    let pending = w.start(
+        "nostr_load_thread",
+        json!({ "note": hex::encode(id_of(&reply)) }),
+        Duration::from_secs(30),
+    );
+    w.land(&reply);
+    let out = pending.run().result.expect("thread");
+    assert_eq!(out["focus"], json!(hex::encode(id_of(&reply))));
+    assert_eq!(out["root"], json!(hex::encode(w.root)));
+    assert!(note_ids(&out).contains(&hex::encode(w.root)));
+    assert_eq!(out["missing"], json!([]));
+}
+
+/// An author timeline the db has nothing of is fetched, and the notes
+/// that land answer it.
+#[test]
+fn read_timeline_answers_notes_that_land_after_the_miss() {
+    let mut w = world();
+    let dave = FullKeypair::generate();
+    let pending = w.start(
+        "nostr_read_timeline",
+        json!({ "author": dave.pubkey.hex(), "limit": 1 }),
+        Duration::from_secs(30),
+    );
+    let post = signed(&dave, 1, "hello from dave", T0, &[]);
+    w.land(&post);
+    let out = pending.run().result.expect("timeline");
+    assert_eq!(note_ids(&out), vec![hex::encode(id_of(&post))]);
 }

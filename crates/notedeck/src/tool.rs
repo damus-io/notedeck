@@ -40,12 +40,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
-use nostrdb::{Ndb, Transaction};
+use nostrdb::{Filter, Ndb, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
-use crate::{Accounts, AppAction, AppId, DataPath, ExplicitPublishApi, NoteCache};
+use crate::{Accounts, AppAction, AppId, DataPath, NoteCache, RelayFetch, ToolRemote};
 
 /// The portable tool *type* layer — argument types, args, and the tool spec —
 /// lives in [`agentium_core::tool`] so the engine owns it and any platform can
@@ -78,15 +79,17 @@ pub struct ToolContext<'a> {
     pub ndb: &'a Ndb,
     pub note_cache: &'a mut NoteCache,
     pub accounts: &'a Accounts,
-    /// Explicit-relay publisher, for tools that *mutate* nostr-backed state
-    /// (e.g. an app editing its own board) and must fan the resulting events out
-    /// to relays the way the app's own edits do. `None` for a read-only context,
-    /// where a mutating tool should report an error rather than silently drop the
-    /// change. Relay targets and the signer come from [`accounts`](Self::accounts)
-    /// (see [`Accounts::selected_account_private_relays`] and
-    /// [`Accounts::selected_filled`]); this supplies the remote publish path
-    /// used by [`fan_out_event_frame`](crate::fan_out_event_frame).
-    pub publish: Option<ExplicitPublishApi<'a>>,
+    /// The relays, for tools that *mutate* nostr-backed state (an app
+    /// editing its own board), which must fan the resulting events out the
+    /// way the app's own edits do, and for tools that [`fetch`](Self::fetch)
+    /// what the local db lacks. `None` for a read-only context, where a
+    /// mutating tool reports an error rather than silently drop the change,
+    /// and a reading tool answers from the db alone. Relay targets and the
+    /// signer come from [`accounts`](Self::accounts) (see
+    /// [`Accounts::selected_account_private_relays`] and
+    /// [`Accounts::selected_filled`]); this supplies the remote path, used by
+    /// [`fan_out_event_frame`](crate::fan_out_event_frame).
+    pub remote: Option<ToolRemote<'a>>,
     /// The caller's comment key, to sign comments with in place of the
     /// selected account: an agent's own key, which `nd` sends beside a socket
     /// call (see [`ToolSpec::accepts_comment_signer`]). Only a tool whose
@@ -106,6 +109,27 @@ pub struct ToolContext<'a> {
     /// answer until they land. Empty for a read, and a backend that answers
     /// a model (Dave) ignores them.
     pub written: Vec<nostrdb_net::NoteId>,
+}
+
+impl ToolContext<'_> {
+    /// Ask the selected account's read relays for what `filters` match,
+    /// for a [`SlowTool`] whose read missed in the local db: the db is
+    /// watched for the answer *before* the REQ is sent, and the returned
+    /// [`RelayFetch`] is waited on in the tool's job, off the render loop,
+    /// for at most `bound` (see [`RelayFetch::wait`]).
+    ///
+    /// The REQ rides this frame's remote batch, so it leaves when the
+    /// caller's tick ends. An error in a context with no
+    /// [`remote`](Self::remote): the caller answers from the db alone.
+    pub fn fetch(&mut self, filters: Vec<Filter>, bound: Duration) -> Result<RelayFetch, String> {
+        let remote = self
+            .remote
+            .as_mut()
+            .ok_or("fetching from relays is unavailable in this context")?;
+        let fetch = RelayFetch::subscribe(self.ndb, &filters, bound)?;
+        remote.oneshot().oneshot(filters);
+        Ok(fetch)
+    }
 }
 
 /// The result of running a [`ToolCall`].
@@ -1138,7 +1162,7 @@ mod tests {
             ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
-            publish: None,
+            remote: None,
             comment_signer: None,
             path: None,
             written: Vec::new(),
@@ -1191,7 +1215,7 @@ mod tests {
             ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
-            publish: None,
+            remote: None,
             comment_signer: None,
             path: None,
             written: Vec::new(),
@@ -1251,7 +1275,7 @@ mod tests {
             ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
-            publish: None,
+            remote: None,
             comment_signer: None,
             path: None,
             written: Vec::new(),
@@ -1293,7 +1317,7 @@ mod tests {
             ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
-            publish: None,
+            remote: None,
             comment_signer: None,
             path: None,
             written: Vec::new(),
@@ -1365,7 +1389,7 @@ mod tests {
                 ndb: &db.ndb,
                 note_cache: &mut note_cache,
                 accounts: &accounts,
-                publish: None,
+                remote: None,
                 comment_signer: Some(&key),
                 path: None,
                 written: Vec::new(),
@@ -1398,7 +1422,7 @@ mod tests {
             ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
-            publish: None,
+            remote: None,
             comment_signer: None,
             path: None,
             written: Vec::new(),
@@ -1465,7 +1489,7 @@ mod tests {
             ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
-            publish: None,
+            remote: None,
             comment_signer: None,
             path: None,
             written: Vec::new(),

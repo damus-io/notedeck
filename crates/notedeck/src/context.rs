@@ -170,7 +170,7 @@ impl<'a> AppContext<'a> {
             ndb: self.ndb,
             note_cache: self.note_cache,
             accounts: self.accounts,
-            publish: Some(self.remote.publisher_explicit()),
+            remote: Some(self.remote.tool_remote()),
             comment_signer: None,
             path: Some(self.path),
             written: Vec::new(),

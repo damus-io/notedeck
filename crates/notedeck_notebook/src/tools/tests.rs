@@ -468,7 +468,7 @@ async fn the_canvas_is_inferred_only_when_there_is_one() {
     assert!(err.contains("canvas 'c0ffee' already exists"), "{err}");
 }
 
-/// A context with no publisher is read-only: an edit is refused rather than
+/// A context with no `remote` is read-only: an edit is refused rather than
 /// written where the caller asked for none.
 #[tokio::test]
 async fn a_read_only_context_refuses_edits() {
@@ -479,7 +479,7 @@ async fn a_read_only_context_refuses_edits() {
         .expect("seed is registered");
     let mut app = live.notedeck.app_context();
     let mut cx = app.tool_context();
-    cx.publish = None;
+    cx.remote = None;
     match tool.call(&mut cx, &json!({ "title": "nope" })) {
         notedeck::ToolOutcome::Error(err) => {
             assert!(err.contains("publishing is unavailable"), "{err}")

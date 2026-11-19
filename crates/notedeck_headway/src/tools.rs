@@ -953,8 +953,8 @@ impl AppTool for List {
 /// Each note it is told was ingested goes in the context's
 /// [`written`](ToolContext::written), so `nd` answers once the edit reads
 /// back rather than while nostrdb is still unwrapping it.
-struct RelayFanout<'x, 'a> {
-    api: &'x mut ExplicitPublishApi<'a>,
+struct RelayFanout<'x> {
+    api: ExplicitPublishApi<'x>,
     targets: PrivateRelayTargets,
     /// The frames published so far.
     sent: usize,
@@ -962,9 +962,9 @@ struct RelayFanout<'x, 'a> {
     written: &'x mut Vec<NoteId>,
 }
 
-impl store::Publisher for RelayFanout<'_, '_> {
+impl store::Publisher for RelayFanout<'_> {
     fn publish(&mut self, event_frame: &str) {
-        fan_out_routed_event_frame(self.api, event_frame, &self.targets);
+        fan_out_routed_event_frame(&mut self.api, event_frame, &self.targets);
         self.sent += 1;
     }
 
@@ -976,12 +976,13 @@ impl store::Publisher for RelayFanout<'_, '_> {
 /// A [`RelayFanout`] to the selected account's private relays through `cx`'s
 /// publisher, or an error in a read-only context, so a write is never
 /// silently dropped.
-fn publisher<'x, 'a>(cx: &'x mut ToolContext<'a>) -> Result<RelayFanout<'x, 'a>, String> {
+fn publisher<'x>(cx: &'x mut ToolContext<'_>) -> Result<RelayFanout<'x>, String> {
     let targets = cx.accounts.selected_account_private_relay_set().targets();
     let api = cx
-        .publish
+        .remote
         .as_mut()
-        .ok_or("publishing is unavailable in this context")?;
+        .ok_or("publishing is unavailable in this context")?
+        .publisher();
     Ok(RelayFanout {
         api,
         targets,
@@ -2791,7 +2792,7 @@ mod tests {
             ndb,
             note_cache,
             accounts,
-            publish: None,
+            remote: None,
             comment_signer: None,
             path: None,
             written: Vec::new(),

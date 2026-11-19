@@ -1,5 +1,6 @@
 use crate::{
     ExplicitPublishApi, OneshotApi, PublishApi, RelaySetResolver, ScopedSubApi, ScopedSubsState,
+    ToolRemote,
 };
 use enostr::{NormRelayUrl, RelayStatus};
 use tokio::sync::mpsc;
@@ -89,6 +90,12 @@ impl<'a> RemoteApi<'a> {
     /// Access explicit-relay publishing APIs with no account dependency.
     pub fn publisher_explicit<'o>(&'o mut self) -> ExplicitPublishApi<'o> {
         ExplicitPublishApi::new(&mut self.batch)
+    }
+
+    /// A tool's reach to the relays over this frame's batch: publish and
+    /// one-shot reads (see [`ToolRemote`]).
+    pub fn tool_remote<'o>(&'o mut self) -> ToolRemote<'o> {
+        ToolRemote::new(&mut self.batch)
     }
 
     /// Send the accumulated frame batch to the bridge.

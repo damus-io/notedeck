@@ -69,6 +69,7 @@ mod timecache;
 pub mod timed_serializer;
 pub mod tokens;
 pub mod tool;
+mod tool_remote;
 pub mod ui;
 mod unknowns;
 #[cfg(feature = "auto-update")]
@@ -182,6 +183,7 @@ pub use tool::{
     ToolKind, ToolOutcome, ToolOwner, ToolRegistry, ToolSpec, ToolUpdate, UiToolEntry,
     SAVE_KEYMAP_TOOL,
 };
+pub use tool_remote::{FetchEnd, RelayFetch, ToolRemote};
 pub use unknowns::{
     get_unknown_note_ids, unknown_id_send, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds,
 };

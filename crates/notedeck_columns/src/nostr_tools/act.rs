@@ -19,14 +19,19 @@
 //! can't sign, and each says so rather than failing quietly.
 //!
 //! The writes are [data tools](notedeck::ToolKind::Data): a [`ToolContext`]
-//! has the accounts and a publisher, so the model hears what was sent (the
+//! has the accounts and the relays, so the model hears what was sent (the
 //! new note's id and how many relays it went to), not just that something
 //! went somewhere. A zap is a [UI tool](notedeck::ToolKind::Ui) instead: it
 //! needs the wallet and Columns' zap state, which only the click's action
 //! path holds, so it answers with the [`NoteAction::Zap`] a zap button
 //! raises and the model hears `sent_to_window`.
+//!
+//! A reply, reaction or zap needs the note it is about. One the db lacks is
+//! asked of the user's relays (a one-shot read on the frame's batch) and
+//! the call fails saying to try again: these run on the frame, so unlike
+//! the reads they can't wait for it.
 
-use nostrdb::{Note, NoteBuilder, Transaction};
+use nostrdb::{Filter, Note, NoteBuilder, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
     contact_list_change, note::ZapTargetAmount, reaction_note, tool::Capability, AppAction,
@@ -208,8 +213,9 @@ impl AppTool for Reply {
             concat!(
                 "Publish a public reply to a nostr note as the user, threaded under it (NIP-10 \
                  root and reply tags, the author and everyone they tagged): \
-                 `{id, note, kind, relays}`. The note must be in the local db; read it with \
-                 nostr_load_thread first.",
+                 `{id, note, kind, relays}`. The note must be in the local db: one it lacks is \
+                 fetched from the user's relays and the call fails asking to try again \
+                 (nostr_load_thread fetches it and waits).",
                 asks_first!()
             ),
             vec![
@@ -234,7 +240,7 @@ impl AppTool for Reply {
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
         let id = parse_note_id(&args.note)?;
         let content = non_empty("nostr_reply", &args.content)?.to_owned();
-        let txn = open_txn(cx)?;
+        let txn = open_txn(cx.ndb)?;
         let parent = known_note(cx, &txn, &id)?;
         send_post(cx, content, Some(&parent))
     }
@@ -244,16 +250,37 @@ impl AppTool for Reply {
     }
 }
 
-/// The note `id` from the db, or an error saying the agent has to see it
-/// first: a reply or reaction tags the note's author and thread, which
-/// only the note itself names.
-fn known_note<'t>(cx: &ToolContext, txn: &'t Transaction, id: &NoteId) -> Result<Note<'t>, String> {
-    cx.ndb.get_note_by_id(txn, id.bytes()).map_err(|_| {
-        format!(
-            "note {} isn't in this notedeck's db yet; open its thread so it's fetched, then try again",
-            id.to_bech().unwrap_or_else(|| id.hex())
-        )
-    })
+/// The note `id` from the db. On a miss it asks the user's relays for it
+/// and errors telling the agent to try again once it has landed: a reply
+/// or reaction tags the note's author and thread, which only the note
+/// itself names, and an act tool runs on the frame, so it can't wait.
+fn known_note<'t>(
+    cx: &mut ToolContext,
+    txn: &'t Transaction,
+    id: &NoteId,
+) -> Result<Note<'t>, String> {
+    if let Ok(note) = cx.ndb.get_note_by_id(txn, id.bytes()) {
+        return Ok(note);
+    }
+    let shown = id.to_bech().unwrap_or_else(|| id.hex());
+    let Some(remote) = cx.remote.as_mut() else {
+        return Err(format!("note {shown} isn't in this notedeck's db"));
+    };
+    remote.oneshot().oneshot(vec![note_filter(id)]);
+    Err(fetching(&shown))
+}
+
+/// The filter for the one note `id`, as a fetch asks the relays for it.
+fn note_filter(id: &NoteId) -> Filter {
+    Filter::new().ids([id.bytes()]).limit(1).build()
+}
+
+/// The error an act tool answers once it has asked the relays for the
+/// note `shown` that the db lacked.
+fn fetching(shown: &str) -> String {
+    format!(
+        "note {shown} isn't in this notedeck's db yet; fetching it from the user's relays now, so try again in a few seconds"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +309,8 @@ impl AppTool for React {
             "nostr_react",
             concat!(
                 "React to a nostr note as the user (NIP-25, kind 7), as the like button does: \
-                 `{id, note, kind, relays}`. The note must be in the local db.",
+                 `{id, note, kind, relays}`. The note must be in the local db: one it lacks is \
+                 fetched from the user's relays and the call fails asking to try again.",
                 asks_first!()
             ),
             vec![
@@ -310,7 +338,7 @@ impl AppTool for React {
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
         let id = parse_note_id(&args.note)?;
         let reaction = reaction_content(args.reaction.as_deref())?;
-        let txn = open_txn(cx)?;
+        let txn = open_txn(cx.ndb)?;
         let target = known_note(cx, &txn, &id)?;
         send(cx, reaction_note(&txn, &target, reaction))
     }
@@ -453,7 +481,7 @@ fn render_follow(out: &FollowOut) -> String {
 /// their relays.
 fn set_following(cx: &mut ToolContext, target: &Pubkey, follow: bool) -> Result<FollowOut, String> {
     let me = *cx.accounts.selected_account_pubkey();
-    let txn = open_txn(cx)?;
+    let txn = open_txn(cx.ndb)?;
     let following = follows(cx.ndb, &txn, &me)
         .ok_or("this notedeck doesn't have your contact list yet, so it can't change it without dropping your other follows; try again once it has synced")?
         .contains(target.bytes());
@@ -491,7 +519,8 @@ pub fn ui_specs() -> Vec<ToolSpec> {
         concat!(
             "Zap a nostr note's author from the user's wallet, as the zap button does: \
              sats leave the user's wallet. With no `sats`, the wallet's default zap amount. \
-             The note must be in the local db. Answers {\"sent_to_window\": true} once the zap \
+             The note must be in the local db: one it lacks is fetched from the user's \
+             relays and the call fails asking to try again. Answers {\"sent_to_window\": true} once the zap \
              is on its way; it doesn't say whether the wallet paid. Needs a window and a \
              connected wallet.",
             asks_first!()
@@ -522,7 +551,7 @@ pub fn ui_specs() -> Vec<ToolSpec> {
 /// Run the UI action tool `name` with `args`: the click's
 /// [`NoteAction::Zap`] as an intent for the chrome to route to Columns, or
 /// `None` when `name` isn't one.
-pub fn call_ui(ctx: &AppContext<'_>, name: &str, args: &Value) -> Option<ToolOutcome> {
+pub fn call_ui(ctx: &mut AppContext<'_>, name: &str, args: &Value) -> Option<ToolOutcome> {
     if name != ZAP {
         return None;
     }
@@ -532,8 +561,10 @@ pub fn call_ui(ctx: &AppContext<'_>, name: &str, args: &Value) -> Option<ToolOut
     })
 }
 
-/// [`ZAP`]: send `sats` (or the wallet's default) to `note`'s author.
-fn zap(ctx: &AppContext<'_>, args: &Value) -> Result<NoteAction, String> {
+/// [`ZAP`]: send `sats` (or the wallet's default) to `note`'s author. A
+/// note the db lacks has no known author: it is fetched, and the zap
+/// refused until it lands.
+fn zap(ctx: &mut AppContext<'_>, args: &Value) -> Result<NoteAction, String> {
     let note = args
         .get("note")
         .and_then(Value::as_str)
@@ -541,13 +572,13 @@ fn zap(ctx: &AppContext<'_>, args: &Value) -> Result<NoteAction, String> {
     let note_id = parse_note_id(note)?;
     let specified_msats = zap_msats(args.get("sats"))?;
     let txn = Transaction::new(ctx.ndb).map_err(|e| format!("opening a db transaction: {e}"))?;
-    let recipient = ctx
-        .ndb
-        .get_note_by_id(&txn, note_id.bytes())
-        .map(|n| Pubkey::new(*n.pubkey()))
-        .map_err(|_| {
-            format!("note {note} isn't in this notedeck's db yet, so its author isn't known")
-        })?;
+    let recipient = match ctx.ndb.get_note_by_id(&txn, note_id.bytes()) {
+        Ok(n) => Pubkey::new(*n.pubkey()),
+        Err(_) => {
+            ctx.remote.oneshot().oneshot(vec![note_filter(&note_id)]);
+            return Err(fetching(note));
+        }
+    };
     Ok(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
         target: NoteZapTargetOwned {
             note_id,

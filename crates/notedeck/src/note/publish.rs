@@ -157,10 +157,10 @@ impl<'a> NoteSender<'a> {
         let signer = selected_signer(cx.accounts)?;
         let relays = cx.accounts.selected_account_write_relays();
         let publish = cx
-            .publish
+            .remote
             .as_mut()
             .ok_or("publishing is unavailable in this context")?
-            .reborrow();
+            .publisher();
         Ok(Self::new(cx.ndb, signer, relays, publish))
     }
 
