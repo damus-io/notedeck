@@ -11,10 +11,11 @@
 //! parent wakes on it like any message; nothing ever blocks on a child.
 
 use crate::agent_status::AgentStatus;
-use crate::session::{ChatSession, SessionId, SessionManager};
+use crate::session::{ChatSession, SessionId, SessionManager, TurnSeq};
 use crate::stream_events::HostCtx;
 use crate::{embedded_engine, Message};
 use agentium_core::session_events::SessionRelation;
+use agentium_core::session_loader::TurnSpan;
 use agentium_core::wordid::session_ref;
 use std::collections::HashSet;
 
@@ -33,10 +34,10 @@ pub(crate) struct ChildReport {
     /// The message: a `result from <title>:` line, then the turn's final
     /// assistant text, truncated at [`MAX_REPORT_CHARS`].
     pub(crate) body: String,
-    /// The child's assistant row count once this is sent: the session's
-    /// [`reported_assistant_rows`](crate::session::AgenticSessionData::reported_assistant_rows)
-    /// after the send.
-    mark: usize,
+    /// The turn this reports: the session's
+    /// [`reported_turn`](crate::session::AgenticSessionData::reported_turn)
+    /// once it is sent.
+    turn: TurnSeq,
 }
 
 /// The report `session`'s turn that just ended sends its parent, or `None`
@@ -48,8 +49,9 @@ pub(crate) struct ChildReport {
 ///
 /// Only a local child whose status has settled on [`AgentStatus::Done`]
 /// reports (a turn that is waiting on a background task reports when that
-/// wakes it and finishes), and only when it wrote assistant text since its
-/// last report, so a turn that wrote none never re-sends the one before.
+/// wakes it and finishes), once per turn, and only when the chat's last
+/// assistant text was written after the last reported turn ended, so a turn
+/// that wrote none never re-sends the one before.
 pub(crate) fn child_report(session: &ChatSession, at_rest: bool) -> Option<ChildReport> {
     if !at_rest || session.is_remote() || session.details.relation != SessionRelation::Child {
         return None;
@@ -60,16 +62,21 @@ pub(crate) fn child_report(session: &ChatSession, at_rest: bool) -> Option<Child
         return None;
     }
 
-    let mut assistants = session.chat.iter().filter_map(|m| match m {
-        Message::Assistant(msg) => Some(msg.text()),
-        _ => None,
-    });
-    let mark = assistants.clone().count();
-    if mark <= agentic.reported_assistant_rows {
+    let turn = session.turn_seq();
+    if turn == TurnSeq::NONE || agentic.reported_turn >= Some(turn) {
         return None;
     }
-    let text = assistants.next_back()?.trim();
-    if text.is_empty() {
+    let (row, text) = session
+        .chat
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(row, m)| match m {
+            Message::Assistant(msg) => Some((row, msg.text().trim())),
+            _ => None,
+        })?;
+    let floor = reported_turn_end(session.turns(), turn, agentic.reported_turn);
+    if text.is_empty() || floor.is_some_and(|floor| row <= floor) {
         return None;
     }
 
@@ -79,8 +86,26 @@ pub(crate) fn child_report(session: &ChatSession, at_rest: bool) -> Option<Child
         parent: parent.to_string(),
         from,
         body,
-        mark,
+        turn,
     })
+}
+
+/// The chat row the last reported turn ended on, which a new report's text
+/// must come after; `None` when nothing was reported yet.
+///
+/// Called once `turn` has ended, so its span is the last of `turns`, and each
+/// turn between it and the `reported` one ended with a span before it: the
+/// reported turn's is that many back. Spans don't carry their seq yet, so a
+/// chat replace that folded fewer spans than this host ended loses the anchor
+/// (`None`), and the report falls back to the chat's last text.
+fn reported_turn_end(
+    turns: &[TurnSpan],
+    turn: TurnSeq,
+    reported: Option<TurnSeq>,
+) -> Option<usize> {
+    let back = usize::try_from(turn.turns_since(reported?)?).ok()?;
+    let index = turns.len().checked_sub(1)?.checked_sub(back)?;
+    Some(turns[index].last_row)
 }
 
 /// A report's message: one `result from <title>:` line, then `text`, cut at
@@ -126,7 +151,7 @@ pub(crate) fn report_child_turns(
                 .get_mut(session_id)
                 .and_then(|s| s.agentic.as_mut())
             {
-                agentic.reported_assistant_rows = report.mark;
+                agentic.reported_turn = Some(report.turn);
             }
         }
     }
@@ -171,12 +196,30 @@ mod tests {
     use super::*;
     use crate::backend::BackendType;
     use crate::config::AiMode;
-    use crate::messages::{AssistantMessage, UserMessage};
+    use crate::messages::{AssistantMessage, CompactionInfo, UserMessage};
     use crate::tests::TestDave;
     use std::path::PathBuf;
     use std::time::Duration;
 
     const PARENT: &str = "agentium:loud-review-oyster";
+
+    /// Run one turn on `session` the way the host does: dispatch `ask`, write
+    /// `reply`, end the turn.
+    fn run_turn(session: &mut ChatSession, ask: &str, reply: Message) {
+        session.chat.push(Message::User(UserMessage::from(ask)));
+        session.mark_dispatched();
+        session.chat.push(reply);
+        session
+            .end_turn(crate::session::now_unix())
+            .expect("a turn ran");
+        session.dispatch_state.stream_ended();
+        session.update_status();
+    }
+
+    /// An assistant row saying `text`.
+    fn says(text: &str) -> Message {
+        Message::Assistant(AssistantMessage::from_text(text.to_string()))
+    }
 
     /// A local agentic session related to [`PARENT`] by `relation`, whose
     /// turn was asked `ask` and answered `answer`.
@@ -190,14 +233,13 @@ mod tests {
         session.details.title = "child work".to_string();
         session.details.parent_session = Some(PARENT.to_string());
         session.details.relation = relation;
-        session.chat.push(Message::User(UserMessage::from(ask)));
+        run_turn(&mut session, ask, says(answer));
         session
-            .chat
-            .push(Message::Assistant(AssistantMessage::from_text(
-                answer.to_string(),
-            )));
-        session.update_status();
-        session
+    }
+
+    /// Record `report` as sent, as [`report_child_turns`] does.
+    fn sent(child: &mut ChatSession, report: &ChildReport) {
+        child.agentic.as_mut().unwrap().reported_turn = Some(report.turn);
     }
 
     /// The trigger: a child at rest with fresh text reports; queued work
@@ -236,24 +278,46 @@ mod tests {
         assert_eq!(child_report(&child, true), None);
     }
 
-    /// Once a turn's text is reported, a turn that ends without writing any
-    /// new text does not send the old one again.
+    /// A reported turn is not sent again, and the next turn reports its own
+    /// text.
     #[test]
     fn a_reported_turn_is_not_sent_twice() {
         let mut child = finished(SessionRelation::Child, "find it", "found it");
         let report = child_report(&child, true).unwrap();
-        child.agentic.as_mut().unwrap().reported_assistant_rows = report.mark;
+        assert_eq!(report.turn, child.turn_seq());
+        sent(&mut child, &report);
         assert_eq!(child_report(&child, true), None);
 
-        child.chat.push(Message::User(UserMessage::from("again")));
-        child
-            .chat
-            .push(Message::Assistant(AssistantMessage::from_text(
-                "found more".to_string(),
-            )));
-        child.update_status();
+        run_turn(&mut child, "again", says("found more"));
         let next = child_report(&child, true).expect("the new turn reports");
         assert!(next.body.ends_with("found more"), "{}", next.body);
+        assert!(next.turn > report.turn);
+    }
+
+    /// A turn that wrote no assistant text sends nothing: the last text in
+    /// the chat is the reported turn's.
+    #[test]
+    fn a_textless_turn_sends_nothing() {
+        let mut child = finished(SessionRelation::Child, "find it", "found it");
+        let report = child_report(&child, true).unwrap();
+        sent(&mut child, &report);
+
+        let compacted = Message::CompactionComplete(CompactionInfo { pre_tokens: 0 });
+        run_turn(&mut child, "compact", compacted);
+        assert_eq!(child.status(), AgentStatus::Done);
+        assert_eq!(child_report(&child, true), None);
+    }
+
+    /// A turn whose report never went (it ended waiting on a background
+    /// task, or its parent was out of reach) is reported by the next turn to
+    /// end at rest, even one that wrote no text of its own.
+    #[test]
+    fn an_unreported_turn_reports_with_the_next() {
+        let mut child = finished(SessionRelation::Child, "find it", "found it");
+        let compacted = Message::CompactionComplete(CompactionInfo { pre_tokens: 0 });
+        run_turn(&mut child, "compact", compacted);
+        let report = child_report(&child, true).expect("the first turn's text");
+        assert!(report.body.ends_with("found it"), "{}", report.body);
     }
 
     /// A long result is cut at [`MAX_REPORT_CHARS`] characters, on a char
@@ -286,14 +350,7 @@ mod tests {
             session.details.title = "child work".to_string();
             session.details.parent_session = Some(parent_ref);
             session.details.relation = SessionRelation::Child;
-            session
-                .chat
-                .push(Message::User(UserMessage::from("find it")));
-            session
-                .chat
-                .push(Message::Assistant(AssistantMessage::from_text(
-                    "found it".to_string(),
-                )));
+            run_turn(session, "find it", says("found it"));
         }
 
         let parts = test.parts();

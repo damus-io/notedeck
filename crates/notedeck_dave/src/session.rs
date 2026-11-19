@@ -74,15 +74,54 @@ impl Walltime {
     }
 }
 
+/// Which turn of its chat a turn is: the first turn this host starts is 1, and
+/// each turn it starts after that one ends is the next. [`TurnSeq::NONE`] is
+/// before the first.
+///
+/// Work done once per turn (a child's report to its parent) records the seq it
+/// did it for, rather than a marker read off the chat's shape. Local only for
+/// now: the turn-end marker doesn't carry it yet, so a remote session reads
+/// [`TurnSeq::NONE`], and a restart numbers the turns from 1 again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct TurnSeq(u64);
+
+impl TurnSeq {
+    /// Before the chat's first turn.
+    pub const NONE: TurnSeq = TurnSeq(0);
+
+    /// How many turns started after `earlier` up to and including this one, or
+    /// `None` when `earlier` is the later of the two.
+    pub fn turns_since(self, earlier: TurnSeq) -> Option<u64> {
+        self.0.checked_sub(earlier.0)
+    }
+
+    /// The turn after this one.
+    fn next(self) -> TurnSeq {
+        TurnSeq(self.0 + 1)
+    }
+}
+
 /// A chat's finished turns, oldest first, with the seconds they add up to kept
-/// beside them so the walltime never walks the list.
+/// beside them so the walltime never walks the list, and the seq of the last
+/// turn started.
 #[derive(Debug, Default)]
 pub struct Turns {
     spans: Vec<TurnSpan>,
     worked_secs: u64,
+    started: TurnSeq,
 }
 
 impl Turns {
+    /// The last turn started: the running one, else the last to end.
+    pub fn last_started(&self) -> TurnSeq {
+        self.started
+    }
+
+    /// Number the turn starting now.
+    fn start(&mut self) {
+        self.started = self.started.next();
+    }
+
     /// The finished turns, oldest first.
     pub fn spans(&self) -> &[TurnSpan] {
         &self.spans
@@ -98,6 +137,8 @@ impl Turns {
         self.spans.push(span);
     }
 
+    /// Replace the spans. The turn count stays: a chat replace re-derives
+    /// where the turns ended, not how many this host has started.
     fn set(&mut self, spans: Vec<TurnSpan>) {
         self.worked_secs = spans.iter().map(TurnSpan::duration_secs).sum();
         self.spans = spans;
@@ -393,11 +434,11 @@ pub struct AgenticSessionData {
     /// and kind-1988 events).  Generated at creation, never changes.
     /// Separate from the Claude CLI session ID used for `--resume`.
     pub event_id: String,
-    /// How many assistant rows the chat held when this session, as a
-    /// `--child`, last reported a turn's result to its parent (see
-    /// [`crate::child_report`]). A turn reports only when the chat has gained
-    /// one since, so it never re-sends an earlier turn's text.
-    pub reported_assistant_rows: usize,
+    /// The last turn this session, as a `--child`, reported to its parent
+    /// (see [`crate::child_report`]); `None` before its first report. A turn
+    /// reports once, and only text written after the reported turn ended, so
+    /// it never re-sends an earlier turn's text.
+    pub reported_turn: Option<TurnSeq>,
 }
 
 /// One "Allow Always" grant on a session's runtime allowlist.
@@ -472,7 +513,7 @@ impl AgenticSessionData {
             fold_dirty: false,
             runtime_allows: BTreeSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
-            reported_assistant_rows: 0,
+            reported_turn: None,
         }
     }
 
@@ -2515,14 +2556,21 @@ impl ChatSession {
         self.start_turn(now_unix());
     }
 
-    /// Record that a turn started at `now` (unix seconds), unless one is
-    /// already running: a wake-up turn reported while a dispatched one runs
-    /// is the same turn.
+    /// Record that a turn started at `now` (unix seconds) and number it the
+    /// next [`TurnSeq`], unless one is already running: a wake-up turn
+    /// reported while a dispatched one runs is the same turn.
     pub fn start_turn(&mut self, now: u64) {
         if self.turn_started_at.is_some() {
             return;
         }
         self.turn_started_at = Some(now);
+        self.turns.start();
+    }
+
+    /// The running turn's seq, else the last turn's; [`TurnSeq::NONE`] before
+    /// this host started one.
+    pub fn turn_seq(&self) -> TurnSeq {
+        self.turns.last_started()
     }
 
     /// End the running turn at `now` (unix seconds) and record its span on
@@ -2872,6 +2920,28 @@ mod tests {
             AiMode::Agentic,
             BackendType::Claude,
         )
+    }
+
+    /// Each turn this host starts gets the next seq; a wake-up reported while
+    /// a dispatched turn runs is that turn, and a chat replace keeps the count.
+    #[test]
+    fn a_turn_is_numbered_once() {
+        let mut session = test_session();
+        assert_eq!(session.turn_seq(), TurnSeq::NONE);
+        session.chat.push(Message::User("go".into()));
+        session.mark_dispatched();
+        let first = session.turn_seq();
+        assert!(first > TurnSeq::NONE);
+        session.start_turn(now_unix());
+        assert_eq!(session.turn_seq(), first, "a wake-up mid-dispatch");
+        session.append_token("done");
+        session.end_turn(now_unix()).expect("a turn was running");
+        assert_eq!(session.turn_seq(), first, "the last turn, once it ended");
+
+        session.set_turns(Vec::new());
+        assert_eq!(session.turn_seq(), first, "a chat replace keeps the count");
+        session.start_turn(now_unix());
+        assert_eq!(session.turn_seq().turns_since(first), Some(1));
     }
 
     /// A turn's time counts once, from its start to its end, and lands on the
