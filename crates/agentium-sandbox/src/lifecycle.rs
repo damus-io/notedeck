@@ -1,5 +1,5 @@
 //! Who owns a guest, and when one may be reaped: the rules behind
-//! [`crate::guests`], kept apart from microsandbox so they are tested in
+//! [`crate::fleet`], kept apart from any VM host so they are tested in
 //! every build.
 //!
 //! A guest is a microVM, and a microVM nobody stops is a leak with the
@@ -15,7 +15,7 @@
 //!   and a record makes the next create of that name fail. Every teardown
 //!   is stop then [remove](microsandbox::Sandbox::remove).
 //! - **A sweep for what a crash left behind.** Attached mode kills the VM
-//!   on a crash but cannot remove its record. [`crate::guests::Guests::sweep`]
+//!   on a crash but cannot remove its record. [`crate::fleet::Guests::sweep`]
 //!   finds every guest labelled as ours ([`LABEL_APP`]) and reaps those
 //!   whose owner is gone, by the [`verdict`] below.
 //!

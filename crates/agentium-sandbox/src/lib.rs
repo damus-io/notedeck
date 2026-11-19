@@ -36,12 +36,15 @@
 //! - [`exec`]: that session over microsandbox's `exec_stream`.
 //! - [`lifecycle`]: how a guest is named and labelled, when one may be
 //!   reaped, and the bound on how many run at once.
-//! - [`guests`]: the one owner of guest lifecycles: boot a session's
+//! - [`fleet`]: the one owner of guest lifecycles: boot a session's
 //!   guest in the order that works, stop and remove it, and sweep up what
-//!   a crash left behind.
+//!   a crash left behind, over a [`fleet::VmHost`] so it is tested
+//!   without KVM.
+//! - [`guests`]: microsandbox as that host, and the `Guests` notedeck runs.
 
 pub mod client;
 pub mod egress;
+pub mod fleet;
 pub mod guest;
 pub mod image;
 pub mod ipc;
@@ -167,6 +170,10 @@ pub enum SandboxError {
     #[cfg(microvm)]
     #[error("microsandbox: {0}")]
     Microsandbox(#[from] microsandbox::MicrosandboxError),
+    /// A call the test host (`fleet`'s `FakeVms`) was told to fail.
+    #[cfg(test)]
+    #[error("fake vm host: {0}")]
+    Fake(String),
 }
 
 #[cfg(test)]
