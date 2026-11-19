@@ -10,14 +10,14 @@ use crate::{
 };
 
 use egui_nav::Percent;
-use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
-use nostrdb_net::{FilledKeypair, NoteId, Pubkey};
+use nostrdb::{Ndb, NoteKey, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
     get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
-    unix_time_secs, Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache,
-    NoteZapTargetOwned, PublishApi, RemoteApi, UnknownIds, ZapAction, ZapTarget, ZappingError,
-    Zaps,
+    reaction_note, unix_time_secs, Accounts, GlobalWallet, Images, MediaJobSender, NoteAction,
+    NoteCache, NoteSender, NoteZapTargetOwned, RemoteApi, SentNote, UnknownIds, ZapAction,
+    ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -80,18 +80,11 @@ fn execute_note_action(
         }
         NoteAction::React(react_action) => {
             if let Some(filled) = accounts.selected_filled() {
-                let mut publisher = remote.publisher();
-                if let Err(err) =
-                    send_reaction_event(ndb, txn, &mut publisher, filled, &react_action)
-                {
+                let sent_id = reaction_sent_id(filled.pubkey, react_action.note_id.bytes());
+                if let Err(err) = send_reaction_event(ndb, txn, accounts, remote, &react_action) {
                     tracing::error!("Failed to send reaction: {err}");
                 }
-                ui.ctx().data_mut(|d| {
-                    d.insert_temp(
-                        reaction_sent_id(filled.pubkey, react_action.note_id.bytes()),
-                        true,
-                    )
-                });
+                ui.ctx().data_mut(|d| d.insert_temp(sent_id, true));
             } else {
                 router_action = Some(RouterAction::route_to(Route::accounts()));
             }
@@ -323,111 +316,19 @@ pub fn execute_and_process_note_action(
     resp.router_action
 }
 
+/// Send the like button's reaction: [`reaction_note`] to the note it names,
+/// through the selected account's [`NoteSender`].
 fn send_reaction_event(
-    ndb: &mut Ndb,
+    ndb: &Ndb,
     txn: &Transaction,
-    publisher: &mut PublishApi<'_>,
-    kp: FilledKeypair<'_>,
+    accounts: &Accounts,
+    remote: &mut RemoteApi<'_>,
     reaction: &ReactAction,
-) -> Result<(), String> {
+) -> Result<SentNote, String> {
     let Ok(target) = ndb.get_note_by_id(txn, reaction.note_id.bytes()) else {
         return Err(format!("noteid {:?} not found in ndb", reaction.note_id));
     };
-
-    let note = reaction_note(
-        txn,
-        &target,
-        &kp.secret_key.secret_bytes(),
-        reaction.content,
-    )?;
-
-    let Ok(event) = &nostrdb_net::ClientMessage::event(&note) else {
-        return Err("failed to convert reaction note into client message".to_owned());
-    };
-
-    let Ok(json) = event.to_json() else {
-        return Err("failed to serialize reaction event to json".to_owned());
-    };
-
-    let _ = ndb.process_event_with(&json, IngestMetadata::new().client(true));
-
-    publisher.accounts_write().publish_note(&note);
-
-    Ok(())
-}
-
-/// A NIP-25 reaction of `content` (`+`, `-` or an emoji) to `target`, signed
-/// with `secret`: the note the like button sends, which the agent's
-/// `nostr_react` tool sends too. It tags the target note and its author
-/// (with a relay hint when the db knows where the note came from), its `a`
-/// coordinate when it is addressable, and its kind.
-pub(crate) fn reaction_note<'a>(
-    txn: &Transaction,
-    target: &nostrdb::Note<'_>,
-    secret: &[u8; 32],
-    content: &'a str,
-) -> Result<nostrdb::Note<'a>, String> {
-    let target_pubkey = Pubkey::new(*target.pubkey());
-    let relay_hint: Option<String> = target.relays(txn).next().map(|s| s.to_owned());
-    let target_kind = target.kind();
-    let d_tag_value = find_addressable_d_tag(target);
-
-    let mut builder = NoteBuilder::new().kind(7).content(content);
-
-    builder = builder
-        .start_tag()
-        .tag_str("e")
-        .tag_id(target.id())
-        .tag_str(relay_hint.as_deref().unwrap_or(""))
-        .tag_str(&target_pubkey.hex());
-
-    builder = builder
-        .start_tag()
-        .tag_str("p")
-        .tag_id(target_pubkey.bytes());
-
-    if let Some(relay) = relay_hint.as_deref() {
-        builder = builder.tag_str(relay);
-    }
-
-    // we don't support addressable events yet... but why not future proof it?
-    if let Some(d_value) = d_tag_value.as_deref() {
-        let coordinates = format!("{}:{}:{}", target_kind, target_pubkey.hex(), d_value);
-
-        builder = builder.start_tag().tag_str("a").tag_str(&coordinates);
-
-        if let Some(relay) = relay_hint.as_deref() {
-            builder = builder.tag_str(relay);
-        }
-    }
-
-    builder = builder
-        .start_tag()
-        .tag_str("k")
-        .tag_str(&target_kind.to_string());
-
-    builder
-        .sign(secret)
-        .build()
-        .ok_or_else(|| "failed to build reaction event".to_owned())
-}
-
-fn find_addressable_d_tag(note: &nostrdb::Note<'_>) -> Option<String> {
-    for tag in note.tags() {
-        if tag.count() < 2 {
-            continue;
-        }
-
-        if tag.get_unchecked(0).variant().str() != Some("d") {
-            continue;
-        }
-
-        if let Some(value) = tag.get_unchecked(1).variant().str() {
-            return Some(value.to_owned());
-        }
-    }
-
-    None
+    NoteSender::from_app(ndb, accounts, remote)?.send(reaction_note(txn, &target, reaction.content))
 }
 
 fn send_zap(

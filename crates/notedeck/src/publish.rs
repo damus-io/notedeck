@@ -13,6 +13,13 @@ impl<'o> ExplicitPublishApi<'o> {
         Self { batch }
     }
 
+    /// A shorter-lived handle onto the same batch, for a borrower (a
+    /// [`NoteSender`](crate::note::publish::NoteSender) built from a
+    /// [`ToolContext`](crate::ToolContext)) that can't take this one.
+    pub fn reborrow(&mut self) -> ExplicitPublishApi<'_> {
+        ExplicitPublishApi { batch: self.batch }
+    }
+
     /// Publish a note to an explicit relay target set.
     pub fn publish_note(&mut self, note: &Note, relays: Vec<RelayId>) {
         let note_json = match note.json() {

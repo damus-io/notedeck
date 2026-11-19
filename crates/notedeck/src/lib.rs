@@ -128,10 +128,11 @@ pub use navigator::{AppId, NavPass, NavRequest, NavTransition, Navigator, RouteP
 pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
-    builder_from_note, construct_people_list_note, get_p_tags, send_mute_event,
-    send_people_list_event, send_report_event, send_unmute_event, BroadcastContext,
-    ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteDetail, NoteRef,
-    ReportTarget, ReportType, RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
+    builder_from_note, construct_people_list_note, contact_list_change, get_p_tags, reaction_note,
+    send_mute_event, send_people_list_event, send_report_event, send_unmute_event,
+    BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteDetail,
+    NoteRef, NoteSender, ReportTarget, ReportType, RootIdError, RootNoteId, RootNoteIdBuf,
+    ScrollInfo, SentNote, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use oneshot_api::OneshotApi;

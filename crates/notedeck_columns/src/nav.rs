@@ -653,8 +653,14 @@ fn process_render_nav_action(
         }
         RenderNavAction::PostAction(new_post_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
-            let mut publisher = ctx.remote.publisher();
-            match new_post_action.execute(ctx.ndb, &txn, &mut publisher, &mut app.drafts, col) {
+            match new_post_action.execute(
+                ctx.ndb,
+                &txn,
+                ctx.accounts,
+                &mut ctx.remote,
+                &mut app.drafts,
+                col,
+            ) {
                 Err(err) => {
                     tracing::error!("Error executing post action: {err}");
                     None

@@ -18,8 +18,8 @@ use notedeck::media::AnimationMode;
 use notedeck::platform::android::try_open_file_picker;
 use notedeck::platform::get_next_selected_file;
 use notedeck::{
-    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction,
-    NoteContext, PublishApi,
+    name::get_display_name, supported_mime_hosted_at_url, tr, Accounts, Localization, NoteAction,
+    NoteContext, NoteSender, RemoteApi,
 };
 use notedeck::{DragResponse, PixelDimensions};
 use notedeck_ui::{
@@ -67,11 +67,15 @@ impl NewPostAction {
         NewPostAction { post_type, post }
     }
 
+    /// Sign the post as its author, send it through the selected account's
+    /// [`NoteSender`] (stored locally, so it shows even when offline, then
+    /// published to the account's write relays), and clear its draft.
     pub fn execute(
         &self,
         ndb: &Ndb,
         txn: &Transaction,
-        publisher: &mut PublishApi<'_>,
+        accounts: &Accounts,
+        remote: &mut RemoteApi<'_>,
         drafts: &mut Drafts,
         col: usize,
     ) -> Result<()> {
@@ -91,17 +95,7 @@ impl NewPostAction {
             }
         };
 
-        // `ClientMessage` now lives in nostrdb_net, so its error is
-        // `nostrdb_net::Error`; bridge it through `enostr::Error` (which our
-        // `Error::Nostr` variant already accepts) so `?` has a single hop.
-        let event = nostrdb_net::ClientMessage::event(&note).map_err(enostr::Error::from)?;
-
-        // Ingest locally so the note appears immediately, even when offline
-        if let Ok(json) = event.to_json() {
-            let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
-        }
-
-        publisher.accounts_write().publish_note(&note);
+        NoteSender::from_app(ndb, accounts, remote)?.send_note(&note)?;
         drafts.get_from_post_type(&self.post_type, col).clear();
 
         Ok(())

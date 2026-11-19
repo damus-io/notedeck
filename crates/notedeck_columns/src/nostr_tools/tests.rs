@@ -62,9 +62,15 @@ fn id_of(frame: &str) -> [u8; 32] {
 /// Seed the world into a fresh host signed in as alice, waiting until every
 /// note has landed.
 fn world() -> World {
-    let alice = FullKeypair::generate();
-    let bob = FullKeypair::generate();
-    let carol = FullKeypair::generate();
+    world_of(
+        FullKeypair::generate(),
+        FullKeypair::generate(),
+        FullKeypair::generate(),
+    )
+}
+
+/// [`world`] with these keys, so two worlds can hold the same notes.
+fn world_of(alice: FullKeypair, bob: FullKeypair, carol: FullKeypair) -> World {
     let mut host = TestHost::with_account(&alice);
 
     let root = signed(&bob, 1, "gm #nostr", T0, &[&["t", "nostr"]]);
@@ -644,6 +650,77 @@ fn follow_refuses_without_the_accounts_contact_list() {
         panic!("a follow without a contact list went through");
     };
     assert!(err.contains("doesn't have your contact list"), "{err}");
+}
+
+impl World {
+    /// Press the profile's follow (or unfollow) button on `target` as
+    /// alice, and read back the contact list it wrote and how many relays
+    /// it went to.
+    fn press_follow(&mut self, target: &Pubkey, follow: bool) -> Written {
+        // Alice was selected before her contact list landed; selecting her
+        // again reads it, as a restart would.
+        let other = FullKeypair::generate();
+        let mut ctx = self.host.app_context();
+        notedeck_testing::fixtures::add_account(&mut ctx, &other);
+        ctx.select_account(&other.pubkey);
+        ctx.select_account(&self.alice.pubkey);
+
+        let sub = ctx
+            .ndb
+            .subscribe(&[Filter::new()
+                .authors([self.alice.pubkey.bytes()])
+                .kinds([3])
+                .build()])
+            .expect("subscribe");
+        let sent = crate::profile::send_kind_3_event(
+            ctx.ndb,
+            ctx.accounts,
+            &mut ctx.remote,
+            target,
+            follow,
+        )
+        .expect("the button sends");
+        let mut stream = SubscriptionStream::new(ctx.ndb.clone(), sub);
+        notedeck_testing::await_notes(&mut stream, 1);
+
+        let txn = Transaction::new(ctx.ndb).expect("txn");
+        let note = ctx
+            .ndb
+            .get_note_by_id(&txn, sent.id.bytes())
+            .expect("the written note is in the db");
+        Written {
+            out: json!({ "relays": sent.relays }),
+            note: serde_json::from_str(&note.json().expect("json")).expect("note json"),
+        }
+    }
+}
+
+/// The profile's follow button and the `nostr_follow`/`nostr_unfollow`
+/// tools are one sender: from the same contact list they write the same
+/// tags and content, to as many relays.
+#[test]
+fn the_follow_button_and_the_follow_tools_write_the_same_contact_list() {
+    let (alice, bob, carol) = (
+        FullKeypair::generate(),
+        FullKeypair::generate(),
+        FullKeypair::generate(),
+    );
+    for (tool, target, follow) in [
+        ("nostr_follow", carol.pubkey, true),
+        ("nostr_unfollow", bob.pubkey, false),
+    ] {
+        let mut by_button = world_of(alice.clone(), bob.clone(), carol.clone());
+        let button = by_button.press_follow(&target, follow);
+        let mut by_tool = world_of(alice.clone(), bob.clone(), carol.clone());
+        let tool_wrote = by_tool.write(tool, json!({ "who": target.hex() }), 3);
+
+        assert_eq!(button.note["tags"], tool_wrote.note["tags"], "{tool}");
+        assert_eq!(button.note["content"], tool_wrote.note["content"], "{tool}");
+        assert_eq!(
+            button.out["relays"], tool_wrote.out["sent"]["relays"],
+            "{tool}"
+        );
+    }
 }
 
 /// A zap answers the zap button's action for the note's author, in

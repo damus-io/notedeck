@@ -2,10 +2,10 @@ use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 use nostrdb_net::{FilledKeypair, FullKeypair, ProfileState, Pubkey};
 
 use notedeck::{
-    builder_from_note, note::publish::publish_note_builder, send_mute_event, Accounts,
-    ContactState, DataPath, Localization, ProfileContext, PublishApi, RemoteApi,
+    contact_list_change, note::publish::publish_note_builder, send_mute_event, Accounts,
+    ContactState, DataPath, Localization, NoteSender, ProfileContext, PublishApi, RemoteApi,
+    SentNote,
 };
-use tracing::info;
 
 use crate::{column::Column, nav::RouterAction, route::Route, storage, Damus};
 
@@ -73,33 +73,24 @@ impl ProfileAction {
             }
             ProfileAction::SaveChanges(changes) => {
                 let note = changes.to_note();
-                let Ok(event) = nostrdb_net::ClientMessage::event(&note) else {
-                    tracing::error!("could not serialize profile note?");
+                let sent = NoteSender::from_app(ndb, accounts, remote)
+                    .and_then(|mut sender| sender.send_note(&note));
+                if let Err(err) = sent {
+                    tracing::error!("could not send the profile: {err}");
                     return None;
-                };
-
-                let Ok(json) = event.to_json() else {
-                    tracing::error!("could not serialize profile note?");
-                    return None;
-                };
-
-                // TODO(jb55): do this in a more centralized place
-                let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
-
-                info!("sending {}", &json);
-                let mut publisher = remote.publisher();
-                publisher.accounts_write().publish_note(&note);
-
+                }
                 Some(RouterAction::GoBack.into())
             }
             ProfileAction::Follow(target_key) => {
-                let mut publisher = remote.publisher();
-                Self::send_follow_user_event(ndb, &mut publisher, accounts, target_key);
+                if let Err(err) = send_kind_3_event(ndb, accounts, remote, target_key, true) {
+                    tracing::error!("could not follow {}: {err}", target_key.hex());
+                }
                 None
             }
             ProfileAction::Unfollow(target_key) => {
-                let mut publisher = remote.publisher();
-                Self::send_unfollow_user_event(ndb, &mut publisher, accounts, target_key);
+                if let Err(err) = send_kind_3_event(ndb, accounts, remote, target_key, false) {
+                    tracing::error!("could not unfollow {}: {err}", target_key.hex());
+                }
                 None
             }
             ProfileAction::Context(profile_context) => {
@@ -180,97 +171,38 @@ impl ProfileAction {
             }
         }
     }
-
-    fn send_follow_user_event(
-        ndb: &Ndb,
-        publisher: &mut PublishApi<'_>,
-        accounts: &Accounts,
-        target_key: &Pubkey,
-    ) {
-        send_kind_3_event(ndb, publisher, accounts, FollowAction::Follow(target_key));
-    }
-
-    fn send_unfollow_user_event(
-        ndb: &Ndb,
-        publisher: &mut PublishApi<'_>,
-        accounts: &Accounts,
-        target_key: &Pubkey,
-    ) {
-        send_kind_3_event(ndb, publisher, accounts, FollowAction::Unfollow(target_key));
-    }
 }
 
-enum FollowAction<'a> {
-    Follow(&'a Pubkey),
-    Unfollow(&'a Pubkey),
-}
-
-fn send_kind_3_event(
+/// The profile's follow button: the selected account's contact list
+/// ([`ContactState::Received`]) with `target` added when `follow` and dropped
+/// when not ([`contact_list_change`]), sent through its [`NoteSender`]. The
+/// `nostr_follow` tool sends the same rebuild.
+pub(crate) fn send_kind_3_event(
     ndb: &Ndb,
-    publisher: &mut PublishApi<'_>,
     accounts: &Accounts,
-    action: FollowAction,
-) {
-    let Some(kp) = accounts.get_selected_account().key.to_full() else {
-        return;
-    };
-
-    let txn = Transaction::new(ndb).expect("txn");
-
-    let ContactState::Received {
-        contacts: _,
-        note_key,
-        timestamp: _,
-    } = accounts.get_selected_account().data.contacts.get_state()
+    remote: &mut RemoteApi<'_>,
+    target: &Pubkey,
+    follow: bool,
+) -> Result<SentNote, String> {
+    let ContactState::Received { note_key, .. } =
+        accounts.get_selected_account().data.contacts.get_state()
     else {
-        return;
+        return Err("the account's contact list hasn't arrived yet".to_owned());
     };
 
-    let contact_note = match ndb.get_note_by_key(&txn, *note_key).ok() {
-        Some(n) => n,
-        None => {
-            tracing::error!(
-                "Somehow we are in state ContactState::Received but the contact note key doesn't exist"
-            );
-            return;
-        }
-    };
-
-    if contact_note.kind() != 3 {
-        tracing::error!(
-            "Something very wrong just occured. The key for the supposed contact note yielded a note which was not a contact..."
-        );
-        return;
+    let txn = Transaction::new(ndb).map_err(|e| format!("opening a db transaction: {e}"))?;
+    let contacts = ndb
+        .get_note_by_key(&txn, *note_key)
+        .map_err(|_| "the contact list is received but its note key isn't in the db".to_owned())?;
+    if contacts.kind() != 3 {
+        return Err(format!(
+            "the contact list's note key holds a kind {} note",
+            contacts.kind()
+        ));
     }
 
-    let builder = match action {
-        FollowAction::Follow(pubkey) => {
-            builder_from_note(contact_note, None::<fn(&nostrdb::Tag<'_>) -> bool>)
-                .start_tag()
-                .tag_str("p")
-                .tag_str(&pubkey.hex())
-        }
-        FollowAction::Unfollow(pubkey) => builder_from_note(
-            contact_note,
-            Some(|tag: &nostrdb::Tag<'_>| {
-                if tag.count() < 2 {
-                    return false;
-                }
-
-                let Some("p") = tag.get_str(0) else {
-                    return false;
-                };
-
-                let Some(cur_val) = tag.get_id(1) else {
-                    return false;
-                };
-
-                cur_val == pubkey.bytes()
-            }),
-        ),
-    };
-
-    publish_note_builder(builder, ndb, publisher, kp);
+    NoteSender::from_app(ndb, accounts, remote)?
+        .send(contact_list_change(&contacts, target, follow))
 }
 
 pub fn send_new_contact_list(

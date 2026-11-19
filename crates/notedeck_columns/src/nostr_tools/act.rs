@@ -26,12 +26,12 @@
 //! path holds, so it answers with the [`NoteAction::Zap`] a zap button
 //! raises and the model hears `sent_to_window`.
 
-use nostrdb::{IngestMetadata, Note, NoteBuilder, Transaction};
-use nostrdb_net::{ClientMessage, NoteId, Pubkey};
+use nostrdb::{Note, NoteBuilder, Transaction};
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
-    note::ZapTargetAmount, tool::Capability, AppAction, AppContext, AppTool, NoteAction,
-    NoteZapTargetOwned, RegisteredTool, ToolArg, ToolArgType, ToolContext, ToolOutcome, ToolSpec,
-    ZapAction,
+    contact_list_change, note::ZapTargetAmount, reaction_note, tool::Capability, AppAction,
+    AppContext, AppTool, NoteAction, NoteSender, NoteZapTargetOwned, RegisteredTool, SentNote,
+    ToolArg, ToolArgType, ToolContext, ToolOutcome, ToolSpec, ZapAction,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -91,41 +91,39 @@ fn render_sent(verb: &str, sent: &Sent) -> String {
     )
 }
 
-/// The selected account's secret key, or the reason it can't sign.
-fn signing_secret(cx: &ToolContext) -> Result<[u8; 32], String> {
-    cx.accounts
-        .selected_filled()
-        .map(|f| f.secret_key.secret_bytes())
-        .ok_or_else(|| "the selected account is watch-only and can't sign".to_owned())
+/// Sign `builder` as the selected account and send it through
+/// [`NoteSender`], the path the Columns buttons take: stored locally so it
+/// shows at once, then published to the account's write relays.
+fn send(cx: &mut ToolContext, builder: NoteBuilder<'_>) -> Result<Sent, String> {
+    let sent = NoteSender::from_tool_context(cx)?.send(builder)?;
+    Ok(record(cx, sent))
 }
 
-/// Ingest the signed `note` locally, so it shows in the columns at once,
-/// then publish it to the selected account's write relays: the path the
-/// post button takes, through `cx`'s publisher. Its id goes in
-/// [`written`](ToolContext::written), so `nd` answers once it reads back.
-fn send(cx: &mut ToolContext, note: &Note) -> Result<Sent, String> {
-    let json = ClientMessage::event(note)
-        .and_then(|event| event.to_json())
-        .map_err(|e| format!("serializing the note: {e}"))?;
-    let relays = cx.accounts.selected_account_write_relays();
-    let count = relays.len();
-    let publish = cx
-        .publish
-        .as_mut()
-        .ok_or("publishing is unavailable in this context")?;
-    cx.ndb
-        .process_event_with(&json, IngestMetadata::new().client(true))
-        .map_err(|e| format!("storing the note: {e}"))?;
-    publish.publish_note(note, relays);
+/// What `sent` answers, with its id put in
+/// [`written`](ToolContext::written) so `nd` answers once it reads back.
+fn record(cx: &mut ToolContext, sent: SentNote) -> Sent {
+    cx.written.push(sent.id);
+    Sent {
+        id: sent.id.hex(),
+        note: sent.id.to_bech().unwrap_or_default(),
+        kind: sent.kind,
+        relays: sent.relays,
+    }
+}
 
-    let id = NoteId::new(*note.id());
-    cx.written.push(id);
-    Ok(Sent {
-        id: id.hex(),
-        note: id.to_bech().unwrap_or_default(),
-        kind: note.kind(),
-        relays: count,
-    })
+/// Sign `content` as a post (or, given `parent`, a NIP-10 reply to it) by
+/// the selected account and send it through [`NoteSender`].
+fn send_post(cx: &mut ToolContext, content: String, parent: Option<&Note>) -> Result<Sent, String> {
+    let mut sender = NoteSender::from_tool_context(cx)?;
+    let account = sender.signer().to_full();
+    let secret = account.secret_key.secret_bytes();
+    let post = NewPost::new(content, account, Vec::new(), Vec::new());
+    let note = match parent {
+        Some(parent) => post.to_reply(&secret, parent),
+        None => post.to_note(&secret),
+    };
+    let sent = sender.send_note(&note)?;
+    Ok(record(cx, sent))
 }
 
 /// `content` trimmed, or an error naming the tool when nothing is left.
@@ -180,15 +178,7 @@ impl AppTool for Post {
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
         let content = non_empty("nostr_post", &args.content)?.to_owned();
-        let account = cx
-            .accounts
-            .selected_filled()
-            .ok_or("the selected account is watch-only and can't sign")?
-            .to_full();
-        let secret = account.secret_key.secret_bytes();
-        let post = NewPost::new(content, account, Vec::new(), Vec::new());
-        let note = post.to_note(&secret);
-        send(cx, &note)
+        send_post(cx, content, None)
     }
 
     fn render(&self, out: &Self::Output) -> Option<String> {
@@ -244,17 +234,9 @@ impl AppTool for Reply {
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
         let id = parse_note_id(&args.note)?;
         let content = non_empty("nostr_reply", &args.content)?.to_owned();
-        let account = cx
-            .accounts
-            .selected_filled()
-            .ok_or("the selected account is watch-only and can't sign")?
-            .to_full();
-        let secret = account.secret_key.secret_bytes();
         let txn = open_txn(cx)?;
         let parent = known_note(cx, &txn, &id)?;
-        let post = NewPost::new(content, account, Vec::new(), Vec::new());
-        let note = post.to_reply(&secret, &parent);
-        send(cx, &note)
+        send_post(cx, content, Some(&parent))
     }
 
     fn render(&self, out: &Self::Output) -> Option<String> {
@@ -328,11 +310,9 @@ impl AppTool for React {
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
         let id = parse_note_id(&args.note)?;
         let reaction = reaction_content(args.reaction.as_deref())?;
-        let secret = signing_secret(cx)?;
         let txn = open_txn(cx)?;
         let target = known_note(cx, &txn, &id)?;
-        let note = crate::actionbar::reaction_note(&txn, &target, &secret, reaction)?;
-        send(cx, &note)
+        send(cx, reaction_note(&txn, &target, reaction))
     }
 
     fn render(&self, out: &Self::Output) -> Option<String> {
@@ -467,11 +447,11 @@ fn render_follow(out: &FollowOut) -> String {
 
 /// Make the user follow `target` (or not), by publishing their newest
 /// contact list with `target`'s `p` tag added or removed and every other
-/// tag kept, as the profile's follow button does. Nothing is sent when it
-/// is already so. With no contact list in the db it refuses: a new one
-/// holding only `target` would replace the follows on their relays.
+/// tag kept, by the profile follow button's [`contact_list_change`].
+/// Nothing is sent when it is already so. With no contact list in the db it
+/// refuses: a new one holding only `target` would replace the follows on
+/// their relays.
 fn set_following(cx: &mut ToolContext, target: &Pubkey, follow: bool) -> Result<FollowOut, String> {
-    let secret = signing_secret(cx)?;
     let me = *cx.accounts.selected_account_pubkey();
     let txn = open_txn(cx)?;
     let following = follows(cx.ndb, &txn, &me)
@@ -495,43 +475,8 @@ fn set_following(cx: &mut ToolContext, target: &Pubkey, follow: bool) -> Result<
         .and_then(|r| r.into_iter().next())
         .ok_or("your contact list vanished from the db")?
         .note;
-    let note = contact_list_note(&contacts, target, follow, &secret)?;
-    let sent = send(cx, &note)?;
+    let sent = send(cx, contact_list_change(&contacts, target, follow))?;
     Ok(out(Some(sent)))
-}
-
-/// `contacts` re-signed with `secret`, `target`'s `p` tag appended when
-/// `follow`, dropped when not; every other tag and the content (some
-/// clients keep relays there) as they were.
-fn contact_list_note<'a>(
-    contacts: &'a Note<'_>,
-    target: &Pubkey,
-    follow: bool,
-    secret: &[u8; 32],
-) -> Result<Note<'a>, String> {
-    let is_target = |tag: &nostrdb::Tag<'_>| {
-        tag.count() >= 2 && tag.get_str(0) == Some("p") && tag.get_id(1) == Some(target.bytes())
-    };
-    let mut builder = NoteBuilder::new().kind(3).content(contacts.content());
-    for tag in contacts.tags() {
-        if !follow && is_target(&tag) {
-            continue;
-        }
-        builder = builder.start_tag();
-        for item in tag {
-            builder = match item.variant() {
-                nostrdb::NdbStrVariant::Id(id) => builder.tag_id(id),
-                nostrdb::NdbStrVariant::Str(s) => builder.tag_str(s),
-            };
-        }
-    }
-    if follow {
-        builder = builder.start_tag().tag_str("p").tag_id(target.bytes());
-    }
-    builder
-        .sign(secret)
-        .build()
-        .ok_or_else(|| "failed to build the contact list".to_owned())
 }
 
 // ---------------------------------------------------------------------------
