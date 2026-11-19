@@ -222,7 +222,7 @@ impl ChatSession {
         let permissions = self.agentic.as_ref().map(|a| &a.permissions);
         SubagentStamp {
             rev: self.subagent_rev,
-            pending_permissions: permissions.map_or(0, |p| p.pending.len()),
+            pending_permissions: permissions.map_or(0, |p| p.pending_count()),
             responded_permissions: permissions.map_or(0, |p| p.responded.len()),
             parent_status: self.status(),
         }
@@ -566,7 +566,7 @@ mod tests {
         let req_id = req.id;
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let agentic = session.agentic.as_mut().unwrap();
-        agentic.permissions.pending.insert(req_id, tx);
+        agentic.permissions.ask(req_id, tx);
         session.insert_turn_content(Message::PermissionRequest(req));
         sm.sync_subagent_sessions();
 

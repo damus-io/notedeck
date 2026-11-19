@@ -990,9 +990,6 @@ pub(crate) fn handle_remote_permission_response(
     let cancel_turn = decoded.cancel_turn;
     let allowed = decoded.response_type == crate::messages::PermissionResponseType::Allowed;
 
-    if !agentic.permissions.pending.contains_key(&perm_id) {
-        return;
-    }
     let response = if allowed {
         PermissionResponse::Allow {
             message: message.clone(),
@@ -1011,8 +1008,11 @@ pub(crate) fn handle_remote_permission_response(
         }
     };
     // Through the tracker, so a waiter that reads its answer on the host's
-    // pass (the native tool loop) is woken.
-    agentic.permissions.answer(perm_id, response);
+    // pass (the native tool loop) is woken. A request no longer pending was
+    // already answered (first response wins), so this one changes nothing.
+    if !agentic.permissions.answer(perm_id, response) {
+        return;
+    }
     session.insert_permission_reply(message.as_deref());
     for msg in session.chat.iter_mut() {
         if let Message::PermissionRequest(req) = msg {

@@ -346,7 +346,7 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
         session
             .agentic
             .as_ref()
-            .and_then(|a| a.permissions.pending.keys().next().copied())
+            .and_then(|a| a.permissions.first_pending())
     }
 }
 
@@ -363,7 +363,7 @@ fn subagent_pending_permission<'a>(
             if req.parent_task_id.as_deref() == Some(link.task_id.as_str())
                 && req.response.is_none()
                 && !agentic.permissions.responded.contains_key(&req.id)
-                && (parent.is_remote() || agentic.permissions.pending.contains_key(&req.id)) =>
+                && (parent.is_remote() || agentic.permissions.is_pending(req.id)) =>
         {
             Some(req)
         }
@@ -2904,8 +2904,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .permissions
-            .pending
-            .insert(perm_id, perm_tx);
+            .ask(perm_id, perm_tx);
 
         execute_interrupt(&sm, &backend, &ctx);
 
@@ -2916,8 +2915,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .permissions
-                .pending
-                .contains_key(&perm_id),
+                .is_pending(perm_id),
             "the pending permission survives the interrupt so the user can still answer it"
         );
         assert!(

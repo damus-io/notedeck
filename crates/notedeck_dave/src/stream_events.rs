@@ -1108,8 +1108,7 @@ fn handle_permission_request(
     if let Some(agentic) = &mut session.agentic {
         agentic
             .permissions
-            .pending
-            .insert(pending.request.id, pending.response_tx);
+            .ask(pending.request.id, pending.response_tx);
     }
 
     // Add the request to chat for UI display

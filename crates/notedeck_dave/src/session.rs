@@ -1067,7 +1067,7 @@ impl ChatSession {
         let Some(agentic) = &self.agentic else {
             return Vec::new();
         };
-        if agentic.permissions.pending.is_empty() {
+        if !agentic.permissions.has_pending() {
             return Vec::new();
         }
 
@@ -1078,7 +1078,7 @@ impl ChatSession {
             .filter_map(|msg| {
                 if let Message::PermissionRequest(req) = msg {
                     if req.response.is_none()
-                        && agentic.permissions.pending.contains_key(&req.id)
+                        && agentic.permissions.is_pending(req.id)
                         && agentic.should_runtime_allow(&req.tool_name, &req.tool_input)
                     {
                         return Some(req.id);
@@ -2311,7 +2311,7 @@ impl ChatSession {
             && !self.is_dispatched()
             && !self.turn_rows.has_open_assistant()
             && !self.turn_rows.has_running_tools()
-            && agentic.permissions.pending.is_empty()
+            && !agentic.permissions.has_pending()
             && agentic.compact_intent.is_none()
             && !self.has_pending_user_message()
     }

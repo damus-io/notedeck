@@ -1908,10 +1908,7 @@ mod tests {
             .get_mut(first)
             .and_then(|s| s.agentic.as_mut())
             .unwrap();
-        agentic
-            .permissions
-            .pending
-            .insert(uuid::Uuid::new_v4(), sender);
+        agentic.permissions.ask(uuid::Uuid::new_v4(), sender);
         harness.run();
 
         harness.press_key_modifiers(Modifiers::NONE, Key::Escape);

@@ -18,8 +18,10 @@ use uuid::Uuid;
 /// mapping (for linking relay responses), and the already-responded set
 /// (for remote sessions) into a single struct.
 pub struct PermissionTracker {
-    /// Local oneshot senders waiting for the user to allow/deny.
-    pub pending: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
+    /// Local oneshot senders waiting for the user to allow/deny. Private so
+    /// that every answer goes through [`answer`](Self::answer) (and its wake);
+    /// add one with [`ask`](Self::ask).
+    pending: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
     /// Maps permission-request UUID → nostr note ID of the published request.
     pub request_note_ids: HashMap<Uuid, [u8; 32]>,
     /// Permission UUIDs that have already been responded to, with the decision
@@ -53,6 +55,31 @@ impl PermissionTracker {
     /// else happened to bring the next pass. Replaces any earlier callback.
     pub fn wake_on_answer(&mut self, wake: impl Fn() + Send + Sync + 'static) {
         self.wake = Some(Arc::new(wake));
+    }
+
+    /// Register the local request `id`, whose waiter reads `tx`'s receiver.
+    /// It stays pending until [`answer`](Self::answer)ed or
+    /// [`withdraw`](Self::withdraw)n. Asking again with the same `id`
+    /// replaces the earlier sender, dropping its waiter.
+    pub fn ask(&mut self, id: Uuid, tx: oneshot::Sender<PermissionResponse>) {
+        self.pending.insert(id, tx);
+    }
+
+    /// Whether the local request `id` is still waiting for an answer.
+    pub fn is_pending(&self, id: Uuid) -> bool {
+        self.pending.contains_key(&id)
+    }
+
+    /// Any one pending local request, or `None` if none is. Which one is
+    /// unspecified when several are pending; a caller that needs a
+    /// particular order picks from its chat instead.
+    pub fn first_pending(&self) -> Option<Uuid> {
+        self.pending.keys().next().copied()
+    }
+
+    /// How many local requests are waiting for an answer.
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
     }
 
     /// Send `response` to the local request `request_id`'s waiter and wake
@@ -183,7 +210,7 @@ mod tests {
         let mut tracker = PermissionTracker::new();
         let id = Uuid::new_v4();
         let (tx, rx) = oneshot::channel();
-        tracker.pending.insert(id, tx);
+        tracker.ask(id, tx);
         chat.push(Message::PermissionRequest(PermissionRequest::pending(
             id,
             "headway_move_card".into(),
@@ -244,5 +271,26 @@ mod tests {
             Message::PermissionRequest(req) if req.response == Some(PermissionResponseType::Denied)
         ));
         assert!(!tracker.withdraw(&mut chat, id));
+    }
+
+    /// An asked request is pending, counted and pickable until it is
+    /// answered; an id never asked is not pending.
+    #[test]
+    fn an_asked_request_is_pending_until_answered() {
+        let mut chat = Vec::new();
+        let Asked {
+            mut tracker,
+            id,
+            rx: _rx,
+        } = asked(&mut chat);
+        assert!(tracker.is_pending(id));
+        assert!(!tracker.is_pending(Uuid::new_v4()));
+        assert_eq!(tracker.pending_count(), 1);
+        assert_eq!(tracker.first_pending(), Some(id));
+
+        assert!(tracker.answer(id, PermissionResponse::Allow { message: None }));
+        assert!(!tracker.is_pending(id));
+        assert_eq!(tracker.pending_count(), 0);
+        assert_eq!(tracker.first_pending(), None);
     }
 }
