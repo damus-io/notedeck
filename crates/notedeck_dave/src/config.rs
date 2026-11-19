@@ -1,4 +1,5 @@
-use crate::backend::BackendType;
+use crate::backend::{client_config, BackendType};
+use agentium_core::agent_spec::provider::OPENAI_DEFAULT_BASE_URL;
 use async_openai::config::OpenAIConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -374,10 +375,16 @@ impl ModelConfig {
             None
         };
 
-        let api_key = if settings.provider != AiProvider::Anthropic {
-            settings.api_key.clone()
-        } else {
-            None
+        let api_key = match settings.provider {
+            AiProvider::Anthropic => None,
+            // A keyless OpenAI setup has always used the env's key; it goes
+            // only to OpenAI's own endpoint, never to one the user pointed
+            // elsewhere (see `client_config`).
+            AiProvider::OpenAI if is_openai_base(settings.endpoint.as_deref()) => settings
+                .api_key
+                .clone()
+                .or_else(|| env::var("OPENAI_API_KEY").ok()),
+            _ => settings.api_key.clone(),
         };
 
         ModelConfig {
@@ -402,18 +409,22 @@ impl ModelConfig {
         }
     }
 
+    /// The chat client's config: this config's endpoint (OpenAI's own when
+    /// none) and its key, never the process env's (see [`client_config`]).
     pub fn to_api(&self) -> OpenAIConfig {
-        let mut cfg = OpenAIConfig::new();
-        if let Some(endpoint) = &self.endpoint {
-            cfg = cfg.with_api_base(endpoint.to_owned());
-        }
-
-        if let Some(api_key) = &self.api_key {
-            cfg = cfg.with_api_key(api_key.to_owned());
-        }
-
-        cfg
+        client_config(
+            self.endpoint.as_deref().unwrap_or(OPENAI_DEFAULT_BASE_URL),
+            self.api_key.as_deref(),
+        )
     }
+}
+
+/// Whether `endpoint` is OpenAI's own: unset (the client's default) or
+/// [`OPENAI_DEFAULT_BASE_URL`], give or take a trailing slash. Only such an
+/// endpoint may be sent the env's `OPENAI_API_KEY`, as for the built-in
+/// `openai` provider in `agentium_core::agent_spec::provider::BUILTINS`.
+fn is_openai_base(endpoint: Option<&str>) -> bool {
+    endpoint.is_none_or(|url| url.trim_end_matches('/') == OPENAI_DEFAULT_BASE_URL)
 }
 
 #[cfg(test)]
@@ -619,6 +630,58 @@ mod tests {
         assert_eq!(snap.backend, None);
         assert_eq!(snap.model, None);
         assert_eq!(snap.endpoint, None);
+    }
+
+    /// The bearer token the chat client built from saved `settings` sends,
+    /// with the process's `OPENAI_API_KEY` set to `sk-env`.
+    fn bearer_with_env_key(settings: &DaveSettings) -> String {
+        use async_openai::config::Config;
+        let _guard = EnvGuard::take();
+        EnvGuard::put("OPENAI_API_KEY", Some("sk-env"));
+        let headers = ModelConfig::from_settings(settings).to_api().headers();
+        headers["authorization"].to_str().unwrap().to_string()
+    }
+
+    /// Ollama takes no key, so its endpoint is sent an empty bearer, never the
+    /// user's OpenAI key from the env.
+    #[test]
+    #[serial]
+    fn ollama_is_never_sent_the_envs_openai_key() {
+        let settings = DaveSettings::with_provider(AiProvider::Ollama);
+        assert_eq!(bearer_with_env_key(&settings), "Bearer ");
+    }
+
+    /// An OpenAI provider pointed at another endpoint with no key of its own
+    /// doesn't get the env's key either: that endpoint could be anyone's.
+    #[test]
+    #[serial]
+    fn a_custom_openai_endpoint_is_never_sent_the_envs_key() {
+        let settings = DaveSettings {
+            endpoint: Some("https://proxy.example.com/v1".to_string()),
+            ..DaveSettings::with_provider(AiProvider::OpenAI)
+        };
+        assert_eq!(bearer_with_env_key(&settings), "Bearer ");
+    }
+
+    /// OpenAI on its own endpoint with no key saved still uses the env's key,
+    /// as it always has: the setup people run with the key in their shell.
+    #[test]
+    #[serial]
+    fn openais_own_endpoint_falls_back_to_the_envs_key() {
+        let unset = DaveSettings::with_provider(AiProvider::OpenAI);
+        assert_eq!(bearer_with_env_key(&unset), "Bearer sk-env");
+
+        let spelled_out = DaveSettings {
+            endpoint: Some(format!("{OPENAI_DEFAULT_BASE_URL}/")),
+            ..unset.clone()
+        };
+        assert_eq!(bearer_with_env_key(&spelled_out), "Bearer sk-env");
+
+        let saved_key = DaveSettings {
+            api_key: Some("sk-saved".to_string()),
+            ..unset
+        };
+        assert_eq!(bearer_with_env_key(&saved_key), "Bearer sk-saved");
     }
 
     /// `DAVE_MODEL` and `DAVE_ENDPOINT` are passed through as given.

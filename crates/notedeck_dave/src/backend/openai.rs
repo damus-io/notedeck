@@ -194,17 +194,29 @@ fn dated_system_prompt(prompt: &str) -> Message {
 /// backend's endpoint names one.
 const DEFAULT_MODEL: &str = "gpt-4.1-mini";
 
-/// The client config that sends requests to `endpoint`: its base URL, and its
-/// key as the bearer token.
+/// The client config that sends requests to `base_url` with `api_key` as the
+/// bearer token, and nothing from the process environment.
 ///
-/// The key is always set, to `""` when the endpoint has none, because
-/// `OpenAIConfig::new` fills it from the process's `OPENAI_API_KEY`: left
-/// alone, a keyless provider (a local model, a work proxy) would be sent the
-/// user's own OpenAI key.
-pub fn openai_config(endpoint: &Endpoint) -> OpenAIConfig {
+/// This is the only place `OpenAIConfig::new` may be called. `new` (and
+/// `Default`) fills the key from the process's `OPENAI_API_KEY`, so a config
+/// built any other way and left keyless sends the user's own OpenAI key to
+/// whatever endpoint it names: a local model, a work proxy, anyone's URL.
+/// Here both fields are always overwritten, an absent key as `""`.
+/// async-openai inserts the `Authorization` header whatever the key, so a
+/// keyless endpoint is sent `Bearer ` rather than no header.
+///
+/// A caller that wants the env's key reads it itself, only for an endpoint
+/// that should get it (see `ModelConfig::from_settings`).
+pub fn client_config(base_url: &str, api_key: Option<&str>) -> OpenAIConfig {
     OpenAIConfig::new()
-        .with_api_base(endpoint.base_url.as_str())
-        .with_api_key(endpoint.api_key.as_deref().unwrap_or(""))
+        .with_api_base(base_url)
+        .with_api_key(api_key.unwrap_or(""))
+}
+
+/// The client config that sends requests to `endpoint`: its base URL, and its
+/// key as the bearer token (see [`client_config`]).
+pub fn openai_config(endpoint: &Endpoint) -> OpenAIConfig {
+    client_config(&endpoint.base_url, endpoint.api_key.as_deref())
 }
 
 impl AiBackend for OpenAiBackend {
@@ -908,7 +920,7 @@ mod tests {
     fn hanging_backend(ndb: &Ndb) -> (OpenAiBackend, std::net::TcpListener) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let client = Client::with_config(OpenAIConfig::new().with_api_base(base));
+        let client = Client::with_config(client_config(&base, None));
         (OpenAiBackend::new(client, ndb.clone()), listener)
     }
 
@@ -1046,19 +1058,26 @@ mod tests {
         assert_eq!(body["messages"][1]["role"], "user", "the chat follows");
     }
 
+    /// A keyless endpoint is sent an empty bearer, not the process's
+    /// `OPENAI_API_KEY`. The var is set for the test, so a config that read it
+    /// would fail here on every box, not only on one that happens to have it.
     #[test]
+    #[serial_test::serial]
     fn a_keyless_endpoint_sends_no_key_not_the_envs() {
         use async_openai::config::Config;
+        let saved = std::env::var("OPENAI_API_KEY").ok();
+        std::env::set_var("OPENAI_API_KEY", "sk-env");
         let endpoint = Endpoint {
             provider: "ollama".into(),
             base_url: "http://localhost:11434/v1".into(),
             api_key: None,
             model: "qwen3".into(),
         };
-        // Whatever OPENAI_API_KEY this process has, the config doesn't take
-        // it. (Only a box with the var set can tell the difference: on one
-        // without, the env's key is empty too.)
         let headers = openai_config(&endpoint).headers();
+        match saved {
+            Some(key) => std::env::set_var("OPENAI_API_KEY", key),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
         assert_eq!(headers["authorization"], "Bearer ");
     }
 
