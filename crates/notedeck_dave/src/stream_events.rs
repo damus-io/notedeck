@@ -1740,16 +1740,8 @@ mod tests {
         let mut f = Fixture::new();
         f.session.mark_dispatched();
         f.apply(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: "s1".to_string(),
-            description: "Map the loader".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
             background: true,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running("s1", "Map the loader", "Explore")
         }));
         f.apply(DaveApiResponse::ToolRunning(
             crate::messages::RunningTool::new("t1", "Grep", "loader"),
@@ -1772,18 +1764,11 @@ mod tests {
         use crate::messages::TranscriptKind;
         let mut f = Fixture::new();
         f.session.mark_dispatched();
-        f.apply(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: "s1".to_string(),
-            description: "Map the loader".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
-        }));
+        f.apply(DaveApiResponse::SubagentSpawned(SubagentInfo::running(
+            "s1",
+            "Map the loader",
+            "Explore",
+        )));
         let after_spawn = f.published();
         f.apply(DaveApiResponse::SubagentText {
             task_id: "s1".to_string(),
@@ -1891,16 +1876,8 @@ mod tests {
         handle_subagent_spawned(
             &mut session,
             SubagentInfo {
-                task_id: "toolu_1".to_string(),
-                description: "Map the loader".to_string(),
-                subagent_type: "Explore".to_string(),
-                status: SubagentStatus::Running,
-                output: String::new(),
-                max_output_size: 4000,
-                tool_results: Vec::new(),
                 background: true,
-                agent_id: None,
-                transcript: Default::default(),
+                ..SubagentInfo::running("toolu_1", "Map the loader", "Explore")
             },
         );
         let spawned =

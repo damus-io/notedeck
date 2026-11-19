@@ -50,7 +50,7 @@ use nostrdb::{Ndb, Transaction};
 use serde_json::{json, Value};
 
 use crate::backend::{finish_tool_call, message_to_api, openai_config, tool_to_api, SPENT_CENTS};
-use crate::messages::{DaveApiResponse, ExecutedTool, SubagentInfo, SubagentStatus};
+use crate::messages::{DaveApiResponse, ExecutedTool, SubagentInfo};
 use crate::tool_round::{block_on_own_runtime, JobCtx, ToolCancel, ToolJob};
 use crate::tools::{AppToolCall, AppToolResponse, PartialToolCall, Tool, ToolCall, ToolCalls};
 use crate::web_tools::WebClient;
@@ -261,18 +261,11 @@ const ROW_QUESTION_CHARS: usize = 80;
 impl<'a> ChildRow<'a> {
     /// Show the row for sub-agent `slug` asked `question`, running.
     pub(crate) fn start(ctx: &'a JobCtx, slug: &str, question: &str) -> Self {
-        ctx.report(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: ctx.call_id().to_owned(),
-            description: headline(question, ROW_QUESTION_CHARS),
-            subagent_type: slug.to_owned(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
-        }));
+        ctx.report(DaveApiResponse::SubagentSpawned(SubagentInfo::running(
+            ctx.call_id(),
+            headline(question, ROW_QUESTION_CHARS),
+            slug,
+        )));
         Self { ctx }
     }
 

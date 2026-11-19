@@ -1478,6 +1478,8 @@ fn subagent_event_at(
 pub fn decode_subagent_note(note: &nostrdb::Note) -> Option<crate::messages::SubagentInfo> {
     use crate::messages::{SubagentInfo, SubagentStatus, SubagentTranscript};
 
+    // A full literal, not `SubagentInfo::running`: a decoder sets every
+    // field, so a field added later must fail to compile here.
     let task_id = get_tag_value(note, "task-id")?.to_string();
     let content = serde_json::from_str::<SubagentContent>(note.content()).unwrap_or_else(|_| {
         SubagentContent {
@@ -1497,7 +1499,7 @@ pub fn decode_subagent_note(note: &nostrdb::Note) -> Option<crate::messages::Sub
             .and_then(SubagentStatus::from_wire)
             .unwrap_or(SubagentStatus::Running),
         output: content.output.unwrap_or_default(),
-        max_output_size: 4000,
+        max_output_size: crate::messages::DEFAULT_MAX_OUTPUT,
         tool_results: Vec::new(),
         background: get_tag_value(note, "background") == Some("true"),
         agent_id: get_tag_value(note, "agent-id").map(str::to_string),
@@ -3083,16 +3085,9 @@ mod tests {
     fn subagent_output_fits_the_wire() {
         let sk = test_secret_key();
         let info = crate::messages::SubagentInfo {
-            task_id: "t".to_string(),
-            description: "d".to_string(),
-            subagent_type: "Explore".to_string(),
             status: crate::messages::SubagentStatus::Completed,
             output: escape_heavy(2 * MAX_WIRE_EVENT_BYTES),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..crate::messages::SubagentInfo::running("t", "d", "Explore")
         };
         let event = build_subagent_event(&info, "s", &mut ThreadingState::new(), &sk).unwrap();
         assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
@@ -3113,16 +3108,11 @@ mod tests {
             transcript.push(TranscriptKind::Text, &format!("{i}{}", escape_heavy(4096)));
         }
         let info = crate::messages::SubagentInfo {
-            task_id: "t".to_string(),
-            description: "d".to_string(),
-            subagent_type: "Explore".to_string(),
             status: crate::messages::SubagentStatus::Completed,
             output: "done".to_string(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
             agent_id: Some("a1".to_string()),
             transcript,
+            ..crate::messages::SubagentInfo::running("t", "d", "Explore")
         };
         let event = build_subagent_event(&info, "s", &mut ThreadingState::new(), &sk).unwrap();
         assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
@@ -3405,18 +3395,7 @@ mod tests {
 
         // Subagent lifecycle note.
         let subagent = build_subagent_event(
-            &crate::messages::SubagentInfo {
-                task_id: "t".to_string(),
-                description: "d".to_string(),
-                subagent_type: "Explore".to_string(),
-                status: crate::messages::SubagentStatus::Running,
-                output: String::new(),
-                max_output_size: 4000,
-                tool_results: Vec::new(),
-                background: false,
-                agent_id: None,
-                transcript: Default::default(),
-            },
+            &crate::messages::SubagentInfo::running("t", "d", "Explore"),
             session_id,
             &mut threading,
             &sk,

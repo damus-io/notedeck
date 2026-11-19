@@ -1022,18 +1022,11 @@ async fn tool_error_travels() {
 async fn subagent_internal_tools() {
     let mut script = Vec::from(user_turn("explore"));
     script.extend([
-        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: "s1".to_string(),
-            description: "Map the loader".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
-        })),
+        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo::running(
+            "s1",
+            "Map the loader",
+            "Explore",
+        ))),
         executed("t1", "Grep", "3 matches", Some("s1")),
         Step::Backend(DaveApiResponse::SubagentCompleted {
             task_id: "s1".to_string(),
@@ -1059,18 +1052,11 @@ async fn native_sub_agent_row() {
     };
     let mut script = Vec::from(user_turn("validate the idea"));
     script.extend([
-        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: "q".to_string(),
-            description: "Who sells idea journals?".to_string(),
-            subagent_type: "researcher".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
-        })),
+        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo::running(
+            "q",
+            "Who sells idea journals?",
+            "researcher",
+        ))),
         step("web_search", "idea journal apps", false),
         step("web_fetch", "https://acme.example", true),
         Step::Backend(DaveApiResponse::SubagentFailed {
@@ -1997,16 +1983,8 @@ async fn reconcile_keeps_background_subagent_live() {
     let mut script = Vec::from(user_turn("explore in the background"));
     script.extend([
         Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: "s1".to_string(),
-            description: "Map the loader".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
             background: true,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running("s1", "Map the loader", "Explore")
         })),
         token("it runs in the background"),
         Step::StreamEnd,
@@ -2368,16 +2346,8 @@ async fn reconcile_moves_a_background_subagent_row() {
                 .push(Message::System("only on the host".into()));
         })),
         Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: "s1".to_string(),
-            description: "Map the loader".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
             background: true,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running("s1", "Map the loader", "Explore")
         })),
         token("it runs in the background"),
         Step::StreamEnd,
@@ -2506,18 +2476,11 @@ async fn reconcile_keeps_subagent_tool_output() {
     let output = "line \"quoted\"\n".repeat(2 * MAX_WIRE_EVENT_BYTES / 14);
     let mut script = Vec::from(user_turn("explore"));
     script.extend([
-        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
-            task_id: "s1".to_string(),
-            description: "Map the loader".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
-        })),
+        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo::running(
+            "s1",
+            "Map the loader",
+            "Explore",
+        ))),
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
             output: Some(output.clone().into()),
             parent_task_id: Some("s1".to_string()),

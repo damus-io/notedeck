@@ -467,16 +467,9 @@ mod tests {
         let todo = r#"{"todos":[{"content":"write the prefilter","status":"in_progress"}]}"#;
         events.extend(live("mac-built", "todo", todo, none()));
         let subagent = SubagentInfo {
-            task_id: "task-1".into(),
-            description: "map the loader".into(),
-            subagent_type: "Explore".into(),
             status: SubagentStatus::Completed,
-            output: String::new(),
             max_output_size: 0,
-            tool_results: vec![],
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running("task-1", "map the loader", "Explore")
         };
         events.push(build_subagent_event(&subagent, "mac-built", &mut threading, sk).unwrap());
 

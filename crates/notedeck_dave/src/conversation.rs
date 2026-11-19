@@ -2064,18 +2064,7 @@ mod tests {
             &sk,
         )
         .unwrap();
-        let mut info = SubagentInfo {
-            task_id: "toolu_sub".to_string(),
-            description: "Survey the crate".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
-        };
+        let mut info = SubagentInfo::running("toolu_sub", "Survey the crate", "Explore");
         let spawned =
             session_events::build_subagent_event(&info, session_id_str, &mut threading, &sk)
                 .unwrap();

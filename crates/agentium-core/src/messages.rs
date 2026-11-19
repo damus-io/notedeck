@@ -901,6 +901,10 @@ impl SubagentStatus {
     }
 }
 
+/// How many bytes of a subagent's output [`SubagentInfo`] keeps by default:
+/// the tail of the stream, for the size-restricted output window.
+pub const DEFAULT_MAX_OUTPUT: usize = 4000;
+
 /// Information about a subagent spawned by the Task tool
 #[derive(Debug, Clone)]
 pub struct SubagentInfo {
@@ -934,6 +938,34 @@ pub struct SubagentInfo {
     /// (`--forward-subagent-text`) instead of being merged into the parent's
     /// stream. Bounded; see [`SubagentTranscript`].
     pub transcript: SubagentTranscript,
+}
+
+impl SubagentInfo {
+    /// A freshly spawned foreground subagent: [`Running`](SubagentStatus::Running),
+    /// no output yet, a [`DEFAULT_MAX_OUTPUT`] window, no tool results, no
+    /// `agent_id` and an empty transcript. Vary the rest with struct update
+    /// (`SubagentInfo { background: true, ..SubagentInfo::running(id, desc,
+    /// "Explore") }`), so a new field touches this constructor rather than
+    /// every caller. The kind-1988 note decode (`decode_subagent_note`) spells
+    /// out a full literal instead, so a new field still fails to compile there.
+    pub fn running(
+        task_id: impl Into<String>,
+        description: impl Into<String>,
+        subagent_type: impl Into<String>,
+    ) -> Self {
+        Self {
+            task_id: task_id.into(),
+            description: description.into(),
+            subagent_type: subagent_type.into(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: DEFAULT_MAX_OUTPUT,
+            tool_results: Vec::new(),
+            background: false,
+            agent_id: None,
+            transcript: SubagentTranscript::default(),
+        }
+    }
 }
 
 /// Whether a [`TranscriptRun`] is the subagent's prose or extended thinking,
@@ -1897,6 +1929,32 @@ mod tests {
         assert_eq!(finished.tool_use_id.as_deref(), Some("t1"));
         assert_eq!(finished.description.as_deref(), Some("list files"));
         assert!(!finished.is_error);
+    }
+
+    /// `running` is a just-spawned foreground row: running, empty, the
+    /// default output window, no agent id. A background spawn is the same row
+    /// with `background` set by struct update.
+    #[test]
+    fn subagent_info_running_is_a_fresh_foreground_row() {
+        let info = super::SubagentInfo::running("toolu_1", "Map the loader", "Explore");
+        assert_eq!(info.task_id, "toolu_1");
+        assert_eq!(info.description, "Map the loader");
+        assert_eq!(info.subagent_type, "Explore");
+        assert_eq!(info.status, super::SubagentStatus::Running);
+        assert!(info.output.is_empty());
+        assert_eq!(info.max_output_size, super::DEFAULT_MAX_OUTPUT);
+        assert_eq!(super::DEFAULT_MAX_OUTPUT, 4000);
+        assert!(info.tool_results.is_empty());
+        assert!(!info.background);
+        assert!(info.agent_id.is_none());
+        assert_eq!(info.transcript, SubagentTranscript::default());
+
+        let background = super::SubagentInfo {
+            background: true,
+            ..info
+        };
+        assert!(background.background);
+        assert_eq!(background.task_id, "toolu_1");
     }
 
     #[test]

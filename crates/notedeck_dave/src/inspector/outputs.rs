@@ -539,16 +539,10 @@ mod tests {
                 Some("https://media.example.com/episodes/misc/share/outputs-card.html\n"),
             ))),
             Message::Subagent(SubagentInfo {
-                task_id: "s1".into(),
-                description: "look around".into(),
-                subagent_type: "Explore".into(),
                 status: SubagentStatus::Completed,
-                output: String::new(),
                 max_output_size: 1000,
                 tool_results: vec![tool("headway show headway:dave/four-five-six", None)],
-                background: false,
-                agent_id: None,
-                transcript: Default::default(),
+                ..SubagentInfo::running("s1", "look around", "Explore")
             }),
             assistant(
                 "Done: headway:dave/shrimp-guide-poet, see \

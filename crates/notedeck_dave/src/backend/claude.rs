@@ -11,7 +11,7 @@ use crate::messages::{
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
     turn_exit_message_for_model, CliState, CompactionInfo, DaveApiResponse, PermissionResponse,
     RateLimitInfo, RateLimitStatus, RateLimitWindow, RateLimitWindowKind, RunningTool,
-    SubagentInfo, SubagentProgress, SubagentStatus, TaskUsage, TranscriptKind,
+    SubagentInfo, SubagentProgress, TaskUsage, TranscriptKind,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -328,13 +328,6 @@ fn handle_task_started(
         .to_string();
 
     let subagent_info = SubagentInfo {
-        task_id: tool_use_id.to_string(),
-        description,
-        subagent_type,
-        status: SubagentStatus::Running,
-        output: String::new(),
-        max_output_size: 4000,
-        tool_results: Vec::new(),
         background: true,
         // A subagent task's id is its `agentId`, which is how a resume by
         // `SendMessage` is told apart from a new subagent.
@@ -342,7 +335,7 @@ fn handle_task_started(
             .get("task_id")
             .and_then(|v| v.as_str())
             .map(str::to_string),
-        transcript: Default::default(),
+        ..SubagentInfo::running(tool_use_id, description, subagent_type)
     };
     let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
     waker.wake();
@@ -579,18 +572,8 @@ fn handle_stream_message(
                             .to_string();
 
                         subagent_stack.push(id.clone());
-                        let subagent_info = SubagentInfo {
-                            task_id: id.clone(),
-                            description,
-                            subagent_type,
-                            status: SubagentStatus::Running,
-                            output: String::new(),
-                            max_output_size: 4000,
-                            tool_results: Vec::new(),
-                            background: false,
-                            agent_id: None,
-                            transcript: Default::default(),
-                        };
+                        let subagent_info =
+                            SubagentInfo::running(id.clone(), description, subagent_type);
                         let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
                         waker.wake();
                     }
@@ -2004,6 +1987,7 @@ impl AiBackend for ClaudeBackend {
 mod tests {
     use super::*;
     use crate::backend::CountingWaker;
+    use crate::messages::SubagentStatus;
 
     /// Number of 1 MiB tool results the fake CLI below emits for one query:
     /// past the SDK's 10 MB default, like a session that has read a handful

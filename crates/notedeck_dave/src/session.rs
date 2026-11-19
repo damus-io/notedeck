@@ -4165,16 +4165,8 @@ mod tests {
 
     fn make_subagent(task_id: &str, desc: &str) -> crate::messages::SubagentInfo {
         crate::messages::SubagentInfo {
-            task_id: task_id.to_string(),
-            description: desc.to_string(),
-            subagent_type: "Explore".to_string(),
-            status: crate::messages::SubagentStatus::Running,
-            output: String::new(),
             max_output_size: 1000,
-            tool_results: vec![],
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..crate::messages::SubagentInfo::running(task_id, desc, "Explore")
         }
     }
 

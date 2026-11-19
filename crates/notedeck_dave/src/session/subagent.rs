@@ -426,16 +426,8 @@ mod tests {
 
     fn spawned(task_id: &str, background: bool) -> Message {
         Message::Subagent(SubagentInfo {
-            task_id: task_id.into(),
-            description: "find the parser".into(),
-            subagent_type: "Explore".into(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
             background,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running(task_id, "find the parser", "Explore")
         })
     }
 

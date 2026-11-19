@@ -259,16 +259,8 @@ mod tests {
 
     fn spawned(task_id: &str, kind: &str, description: &str, background: bool) -> Message {
         Message::Subagent(SubagentInfo {
-            task_id: task_id.into(),
-            description: description.into(),
-            subagent_type: kind.into(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
             background,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running(task_id, description, kind)
         })
     }
 

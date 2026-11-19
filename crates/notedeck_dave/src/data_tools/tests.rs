@@ -346,16 +346,9 @@ fn subagent(
     background: bool,
 ) {
     let info = SubagentInfo {
-        task_id: task_id.into(),
-        description: format!("do {task_id}"),
-        subagent_type: subagent_type.into(),
         status,
-        output: String::new(),
-        max_output_size: 4000,
-        tool_results: Vec::new(),
         background,
-        agent_id: None,
-        transcript: Default::default(),
+        ..SubagentInfo::running(task_id, format!("do {task_id}"), subagent_type)
     };
     let secret = live.secret;
     let ev = build_subagent_event(&info, SESSION, threading, &secret).expect("subagent event");

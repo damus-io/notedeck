@@ -1523,16 +1523,8 @@ mod tests {
         let user = live("explore the loader", "user", &mut threading);
         let subagent = session_events::build_subagent_event(
             &SubagentInfo {
-                task_id: "s1".to_string(),
-                description: "Map the loader".to_string(),
-                subagent_type: "Explore".to_string(),
-                status: SubagentStatus::Running,
-                output: String::new(),
-                max_output_size: 4000,
-                tool_results: Vec::new(),
                 background: true,
-                agent_id: None,
-                transcript: Default::default(),
+                ..SubagentInfo::running("s1", "Map the loader", "Explore")
             },
             sid,
             &mut threading,

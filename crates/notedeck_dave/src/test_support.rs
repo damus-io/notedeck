@@ -23,7 +23,7 @@ use crate::backend::{BackendType, RemoteOnlyBackend};
 use crate::config::{AiMode, AiProvider, DaveSettings};
 use crate::conversation::subscribe_conversation_events;
 use crate::conversation_feed::ConversationFeed;
-use crate::messages::{Message, SubagentInfo, SubagentStatus};
+use crate::messages::{Message, SubagentInfo};
 use crate::pns_runtime::PnsLocalState;
 use crate::session::{ChatSession, SessionId, SessionMessage};
 use crate::stream_events::HostCtx;
@@ -177,18 +177,11 @@ impl TestDave {
     /// a block in its chat, and the subagent's own session beside it.
     pub fn add_subagent(&mut self, parent: SessionId, subagent: SubagentSeed<'_>) {
         self.session_mut(parent)
-            .insert_turn_content(Message::Subagent(SubagentInfo {
-                task_id: subagent.task_id.into(),
-                description: subagent.description.into(),
-                subagent_type: subagent.subagent_type.into(),
-                status: SubagentStatus::Running,
-                output: String::new(),
-                max_output_size: 4000,
-                tool_results: Vec::new(),
-                background: false,
-                agent_id: None,
-                transcript: Default::default(),
-            }));
+            .insert_turn_content(Message::Subagent(SubagentInfo::running(
+                subagent.task_id,
+                subagent.description,
+                subagent.subagent_type,
+            )));
     }
 
     /// Open the active session's subagent `task_id`, as its block's `open`

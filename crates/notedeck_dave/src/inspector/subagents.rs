@@ -156,16 +156,9 @@ mod tests {
 
     fn row(task_id: &str, status: SubagentStatus) -> Message {
         Message::Subagent(SubagentInfo {
-            task_id: task_id.into(),
-            description: String::new(),
-            subagent_type: "Explore".into(),
             status,
-            output: String::new(),
             max_output_size: 0,
-            tool_results: Vec::new(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running(task_id, "", "Explore")
         })
     }
 

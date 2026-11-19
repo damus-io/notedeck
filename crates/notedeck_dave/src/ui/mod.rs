@@ -3171,16 +3171,9 @@ mod tests {
 
         let subagent = |task_id: &str, kind: &str, description: &str, status, background| {
             crate::Message::Subagent(SubagentInfo {
-                task_id: task_id.into(),
-                description: description.into(),
-                subagent_type: kind.into(),
                 status,
-                output: String::new(),
-                max_output_size: 4000,
-                tool_results: Vec::new(),
                 background,
-                agent_id: None,
-                transcript: Default::default(),
+                ..SubagentInfo::running(task_id, description, kind)
             })
         };
         let session = state.session_manager.get_active_mut().unwrap();
@@ -3301,23 +3294,21 @@ mod tests {
 
     /// [`seed_subagent_session`], running in the background or not.
     fn seed_subagent_session_in(state: &mut SessionViewState, background: bool) {
-        use crate::messages::{ExecutedTool, SubagentInfo, SubagentStatus, TranscriptKind};
+        use crate::messages::{ExecutedTool, SubagentInfo, TranscriptKind};
 
         let read = |path: &str| ExecutedTool {
             parent_task_id: Some("toolu_explore".into()),
             ..ExecutedTool::new("Read", path)
         };
         let mut info = SubagentInfo {
-            task_id: "toolu_explore".into(),
-            description: "Find where task_progress is parsed".into(),
-            subagent_type: "Explore".into(),
-            status: SubagentStatus::Running,
-            output: String::new(),
-            max_output_size: 4000,
             tool_results: vec![read("backend/claude.rs")],
             background,
             agent_id: Some("af234d4591821f8d0".into()),
-            transcript: Default::default(),
+            ..SubagentInfo::running(
+                "toolu_explore",
+                "Find where task_progress is parsed",
+                "Explore",
+            )
         };
         info.transcript.push_after_tools(
             TranscriptKind::Thinking,
@@ -3692,16 +3683,9 @@ mod tests {
             row(write),
             row(edit("/tmp/inspector/src/lib.rs", "b\nc\n", "b\n")),
             crate::Message::Subagent(SubagentInfo {
-                task_id: "toolu_refactor".into(),
-                description: "Split main".into(),
-                subagent_type: "general-purpose".into(),
                 status: SubagentStatus::Completed,
-                output: String::new(),
-                max_output_size: 4000,
                 tool_results: vec![edit("/tmp/inspector/src/main.rs", "x\n", "y\n")],
-                background: false,
-                agent_id: None,
-                transcript: Default::default(),
+                ..SubagentInfo::running("toolu_refactor", "Split main", "general-purpose")
             }),
             row(edit("/etc/outside.conf", "on\n", "off\n")),
         ]);

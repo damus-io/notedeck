@@ -4432,7 +4432,7 @@ mod tests {
     use crate::config::AiMode;
     use crate::messages::{
         PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
-        SubagentInfo, SubagentStatus, SystemMessage,
+        SubagentInfo, SystemMessage,
     };
     use claude_agent_sdk_rs::PermissionMode;
     use egui_kittest::{
@@ -5416,19 +5416,13 @@ mod tests {
     fn snapshot_block_cursor_rows() {
         let results = executed_tool_fixtures();
         let subagent = crate::messages::SubagentInfo {
-            task_id: "task-1".to_string(),
-            description: "audit the login flow".to_string(),
-            subagent_type: "Explore".to_string(),
             status: crate::messages::SubagentStatus::Completed,
-            output: String::new(),
             max_output_size: 1000,
             tool_results: vec![crate::messages::ExecutedTool::new(
                 "Read",
                 "lib.rs (128 lines)",
             )],
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..crate::messages::SubagentInfo::running("task-1", "audit the login flow", "Explore")
         };
         let request = PermissionRequest::new(
             Uuid::new_v4(),
@@ -5566,16 +5560,9 @@ mod tests {
     fn tool_rows_ui(ui: &mut egui::Ui) {
         let skill = crate::messages::ExecutedTool::new("Skill", "code-review e8f3670c5e5b");
         let subagent = SubagentInfo {
-            task_id: "toolu_agent".to_string(),
-            description: "code-review".to_string(),
-            subagent_type: "agent".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
             max_output_size: 4096,
-            tool_results: Vec::new(),
             background: true,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running("toolu_agent", "code-review", "agent")
         };
         let mut nav = BlockNav::default();
         DaveUi::executed_tool_ui(&skill, &mut nav, ui);

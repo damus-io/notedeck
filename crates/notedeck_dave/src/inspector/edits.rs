@@ -199,16 +199,10 @@ mod tests {
 
     fn subagent_row(updates: Vec<FileUpdate>) -> Message {
         Message::Subagent(SubagentInfo {
-            task_id: "task-1".into(),
-            description: "refactor".into(),
-            subagent_type: "general-purpose".into(),
             status: SubagentStatus::Completed,
-            output: String::new(),
             max_output_size: 0,
             tool_results: updates.into_iter().map(|u| result(Some(u))).collect(),
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running("task-1", "refactor", "general-purpose")
         })
     }
 

@@ -7,7 +7,7 @@ use crate::backend::traits::{AiBackend, ResponseStream};
 use crate::file_update::{FileUpdate, FileUpdateType};
 use crate::messages::{
     ApprovalPromptInput, ApprovalPromptQuestion, CompactionInfo, DaveApiResponse,
-    PermissionResponse, PermissionView, SessionInfo, SubagentInfo, SubagentStatus, UsageInfo,
+    PermissionResponse, PermissionView, SessionInfo, SubagentInfo, UsageInfo,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -749,18 +749,11 @@ fn handle_codex_message(
                                 .item_id
                                 .unwrap_or_else(|| Uuid::new_v4().to_string());
                             subagent_stack.push(item_id.clone());
-                            let info = SubagentInfo {
-                                task_id: item_id,
-                                description: started.name.unwrap_or_else(|| "agent".to_string()),
-                                subagent_type: "codex-agent".to_string(),
-                                status: SubagentStatus::Running,
-                                output: String::new(),
-                                max_output_size: 4000,
-                                tool_results: Vec::new(),
-                                background: false,
-                                agent_id: None,
-                                transcript: Default::default(),
-                            };
+                            let info = SubagentInfo::running(
+                                item_id,
+                                started.name.unwrap_or_else(|| "agent".to_string()),
+                                "codex-agent",
+                            );
                             let _ = response_tx.send(DaveApiResponse::SubagentSpawned(info));
                             waker.wake();
                         }

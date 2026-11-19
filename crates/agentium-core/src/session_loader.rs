@@ -2781,16 +2781,10 @@ mod tests {
         output: &str,
     ) -> crate::messages::SubagentInfo {
         crate::messages::SubagentInfo {
-            task_id: task_id.to_string(),
-            description: "Find the loader".to_string(),
-            subagent_type: "Explore".to_string(),
             status,
             output: output.to_string(),
-            max_output_size: 4000,
-            tool_results: Vec::new(),
             background: true,
-            agent_id: None,
-            transcript: Default::default(),
+            ..crate::messages::SubagentInfo::running(task_id, "Find the loader", "Explore")
         }
     }
 

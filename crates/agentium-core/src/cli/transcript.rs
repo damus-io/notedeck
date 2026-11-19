@@ -427,16 +427,9 @@ pub(crate) mod tests {
     #[test]
     fn render_messages_plain_handles_every_variant() {
         let subagent = SubagentInfo {
-            task_id: "t1".into(),
-            description: "explore the tree".into(),
-            subagent_type: "Explore".into(),
             status: SubagentStatus::Completed,
-            output: String::new(),
             max_output_size: 0,
-            tool_results: vec![],
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running("t1", "explore the tree", "Explore")
         };
         let msgs = vec![
             Message::System("session started".into()),

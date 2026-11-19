@@ -165,7 +165,7 @@ impl TurnRows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages::{AssistantMessage, RunningTool, SubagentInfo, SubagentStatus};
+    use crate::messages::{AssistantMessage, RunningTool, SubagentInfo};
 
     fn streaming_assistant(text: &str) -> Message {
         let mut msg = AssistantMessage::new();
@@ -179,16 +179,8 @@ mod tests {
 
     fn subagent(task_id: &str) -> Message {
         Message::Subagent(SubagentInfo {
-            task_id: task_id.to_string(),
-            description: "explore".to_string(),
-            subagent_type: "Explore".to_string(),
-            status: SubagentStatus::Running,
-            output: String::new(),
             max_output_size: 1000,
-            tool_results: vec![],
-            background: false,
-            agent_id: None,
-            transcript: Default::default(),
+            ..SubagentInfo::running(task_id, "explore", "Explore")
         })
     }
 
