@@ -1455,7 +1455,7 @@ impl notedeck::App for Dave {
         self.poll_pending_reap();
 
         // Poll for new session states from PNS-unwrapped relay events
-        self.poll_session_state_events(ctx);
+        self.poll_session_state_events(ctx.ndb, ctx.private_sync_settled);
 
         // Drain background-restored sessions into the manager (a few per frame).
         // Replaying what the poll dropped before a session existed can yield

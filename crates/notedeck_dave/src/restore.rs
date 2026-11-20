@@ -657,7 +657,14 @@ impl Dave {
     ///
     /// When PNS events arrive from relays and get unwrapped, new session state
     /// events may appear. This detects them and creates sessions we don't already have.
-    pub(crate) fn poll_session_state_events(&mut self, ctx: &mut AppContext<'_>) {
+    ///
+    /// It takes only the store and the host's `private_sync_settled` flag
+    /// (see below), not the whole `AppContext`, so a test can drive it.
+    pub(crate) fn poll_session_state_events(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        private_sync_settled: bool,
+    ) {
         let Some(sub) = self.session_state_sub else {
             return;
         };
@@ -679,16 +686,16 @@ impl Dave {
         //
         // `private_sync_settled` is `true` when local-only (no private relay ⇒
         // nothing to reconcile), so processing runs immediately in that case.
-        if !ctx.private_sync_settled {
+        if !private_sync_settled {
             return;
         }
 
-        let note_keys = ctx.ndb.poll_for_notes(sub, 32);
+        let note_keys = ndb.poll_for_notes(sub, 32);
         if note_keys.is_empty() {
             return;
         }
 
-        let txn = match Transaction::new(ctx.ndb) {
+        let txn = match Transaction::new(ndb) {
             Ok(t) => t,
             Err(_) => return,
         };
@@ -701,7 +708,7 @@ impl Dave {
             .collect();
 
         for key in note_keys {
-            let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
+            let Ok(note) = ndb.get_note_by_key(&txn, key) else {
                 continue;
             };
 
@@ -767,6 +774,11 @@ impl Dave {
                 let new_profile = session_events::get_tag_value(&note, "profile")
                     .filter(|p| !p.is_empty())
                     .map(|s| s.to_string());
+                let new_containment = session_events::get_tag_value(
+                    &note,
+                    agentium_core::agent_spec::CONTAINMENT_TAG,
+                )
+                .and_then(agentium_core::agent_spec::Containment::from_tag_str);
                 for session in self.session_manager.iter_mut() {
                     let is_remote = session.is_remote();
                     if let Some(agentic) = &mut session.agentic {
@@ -793,12 +805,16 @@ impl Dave {
                                 session.details.issue_url = new_issue_url.clone();
                             }
                             // Lineage is the host's record of how the session
-                            // was spawned, and the profile what it runs under;
-                            // a remote copy mirrors both.
+                            // was spawned, the profile what it runs under, and
+                            // containment where its tools run; a remote copy
+                            // mirrors all three. Containment is first set on a
+                            // spec session's first turn, so an observer that
+                            // found the session earlier only learns it here.
                             if is_remote {
                                 session.details.parent_session = new_parent_session.clone();
                                 session.details.relation = new_relation;
                                 session.details.profile = new_profile.clone();
+                                session.details.containment = new_containment;
                             }
                             if let Some(backend) = backend_tag {
                                 session.backend_type = backend;
@@ -832,9 +848,9 @@ impl Dave {
             // Look up the latest revision of this session. PNS wrapping
             // causes old revisions (including pre-deletion) to arrive from
             // the relay. Only create a session if the latest revision is valid.
-            let Some(state) = session_loader::latest_valid_session_for_author(
-                ctx.ndb, &txn, &account, claude_sid,
-            ) else {
+            let Some(state) =
+                session_loader::latest_valid_session_for_author(ndb, &txn, &account, claude_sid)
+            else {
                 continue;
             };
 
@@ -888,7 +904,7 @@ impl Dave {
             // Load any conversation history that arrived with it, up to where
             // the conversation poll has got: a note past that is still to come
             // through the poll, which processes it.
-            let loaded = self.load_session_history(ctx.ndb, &txn, &account, claude_sid);
+            let loaded = self.load_session_history(ndb, &txn, &account, claude_sid);
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 // Clear pending state (upgrades placeholder to real session).
@@ -2478,5 +2494,81 @@ mod tests {
             dave.open_message_delivery(claude, false),
             OpenMessageDelivery::Draft(_)
         ));
+    }
+
+    /// Store a kind-31988 state for `sid` as another host publishes it, and
+    /// wait until nostrdb has indexed it.
+    async fn store_remote_state(
+        test: &TestDave,
+        sid: &str,
+        created_at: u64,
+        containment: Option<agentium_core::agent_spec::Containment>,
+    ) {
+        let state = session_events::build_session_state_event(
+            &session_loader::SessionState {
+                claude_session_id: sid.to_string(),
+                title: "Remote spec session".into(),
+                cwd: "/srv/elsewhere".into(),
+                status: "idle".into(),
+                hostname: "some-other-host".into(),
+                home_dir: "/home/dev".into(),
+                backend: Some("openai".into()),
+                cli_session_id: Some(String::new()),
+                agent_spec: Some("coder".into()),
+                containment,
+                created_at,
+                ..Default::default()
+            },
+            &test.sk,
+        )
+        .unwrap();
+        let wait = test
+            .ndb
+            .subscribe(&[nostrdb::Filter::new()
+                .kinds([session_events::AI_SESSION_STATE_KIND as u64])
+                .build()])
+            .unwrap();
+        test.ndb
+            .process_event_with(&state.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        test.ndb.wait_for_notes(wait, 1).await.unwrap();
+    }
+
+    /// A spec session's containment is set on its first turn, so an observer
+    /// often discovers it with none. The discovery poll's newer-state branch
+    /// mirrors it onto the remote copy, as it does the profile, so the
+    /// inspector's "Tools run" row appears without a restart.
+    #[tokio::test]
+    async fn discovery_poll_mirrors_a_remote_sessions_containment() {
+        use agentium_core::agent_spec::Containment;
+
+        let mut test = TestDave::new();
+        let states = nostrdb::Filter::new()
+            .kinds([session_events::AI_SESSION_STATE_KIND as u64])
+            .authors([test.account.bytes()])
+            .build();
+        test.dave.session_state_sub = Some(test.ndb.subscribe(&[states]).unwrap());
+        let sid = "remote-spec-containment";
+
+        store_remote_state(&test, sid, 1_000, None).await;
+        test.dave.poll_session_state_events(&test.ndb, true);
+        let containment_of = |dave: &Dave| {
+            let session = dave
+                .session_manager
+                .iter()
+                .find(|s| {
+                    s.agentic
+                        .as_ref()
+                        .is_some_and(|a| a.event_session_id() == sid)
+                })
+                .expect("discovered the remote session");
+            assert!(session.is_remote());
+            session.details.containment
+        };
+        assert_eq!(containment_of(&test.dave), None);
+
+        store_remote_state(&test, sid, 2_000, Some(Containment::InProcess)).await;
+        test.dave.poll_session_state_events(&test.ndb, true);
+        assert_eq!(containment_of(&test.dave), Some(Containment::InProcess));
     }
 }
