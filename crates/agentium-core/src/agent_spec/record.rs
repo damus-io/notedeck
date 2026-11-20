@@ -16,6 +16,7 @@
 //! | tag | from |
 //! |---|---|
 //! | `["d", slug]` | `slug` |
+//! | `["name", n]` | `name`, when set |
 //! | `["provider", p]`, `["model", m]` | `model` |
 //! | `["toolset", "notedeck", app, …]` | `Toolset::Notedeck` |
 //! | `["toolset", "web"]` | `Toolset::Web` |
@@ -24,6 +25,7 @@
 //! | `["toolset", "sub_agent", spec]` | `Toolset::SubAgent` |
 //! | `["widen", tool, to, why]` | `policy.widen` |
 //! | `["tighten", "tool" \| "class", name, to]` | `policy.tighten` |
+//! | `["trust", t]` | `trust`, when set |
 //! | `["max_steps", n]`, `["max_cost_cents", n]`, `["timeout_secs", n]` | `budget` |
 //!
 //! The reader is as strict as [`AgentSpec::from_json`]'s `deny_unknown_fields`:
@@ -133,6 +135,9 @@ pub fn build_agent_spec_event_at(
         .map_err(|e| EventBuildError::Build(e.to_string()))?;
     let mut b = init_note_builder(AI_AGENT_SPEC_KIND, &spec.prompt, created_at);
     b = b.start_tag().tag_str("d").tag_str(&spec.slug);
+    if let Some(name) = &spec.name {
+        b = b.start_tag().tag_str("name").tag_str(name);
+    }
     b = b
         .start_tag()
         .tag_str("provider")
@@ -178,6 +183,9 @@ pub fn build_agent_spec_event_at(
             (None, None) => b,
         };
         b = b.tag_str(&enum_str(&tighten.to));
+    }
+    if let Some(trust) = &spec.trust {
+        b = b.start_tag().tag_str("trust").tag_str(&enum_str(trust));
     }
     let budget = &spec.budget;
     b = b
@@ -245,6 +253,8 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
     };
     let mut toolsets = Vec::new();
     let mut policy = Policy::default();
+    let mut display_name = None;
+    let mut trust = None;
     let mut max_steps = None;
     let mut max_cost_cents = None;
     let mut timeout_secs = None;
@@ -256,6 +266,8 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
         };
         match name {
             "d" => {}
+            "name" => display_name = Some(at(1)?.to_owned()),
+            "trust" => trust = Some(parse_enum(at(1)?)?),
             "provider" => model.provider = at(1)?.to_owned(),
             "model" => model.model = at(1)?.to_owned(),
             "toolset" => toolsets.push(toolset_from_tag(&tag)?),
@@ -285,10 +297,12 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
     }
     Ok(AgentSpec {
         slug: slug.to_owned(),
+        name: display_name,
         model,
         prompt: note.content().to_owned(),
         toolsets,
         policy,
+        trust,
         budget: Budget {
             max_steps: max_steps.ok_or("no max_steps tag")?,
             max_cost_cents,
@@ -382,7 +396,8 @@ mod tests {
 
     /// A spec using every field the tags carry: each toolset kind but one
     /// (Coding and SubAgent can't share with Notedeck's private data), a
-    /// widen, both tighten forms, and a full budget.
+    /// widen, both tighten forms, and a full budget; and Dave Code's
+    /// `name`, `trust` and every-app (`*`) Notedeck toolset.
     fn every_field() -> Vec<AgentSpec> {
         let researcher = builtin::find("researcher").unwrap();
         let mut butler = builtin::find("butler").unwrap();
@@ -401,7 +416,8 @@ mod tests {
                 git: SandboxGit::ReadWrite,
             },
         }];
-        vec![researcher, butler, reviewer, sandboxed]
+        let dave_code = builtin::find("dave-code").unwrap();
+        vec![researcher, butler, reviewer, sandboxed, dave_code]
     }
 
     /// Build → PNS wrap → ingest → load gives back each spec as it was, and
@@ -449,7 +465,7 @@ mod tests {
         assert_eq!(lookup("scout", &records).unwrap(), scout);
         assert_eq!(
             slugs(&records).into_iter().collect::<Vec<_>>(),
-            ["butler", "researcher", "scout"]
+            ["butler", "dave-code", "researcher", "scout"]
         );
         assert!(matches!(
             lookup("nobody", &records),

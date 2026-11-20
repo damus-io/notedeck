@@ -638,4 +638,64 @@ mod tests {
             .expect("the turn shows an error");
         assert!(error.contains("\"scout\""), "error: {error}");
     }
+
+    /// Dave Code is a picker row on a host with no account records: picking
+    /// it starts a native-loop session under `dave-code`, whose first turn
+    /// offers the coding tools and every app's notedeck tools and records
+    /// that its tools run on this machine (headway:dave/much-donkey-police).
+    #[test]
+    fn picking_dave_code_starts_a_host_coder() {
+        use crate::DaveOverlay;
+        use agentium_core::agent_spec::Containment;
+
+        let mut test = crate::tests::TestDave::new();
+        test.dave.available_backends = vec![BackendType::Claude];
+        let cwd = tempfile::TempDir::new().unwrap();
+        test.dave
+            .create_or_pick_backend(cwd.path().to_path_buf(), None);
+        let DaveOverlay::BackendPicker { entries, .. } =
+            std::mem::take(&mut test.dave.active_overlay)
+        else {
+            panic!("a lone Claude plus the built-in specs shows the picker");
+        };
+        let row = entries
+            .iter()
+            .find(|e| e.key.spec.as_deref() == Some("dave-code"))
+            .expect("Dave Code has a row (its label is backend_picker's test)");
+        test.dave
+            .create_or_resume_session(cwd.path().to_path_buf(), row.choice(0));
+        let session = test.dave.session_manager.get_active().unwrap();
+        let sid = session.id;
+        assert_eq!(session.backend_type, BackendType::OpenAI);
+        assert_eq!(session.details.agent_spec.as_deref(), Some("dave-code"));
+        assert_eq!(session.details.containment, None, "not before a turn");
+
+        let built = build_named("dave-code", &test.ndb).expect("dave-code builds");
+        let backend = RecordingBackend::new().replying(Reply::Says("ok".into()));
+        let runner = backend.log();
+        test.dave.spec_runners.insert(
+            "dave-code",
+            SpecRunner {
+                backend: Box::new(backend),
+                tools: built.tools,
+                built_from: built.built_from,
+            },
+        );
+        let parts = test.parts();
+        assert!(parts
+            .dave
+            .add_user_message_for_session(sid, &parts.host, "go".into(), Vec::new()));
+        parts.dave.send_user_message_for(sid, &parts.host);
+        parts.dave.process_events(&parts.host);
+
+        let turns = runner.turns();
+        let [turn] = turns.as_slice() else {
+            panic!("one turn on Dave Code's runner, got {}", turns.len());
+        };
+        for tool in ["Bash", "Edit", "headway_comment_card", "notebook_show"] {
+            assert!(turn.tools.contains(&tool.to_string()), "{tool} offered");
+        }
+        let session = test.dave.session_manager.get(sid).unwrap();
+        assert_eq!(session.details.containment, Some(Containment::Host));
+    }
 }

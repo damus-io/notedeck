@@ -84,7 +84,12 @@ fn set_show_list_rm() {
         .collect();
     assert_eq!(
         slugs,
-        [json!("butler"), json!("researcher"), json!("scout")]
+        [
+            json!("butler"),
+            json!("dave-code"),
+            json!("researcher"),
+            json!("scout")
+        ]
     );
 
     let edited = live.call(

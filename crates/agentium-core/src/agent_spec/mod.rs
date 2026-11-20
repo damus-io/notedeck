@@ -6,7 +6,7 @@
 //! what the policy loosens or tightens, and how far it may go before it stops.
 //!
 //! ```text
-//! AgentSpec { slug, model, prompt, toolsets, policy, budget }
+//! AgentSpec { slug, name, model, prompt, toolsets, policy, trust, budget }
 //!               │                     │          │
 //!               │      Toolset ── Runner ── Containment ─┐
 //!               │      ToolSpec ── Capability ───────────┤
@@ -43,6 +43,23 @@
 //! its repository and runs a shell that can reach the network, at full
 //! power on the host, the same as Claude Code. What the rule stops is a
 //! second toolset's data (private boards) put within reach of that shell.
+//!
+//! ### Unless the spec says it runs with the user's trust
+//!
+//! On the host the rule protects nothing a shell can't already undo. Bash
+//! there runs as the user: it can run `nd headway show` and `curl`, so a
+//! host coder without the Notedeck toolset still reaches the private boards,
+//! just the long way round, exactly as a Claude Code session in Dave does.
+//! Refusing the pair only makes a coder that wants notedeck's tools shell
+//! out for them. So a spec may opt out, visibly: [`Trust::Host`]
+//! (`"trust": "host"`) lets its host shell sit beside private data. It is
+//! accepted only when the spec's tools run on the host
+//! ([`Containment::Host`]); in a guest the rule is what keeps the guest's
+//! network away from the boards, so a sandboxed spec can't set it. It
+//! never lets a Web toolset in beside private data: an in-process fetch is
+//! not a shell the user already gave the agent. The built-in that sets it
+//! is `dave-code`, the user's own coder. The butler, the researcher and an
+//! untrusted spawn don't, and keep the rule.
 
 pub mod builtin;
 pub mod catalog;
@@ -81,6 +98,11 @@ pub const CONTAINMENT_TAG: &str = "containment";
 pub struct AgentSpec {
     /// Stable name, e.g. `butler`; the value of a session's [`SPEC_TAG`].
     pub slug: String,
+    /// What a person calls it, e.g. "Dave Code", where the slug would read
+    /// as an id (the new-session picker). `None` shows the slug
+    /// ([`display_name`](Self::display_name)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The model and the provider that serves it.
     pub model: ModelRef,
     /// The system prompt: the agent's role.
@@ -90,9 +112,28 @@ pub struct AgentSpec {
     /// Adjustments to the approval table.
     #[serde(default)]
     pub policy: Policy,
+    /// An explicit widening of the private-data rule, for a spec that runs
+    /// with the user's own trust (see the module docs). `None` keeps the
+    /// rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<Trust>,
     /// When the loop stops on its own.
     pub budget: Budget,
 }
+
+/// What a spec's [`trust`](AgentSpec::trust) opts it into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trust {
+    /// Its host shell may sit beside private data: a coder on the host with
+    /// the user's full privilege, as Claude Code is. Only for a spec whose
+    /// tools run on the host ([`Containment::Host`]).
+    Host,
+}
+
+/// The [`Toolset::Notedeck`] app that stands for every app the host offers
+/// tools from: `"apps": ["*"]`. It stands alone in the list.
+pub const ALL_APPS: &str = "*";
 
 /// The model a spec runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +156,8 @@ pub enum Toolset {
     /// user's nostr data.
     Notedeck {
         /// Which apps' tools, e.g. `["headway", "notebook"]`; never empty.
+        /// `["*"]` ([`ALL_APPS`]) is every app's: whatever `nd` offers on
+        /// the host the session runs on.
         apps: Vec<String>,
     },
     /// Web search and fetch, in-process.
@@ -266,6 +309,9 @@ pub enum SpecError {
     /// A Notedeck toolset names no apps.
     #[error("agent spec {0}: a notedeck toolset names its apps")]
     NoApps(String),
+    /// A Notedeck toolset names [`ALL_APPS`] beside other apps.
+    #[error("agent spec {0}: a notedeck toolset's \"*\" (every app) stands alone")]
+    AllAppsNotAlone(String),
     /// A sub-agent toolset calls the spec itself.
     #[error("agent spec {0} calls itself as a sub-agent")]
     SelfSubAgent(String),
@@ -282,6 +328,15 @@ pub enum SpecError {
          tighten Bash (or the shell class) to impossible, or drop the private toolset"
     )]
     PrivateDataWithShell(String),
+    /// `trust: host` on a spec whose tools don't run on the host.
+    #[error(
+        "agent spec {spec}: trust \"host\" is for a coder on the host, \
+         but its tools run {}", .containment.as_str()
+    )]
+    TrustOffHost {
+        spec: String,
+        containment: Containment,
+    },
     /// `budget.max_steps` is zero.
     #[error("agent spec {0} has a zero step budget")]
     ZeroSteps(String),
@@ -313,8 +368,9 @@ impl AgentSpec {
 
     /// Check the spec can run: a valid slug, a model, at least one toolset
     /// and none twice, apps named, no self-call, never one toolset's
-    /// private data beside another's egress, a non-zero step budget, and a
-    /// well-formed policy.
+    /// private data beside another's egress (bar a host shell under
+    /// [`Trust::Host`], which only a host spec may set), a non-zero step
+    /// budget, and a well-formed policy.
     pub fn validate(&self) -> Result<(), SpecError> {
         let name = || self.slug.clone();
         validate_slug(&self.slug).map_err(|_| SpecError::Slug(name()))?;
@@ -333,14 +389,28 @@ impl AgentSpec {
                 Toolset::Notedeck { apps } if apps.is_empty() => {
                     return Err(SpecError::NoApps(name()))
                 }
+                Toolset::Notedeck { apps }
+                    if apps.len() > 1 && apps.iter().any(|a| a == ALL_APPS) =>
+                {
+                    return Err(SpecError::AllAppsNotAlone(name()))
+                }
                 Toolset::SubAgent { spec } if *spec == self.slug => {
                     return Err(SpecError::SelfSubAgent(name()))
                 }
                 _ => {}
             }
         }
+        if self.trust == Some(Trust::Host) && self.containment() != Containment::Host {
+            return Err(SpecError::TrustOffHost {
+                spec: name(),
+                containment: self.containment(),
+            });
+        }
         for (i, egress) in self.toolsets.iter().enumerate() {
             if !self.reaches_network(egress) {
+                continue;
+            }
+            if self.trusts_host_shell(egress) {
                 continue;
             }
             let others_private = self
@@ -363,6 +433,25 @@ impl AgentSpec {
             spec: name(),
             source,
         })
+    }
+
+    /// Whether `toolset` is a host shell this spec's [`Trust::Host`] lets sit
+    /// beside private data: its Coding toolset on the host runner. Never a
+    /// Web toolset, and never a guest.
+    fn trusts_host_shell(&self, toolset: &Toolset) -> bool {
+        self.trust == Some(Trust::Host)
+            && matches!(
+                toolset,
+                Toolset::Coding {
+                    runner: Runner::LocalExecutor
+                }
+            )
+    }
+
+    /// What the new-session picker calls it: its [`name`](Self::name), else
+    /// its slug.
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.slug)
     }
 
     /// Whether `toolset`'s tools reach the network under this spec's policy:

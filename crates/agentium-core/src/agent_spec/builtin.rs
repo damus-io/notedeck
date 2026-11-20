@@ -5,6 +5,7 @@
 //! |---|---|---|
 //! | `butler` | validates an idea from a brainstorm transcript onto its headway card | Notedeck (headway, notebook) + the researcher |
 //! | `researcher` | answers one web question for another agent | Web |
+//! | `dave-code` | "Dave Code": codes in the session's checkout, on the host, like Claude Code | Coding on the host + Notedeck (every app), `trust: host` |
 //!
 //! Each lives as JSON beside this file, the same shape a user's own spec
 //! takes ([`AgentSpec::from_json`]), so reading one is reading config, not
@@ -19,7 +20,7 @@ use super::AgentSpec;
 pub const REVIEW_LABEL: &str = "butler";
 
 /// Every built-in spec's slug, in the order `find` knows them.
-pub const SLUGS: [&str; 2] = ["butler", "researcher"];
+pub const SLUGS: [&str; 3] = ["butler", "researcher", "dave-code"];
 
 /// The built-in spec named `slug`, parsed and validated; `None` when no
 /// built-in has that slug.
@@ -27,6 +28,7 @@ pub fn find(slug: &str) -> Option<AgentSpec> {
     let json = match slug {
         "butler" => include_str!("builtin/butler.json"),
         "researcher" => include_str!("builtin/researcher.json"),
+        "dave-code" => include_str!("builtin/dave-code.json"),
         _ => return None,
     };
     // The tests below parse every built-in, so a broken one fails CI rather
@@ -43,7 +45,9 @@ pub fn find(slug: &str) -> Option<AgentSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_spec::{Toolset, ToolsetKind};
+    use crate::agent_spec::{
+        Containment, Runner, SandboxGit, SpecError, Toolset, ToolsetKind, Trust, ALL_APPS,
+    };
 
     /// Every built-in parses, validates, and is found under its own slug.
     #[test]
@@ -107,5 +111,62 @@ mod tests {
         let prompt = find("butler").unwrap().prompt;
         assert!(prompt.contains(&format!("label `{REVIEW_LABEL}`")));
         assert!(prompt.contains("headway_set_due"));
+    }
+
+    /// Dave Code is the user's own coder: the Coding toolset on the host
+    /// and every app's notedeck tools, named for the picker, its tools
+    /// running on this machine. It validates only through its explicit
+    /// `trust: host`.
+    #[test]
+    fn dave_code_codes_on_the_host_with_every_notedeck_tool() {
+        let spec = find("dave-code").expect("dave-code parses");
+        assert_eq!(spec.display_name(), "Dave Code");
+        assert_eq!(spec.containment(), Containment::Host);
+        assert_eq!(spec.trust, Some(Trust::Host));
+        assert!(spec.toolsets.contains(&Toolset::Coding {
+            runner: Runner::LocalExecutor
+        }));
+        assert!(spec.toolsets.contains(&Toolset::Notedeck {
+            apps: vec![ALL_APPS.into()]
+        }));
+    }
+
+    /// The same toolsets without the opt-in are refused as private data
+    /// beside a shell, and the opt-in on a sandboxed runner is refused
+    /// outright: it is for the host only.
+    #[test]
+    fn dave_codes_pairing_needs_trust_and_the_host() {
+        let mut untrusted = find("dave-code").unwrap();
+        untrusted.trust = None;
+        assert!(matches!(
+            untrusted.validate(),
+            Err(SpecError::PrivateDataWithShell(_))
+        ));
+
+        let mut sandboxed = find("dave-code").unwrap();
+        sandboxed.toolsets[0] = Toolset::Coding {
+            runner: Runner::Microsandbox {
+                git: SandboxGit::ReadWrite,
+            },
+        };
+        assert!(matches!(
+            sandboxed.validate(),
+            Err(SpecError::TrustOffHost {
+                containment: Containment::SandboxedCommit,
+                ..
+            })
+        ));
+    }
+
+    /// Trust on the host never lets a Web toolset in beside private data:
+    /// it widens the host shell's rule only.
+    #[test]
+    fn host_trust_never_admits_web_beside_private_data() {
+        let mut spec = find("dave-code").unwrap();
+        spec.toolsets.push(Toolset::Web);
+        assert!(matches!(
+            spec.validate(),
+            Err(SpecError::PrivateDataWithEgress(_))
+        ));
     }
 }

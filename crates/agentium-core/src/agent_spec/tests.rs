@@ -348,6 +348,19 @@ fn validate_rejects_malformed_specs() {
         SpecError::NoApps(_)
     ));
     assert!(matches!(
+        check(|s| s.toolsets[0] = Toolset::Notedeck {
+            apps: vec![ALL_APPS.into(), "headway".into()]
+        }),
+        SpecError::AllAppsNotAlone(_)
+    ));
+    assert!(matches!(
+        check(|s| s.trust = Some(Trust::Host)),
+        SpecError::TrustOffHost {
+            containment: Containment::InProcess,
+            ..
+        }
+    ));
+    assert!(matches!(
         check(|s| s.toolsets[1] = Toolset::SubAgent {
             spec: "butler".into()
         }),

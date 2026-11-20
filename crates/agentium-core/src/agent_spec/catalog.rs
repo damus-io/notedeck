@@ -12,7 +12,10 @@
 //! An app's tools are the ones whose command line starts with the app's
 //! name (`["headway", "show"]` is `nd headway show`), so a
 //! `Notedeck { apps: ["headway"] }` toolset offers exactly what `nd headway`
-//! runs. No wrapper per tool: the model gets each tool's own
+//! runs. `Notedeck { apps: ["*"] }` ([`ALL_APPS`]) offers every app's,
+//! so whatever `nd` runs on the host is the agent's too; it fails on no app,
+//! since which apps a host has is the host's business. No wrapper per tool:
+//! the model gets each tool's own
 //! [`ToolSpec`], and the host's tool registry runs the call. A streaming
 //! tool is left out, since nothing waits on a stream. An argument the
 //! command bar fills from the current view
@@ -43,7 +46,7 @@
 use std::collections::HashMap;
 
 use super::{coding, web};
-use super::{AgentSpec, Approval, Containment, Policy, SessionMode, Toolset};
+use super::{AgentSpec, Approval, Containment, Policy, SessionMode, Toolset, ALL_APPS};
 use crate::tool::{Capability, ModelReach, ToolSpec};
 use crate::tools::Tool;
 
@@ -121,6 +124,11 @@ impl Catalog {
         };
         for toolset in &spec.toolsets {
             match toolset {
+                Toolset::Notedeck { apps } if apps.iter().any(|a| a == ALL_APPS) => {
+                    for tool in available.clone().into_iter().filter(|t| offers_any(t)) {
+                        catalog.offer(toolset, tool.clone(), ToolSource::App);
+                    }
+                }
                 Toolset::Notedeck { apps } => {
                     for app in apps {
                         let before = catalog.offered.len();
@@ -235,6 +243,14 @@ fn offers(app: &str, tool: &ToolSpec) -> bool {
     tool.command_path().first() == Some(&app) && tool.model_reach() != ModelReach::Never
 }
 
+/// Whether an [`ALL_APPS`] toolset offers `tool`: [`offers`] for whichever
+/// app's `nd` command it is.
+fn offers_any(tool: &ToolSpec) -> bool {
+    tool.command_path()
+        .first()
+        .is_some_and(|app| offers(app, tool))
+}
+
 /// Every tool `spec`'s policy names, widened or tightened.
 fn policy_tools(spec: &AgentSpec) -> impl Iterator<Item = &str> {
     let widened = spec.policy.widen.iter().map(|w| w.tool.as_str());
@@ -278,6 +294,7 @@ mod tests {
     fn spec(apps: &[&str], policy: Policy) -> AgentSpec {
         AgentSpec {
             slug: "butler".into(),
+            name: None,
             model: ModelRef {
                 provider: "anthropic".into(),
                 model: "claude-sonnet-5-5".into(),
@@ -287,6 +304,7 @@ mod tests {
                 apps: apps.iter().map(|a| a.to_string()).collect(),
             }],
             policy,
+            trust: None,
             budget: Budget {
                 max_steps: 10,
                 max_cost_cents: None,
@@ -351,6 +369,32 @@ mod tests {
             panic!("an app tool's call parses as an app call");
         };
         assert_eq!(app.name, "notebook_show");
+    }
+
+    /// `["*"]` offers every app's `nd` commands, and still none a model
+    /// can't call: no key binding's UI tool, no stream, no tool without a
+    /// command line.
+    #[test]
+    fn every_app_offers_each_apps_nd_commands() {
+        let host = host_tools();
+        let catalog = Catalog::build(&spec(&[ALL_APPS], Policy::default()), &host).unwrap();
+        assert_eq!(
+            names(&catalog),
+            [
+                "headway_show_board",
+                "headway_comment_card",
+                "headway_move_card",
+                "notebook_show",
+                "headway_open",
+            ]
+        );
+        assert_eq!(
+            catalog.get("notebook_show").unwrap().source,
+            ToolSource::App
+        );
+        let none: [ToolSpec; 0] = [];
+        let empty = Catalog::build(&spec(&[ALL_APPS], Policy::default()), &none).unwrap();
+        assert!(empty.tools().is_empty(), "a host with no apps offers none");
     }
 
     /// The butler's policy widens comments alone to auto.

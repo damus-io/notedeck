@@ -1,6 +1,7 @@
 //! The new-session backend picker: one row per local agentic backend, then one
 //! per backend profile layered on Claude ("Claude Code · Hydra"), then one per
-//! agent spec ("butler"), which runs in the native loop on the spec's model.
+//! agent spec ("butler", "Dave Code"), which runs in the native loop on the
+//! spec's model.
 //!
 //! The rows are built once, when the picker opens ([`picker_entries`]), and
 //! carried in the overlay, so a frame only reads them.
@@ -94,7 +95,8 @@ impl PickerEntry {
         }
     }
 
-    /// A row for a session under `spec`, labelled by its slug. It runs in the
+    /// A row for a session under `spec`, labelled by its
+    /// [`display_name`](AgentSpec::display_name): its name, else its slug. It runs in the
     /// native loop on the spec's own model, so it offers no model to pick and
     /// names the spec's instead.
     fn spec(spec: &AgentSpec, idx: usize) -> Self {
@@ -105,7 +107,7 @@ impl PickerEntry {
                 profile: None,
                 spec: choice.spec,
             },
-            label: row_label(idx, &spec.slug),
+            label: row_label(idx, spec.display_name()),
             models: vec![choice.model],
             detail: Some(format!("agent spec \u{00B7} {}", spec.model.model)),
         }
@@ -387,7 +389,7 @@ mod tests {
     }
 
     /// Every built-in spec is a row after the backends and profiles,
-    /// labelled by its slug and naming its model; picking one starts a
+    /// labelled by its name (else its slug) and naming its model; picking one starts a
     /// native-loop session under that spec, even on a host whose only
     /// backend is Claude.
     #[test]
@@ -411,5 +413,15 @@ mod tests {
         // A spec row keys its own model pick apart from the backend rows.
         assert_ne!(butler.key, entries[0].key);
         assert_eq!(entries[3].key.spec.as_deref(), Some("researcher"));
+        // A spec with a name is labelled by it, keyed by its slug.
+        let dave_code = entries
+            .iter()
+            .find(|e| e.key.spec.as_deref() == Some("dave-code"))
+            .expect("Dave Code has a row");
+        assert!(
+            dave_code.label.ends_with("] Dave Code"),
+            "{}",
+            dave_code.label
+        );
     }
 }
