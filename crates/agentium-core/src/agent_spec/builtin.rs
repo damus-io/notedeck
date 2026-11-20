@@ -6,6 +6,7 @@
 //! | `butler` | validates an idea from a brainstorm transcript onto its headway card, and again each time the card falls due | Notedeck (headway, notebook) + the researcher |
 //! | `researcher` | answers one web question for another agent | Web |
 //! | `dave-code` | "Dave Code": codes in the session's checkout, on the host, like Claude Code | Coding on the host + Notedeck (every app), `trust: host` |
+//! | `sandboxed-coder` | "Sandboxed Coder": codes in the session's worktree from a microVM guest and leaves the change for review | Coding in a microsandbox, git read-only |
 //!
 //! Each lives as JSON beside this file, the same shape a user's own spec
 //! takes ([`AgentSpec::from_json`]), so reading one is reading config, not
@@ -14,7 +15,7 @@
 use super::AgentSpec;
 
 /// Every built-in spec's slug, in the order `find` knows them.
-pub const SLUGS: [&str; 3] = ["butler", "researcher", "dave-code"];
+pub const SLUGS: [&str; 4] = ["butler", "researcher", "dave-code", "sandboxed-coder"];
 
 /// The built-in spec named `slug`, parsed and validated; `None` when no
 /// built-in has that slug.
@@ -23,6 +24,7 @@ pub fn find(slug: &str) -> Option<AgentSpec> {
         "butler" => include_str!("builtin/butler.json"),
         "researcher" => include_str!("builtin/researcher.json"),
         "dave-code" => include_str!("builtin/dave-code.json"),
+        "sandboxed-coder" => include_str!("builtin/sandboxed-coder.json"),
         _ => return None,
     };
     // The tests below parse every built-in, so a broken one fails CI rather
@@ -172,5 +174,29 @@ mod tests {
             spec.validate(),
             Err(SpecError::PrivateDataWithEgress(_))
         ));
+    }
+
+    /// The Sandboxed Coder runs its coding tools in a guest that can write
+    /// the worktree but not the repository's git, beside nothing else: no
+    /// notedeck tools (private data), no web, and no `trust`, which is for
+    /// the host only. Its prompt tells the model what the guest can't do,
+    /// and its budget bounds an unattended run.
+    #[test]
+    fn the_sandboxed_coder_codes_in_a_read_only_git_guest() {
+        let spec = find("sandboxed-coder").expect("sandboxed-coder parses");
+        assert_eq!(spec.display_name(), "Sandboxed Coder");
+        assert_eq!(
+            spec.toolsets,
+            vec![Toolset::Coding {
+                runner: Runner::Microsandbox {
+                    git: SandboxGit::ReadOnly
+                }
+            }]
+        );
+        assert_eq!(spec.containment(), Containment::SandboxedReview);
+        assert_eq!(spec.trust, None);
+        assert!(spec.prompt.contains("can't commit"));
+        assert!(spec.budget.max_cost_cents.is_some());
+        assert!(spec.budget.timeout_secs.is_some());
     }
 }

@@ -5,6 +5,11 @@
 //!
 //! The rows are built once, when the picker opens ([`picker_entries`]), and
 //! carried in the overlay, so a frame only reads them.
+//!
+//! A spec whose coding tools run in a microVM guest ("Sandboxed Coder") is
+//! a row on every host, but on one that can't boot guests the row says why
+//! in place of its Start button, and its number key does nothing: the
+//! session would only fail its first turn with the same reason.
 
 use super::backend_icon;
 use crate::backend::{BackendChoice, BackendType, Model};
@@ -39,6 +44,9 @@ pub struct PickerEntry {
     /// row whose model isn't the user's to pick: a spec row names its
     /// spec's model ("agent spec · claude-sonnet-5-5").
     detail: Option<String>,
+    /// Why this row can't start a session here, drawn in place of its
+    /// Start button; `None` for a row that can.
+    unavailable: Option<String>,
 }
 
 impl PickerEntry {
@@ -56,6 +64,7 @@ impl PickerEntry {
             label: row_label(idx, backend.display_name()),
             models,
             detail: None,
+            unavailable: None,
         }
     }
 
@@ -92,14 +101,16 @@ impl PickerEntry {
             label: row_label(idx, &name),
             models,
             detail: None,
+            unavailable: None,
         }
     }
 
     /// A row for a session under `spec`, labelled by its
     /// [`display_name`](AgentSpec::display_name): its name, else its slug. It runs in the
     /// native loop on the spec's own model, so it offers no model to pick and
-    /// names the spec's instead.
-    fn spec(spec: &AgentSpec, idx: usize) -> Self {
+    /// names the spec's instead. A spec whose tools run in a guest is
+    /// unavailable, for `no_sandbox`'s reason, when that is `Some`.
+    fn spec(spec: &AgentSpec, idx: usize, no_sandbox: Option<&str>) -> Self {
         let choice = BackendChoice::under_spec(spec.slug.clone());
         Self {
             key: PickerKey {
@@ -110,7 +121,15 @@ impl PickerEntry {
             label: row_label(idx, spec.display_name()),
             models: vec![choice.model],
             detail: Some(format!("agent spec \u{00B7} {}", spec.model.model)),
+            unavailable: no_sandbox
+                .filter(|_| spec.containment().is_sandboxed())
+                .map(str::to_owned),
         }
+    }
+
+    /// Why this row can't start a session here, or `None` when it can.
+    pub fn unavailable(&self) -> Option<&str> {
+        self.unavailable.as_deref()
     }
 
     /// What starting this row on its `model_idx`th model asks for. An index
@@ -143,10 +162,15 @@ fn row_label(idx: usize, name: &str) -> String {
 /// Claude is among them (a profile is an env overlay on the Claude backend),
 /// then one per spec in `specs`. A spec row doesn't need `available` to hold
 /// a backend: its turns run on the spec's own runner.
+///
+/// `no_sandbox` is why the host the session would start on can't boot a
+/// microVM guest (`None` when it can, or when that isn't known here): each
+/// spec row whose tools run in one is drawn unavailable with that reason.
 pub fn picker_entries<'a>(
     available: &[BackendType],
     profiles: impl IntoIterator<Item = &'a BackendProfile>,
     specs: impl IntoIterator<Item = &'a AgentSpec>,
+    no_sandbox: Option<&str>,
 ) -> Vec<PickerEntry> {
     let mut entries: Vec<PickerEntry> = available
         .iter()
@@ -161,7 +185,7 @@ pub fn picker_entries<'a>(
     }
     for spec in specs {
         let idx = entries.len();
-        entries.push(PickerEntry::spec(spec, idx));
+        entries.push(PickerEntry::spec(spec, idx, no_sandbox));
     }
     entries
 }
@@ -212,6 +236,16 @@ fn backend_picker_row(
     let mut result = None;
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
+        // A row that can't start here says why where its controls go.
+        if let Some(why) = &entry.unavailable {
+            ui.add(
+                egui::Label::new(egui::RichText::new(why).size(11.0).weak())
+                    .truncate()
+                    .selectable(false),
+            )
+            .on_hover_text(why);
+            return;
+        }
         ui.horizontal(|ui| {
             // Model dropdown, when the row offers a choice of models.
             if entry.models.len() > 1 {
@@ -270,7 +304,7 @@ pub fn backend_picker_overlay_ui(
             7 => egui::Key::Num8,
             _ => egui::Key::Num9,
         };
-        if ui.input(|i| i.key_pressed(key)) {
+        if entry.unavailable.is_none() && ui.input(|i| i.key_pressed(key)) {
             let model_idx = selected_models.get(&entry.key).copied().unwrap_or(0);
             return Some(entry.choice(model_idx));
         }
@@ -327,7 +361,7 @@ mod tests {
     /// profile row offers its own models with its default first.
     #[test]
     fn a_profile_is_its_own_row_on_its_own_models() {
-        let entries = picker_entries(&[BackendType::Claude], [&hydra()], []);
+        let entries = picker_entries(&[BackendType::Claude], [&hydra()], [], None);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, "[1] Claude Code");
         assert_eq!(entries[1].label, "[2] Claude Code \u{00B7} Hydra");
@@ -357,7 +391,7 @@ mod tests {
     /// Profiles ride Claude: with no Claude backend there's no profile row.
     #[test]
     fn no_profile_rows_without_claude() {
-        let entries = picker_entries(&[BackendType::Codex], [&hydra()], []);
+        let entries = picker_entries(&[BackendType::Codex], [&hydra()], [], None);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].key.profile, None);
     }
@@ -366,7 +400,7 @@ mod tests {
     #[test]
     fn a_profile_without_models_offers_default() {
         let bare = BackendProfile::new("bare", "Bare");
-        let entries = picker_entries(&[BackendType::Claude], [&bare], []);
+        let entries = picker_entries(&[BackendType::Claude], [&bare], [], None);
         assert_eq!(entries[1].models, vec![Model::Default]);
     }
 
@@ -374,7 +408,7 @@ mod tests {
     /// and each keeps its own model pick.
     #[test]
     fn selected_models_tell_two_claude_rows_apart() {
-        let entries = picker_entries(&[BackendType::Claude], [&hydra()], []);
+        let entries = picker_entries(&[BackendType::Claude], [&hydra()], [], None);
         let mut selected = HashMap::new();
         selected.insert(entries[0].key.clone(), 2);
         selected.insert(entries[1].key.clone(), 1);
@@ -399,7 +433,7 @@ mod tests {
             .iter()
             .filter_map(|s| builtin::find(s))
             .collect();
-        let entries = picker_entries(&[BackendType::Claude], [&hydra()], &specs);
+        let entries = picker_entries(&[BackendType::Claude], [&hydra()], &specs, None);
         assert_eq!(entries.len(), 2 + builtin::SLUGS.len());
         let butler = &entries[2];
         assert_eq!(butler.label, "[3] butler");
@@ -423,5 +457,34 @@ mod tests {
             "{}",
             dave_code.label
         );
+    }
+
+    /// On a host that can't boot guests, the Sandboxed Coder is still a
+    /// row, drawn with the reason and no Start; every other spec row
+    /// starts as before. Where guests boot, it is an ordinary row.
+    #[test]
+    fn a_sandboxed_spec_row_says_why_it_cant_start() {
+        use agentium_core::agent_spec::builtin;
+        let specs: Vec<AgentSpec> = builtin::SLUGS
+            .iter()
+            .filter_map(|s| builtin::find(s))
+            .collect();
+        let why = "microVM sandboxes need KVM Linux or Apple-Silicon macOS";
+        let entries = picker_entries(&[BackendType::Claude], [], &specs, Some(why));
+        let row = |slug: &str| {
+            entries
+                .iter()
+                .find(|e| e.key.spec.as_deref() == Some(slug))
+                .unwrap_or_else(|| panic!("{slug} has a row"))
+        };
+        let sandboxed = row("sandboxed-coder");
+        assert!(sandboxed.label.ends_with("] Sandboxed Coder"));
+        assert_eq!(sandboxed.unavailable(), Some(why));
+        for slug in ["butler", "researcher", "dave-code"] {
+            assert_eq!(row(slug).unavailable(), None, "{slug}");
+        }
+
+        let entries = picker_entries(&[BackendType::Claude], [], &specs, None);
+        assert!(entries.iter().all(|e| e.unavailable().is_none()));
     }
 }

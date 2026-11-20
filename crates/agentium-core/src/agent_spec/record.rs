@@ -554,7 +554,13 @@ mod tests {
         assert_eq!(lookup("scout", &records).unwrap(), scout);
         assert_eq!(
             slugs(&records).into_iter().collect::<Vec<_>>(),
-            ["butler", "dave-code", "researcher", "scout"]
+            [
+                "butler",
+                "dave-code",
+                "researcher",
+                "sandboxed-coder",
+                "scout"
+            ]
         );
         assert!(matches!(
             lookup("nobody", &records),

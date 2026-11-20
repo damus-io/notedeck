@@ -84,6 +84,12 @@ impl Containment {
         }
     }
 
+    /// Whether tools under this containment run in a microVM guest, so a
+    /// host that can't boot one can't run them.
+    pub fn is_sandboxed(self) -> bool {
+        matches!(self, Self::SandboxedReview | Self::SandboxedCommit)
+    }
+
     /// Read a `containment` tag back; `None` for a spelling this build
     /// doesn't know, which a reader treats as unknown, never as a default.
     pub fn from_tag_str(tag: &str) -> Option<Self> {

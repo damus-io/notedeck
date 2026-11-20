@@ -1114,21 +1114,29 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else {
             &self.available_backends
         };
+        let remote_target = target_host
+            .filter(|host| !host.is_empty())
+            .filter(|host| host != &self.hostname);
+        // Whether this host can boot a guest, checked once as the picker
+        // opens (it stats the runtime on disk). Another host's guests are
+        // its own to refuse, so a remote spawn doesn't look here.
+        let no_sandbox = match remote_target {
+            Some(_) => None,
+            None => sandbox::ready().err().map(|why| why.to_string()),
+        };
         let specs: Vec<AgentSpec> = self.agent_specs.all();
         let entries = ui::backend_picker::picker_entries(
             backends,
             self.backend_profiles.claude_profiles(),
             &specs,
+            no_sandbox.as_deref(),
         );
         tracing::info!(
             "create_or_pick_backend: {} picker rows over backends {:?} target_host={:?}",
             entries.len(),
             self.available_backends,
-            target_host
+            remote_target
         );
-        let remote_target = target_host
-            .filter(|host| !host.is_empty())
-            .filter(|host| host != &self.hostname);
 
         let only = match entries.as_slice() {
             [only] => Some(only.choice(0)),

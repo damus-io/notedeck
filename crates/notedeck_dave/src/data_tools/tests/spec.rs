@@ -88,6 +88,7 @@ fn set_show_list_rm() {
             json!("butler"),
             json!("dave-code"),
             json!("researcher"),
+            json!("sandboxed-coder"),
             json!("scout")
         ]
     );

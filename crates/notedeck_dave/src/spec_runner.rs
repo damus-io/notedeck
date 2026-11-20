@@ -809,4 +809,36 @@ mod tests {
         let session = test.dave.session_manager.get(sid).unwrap();
         assert_eq!(session.details.containment, Some(Containment::Host));
     }
+
+    /// The Sandboxed Coder is a picker row on every host, but where Dave
+    /// can't boot a guest (a test build without the `sandbox` feature)
+    /// the row carries the same reason its first turn would fail with,
+    /// rather than starting a session that can't run.
+    #[test]
+    fn the_sandboxed_coder_row_says_why_this_host_cant_run_it() {
+        use crate::DaveOverlay;
+
+        let mut test = crate::tests::TestDave::new();
+        test.dave.available_backends = vec![BackendType::Claude];
+        let cwd = tempfile::TempDir::new().unwrap();
+        test.dave
+            .create_or_pick_backend(cwd.path().to_path_buf(), None);
+        let DaveOverlay::BackendPicker { entries, .. } =
+            std::mem::take(&mut test.dave.active_overlay)
+        else {
+            panic!("a lone Claude plus the built-in specs shows the picker");
+        };
+        let row = entries
+            .iter()
+            .find(|e| e.key.spec.as_deref() == Some("sandboxed-coder"))
+            .expect("the Sandboxed Coder has a row");
+        // A `sandbox` build on a host with the runtime has an ordinary row.
+        let why = crate::sandbox::ready().err().map(|e| e.to_string());
+        assert_eq!(row.unavailable(), why.as_deref());
+        let dave_code = entries
+            .iter()
+            .find(|e| e.key.spec.as_deref() == Some("dave-code"))
+            .unwrap();
+        assert_eq!(dave_code.unavailable(), None, "Dave Code needs no guest");
+    }
 }
