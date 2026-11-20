@@ -187,33 +187,43 @@ impl MountPlan {
         self.checkout.to_str().unwrap_or_default()
     }
 
-    /// The environment that makes git in the guest trust the checkout.
+    /// The git config the guest needs to work in the checkout, as
+    /// environment: empty when the checkout isn't a repository.
     ///
-    /// The mounted files belong to the host user, and the guest runs as
-    /// its image's user (root, for the default image), so git would refuse
-    /// the repository as `dubious ownership`. `safe.directory` is only read
-    /// from protected config: system, global or the command line. The
-    /// `GIT_CONFIG_COUNT` variables are the command line's, so they work
-    /// without touching any file in the image, and they name this checkout
-    /// only rather than `*`. Empty when the checkout isn't a repository.
+    /// - **`safe.directory` = the checkout, always.** The mounted files
+    ///   belong to the host user, and the guest runs as its image's user
+    ///   (root, for the default image), so git would refuse the repository
+    ///   as `dubious ownership`. It names this checkout only, not `*`.
+    /// - **`lfs.storage` = [`GUEST_LFS_STORAGE`], under
+    ///   [`GitAccess::Review`] only.** `git status` and `git diff` run the
+    ///   LFS clean filter on any LFS file whose stat info is stale, which
+    ///   in a guest is all of them, and git-lfs writes a temp file under
+    ///   `.git/lfs/tmp` to do it. With the git dir readonly that is
+    ///   `read-only file system`, and git dies (`clean filter 'lfs'
+    ///   failed`). Moving LFS's storage into the guest gives the filter
+    ///   somewhere to write; Review can't commit, so nothing it writes
+    ///   there is ever needed. Under [`GitAccess::Commit`] the objects must
+    ///   land in the real store, which is writable, so it's left alone.
+    ///
+    /// `safe.directory` is only read from protected config (system, global
+    /// or the command line). The `GIT_CONFIG_COUNT` variables are the
+    /// command line's, so they work without touching any file in the image,
+    /// and git-lfs reads them too.
     pub fn git_env(&self) -> Vec<GuestEnv> {
         if self.layout == RepoLayout::NotARepo {
             return Vec::new();
         }
-        vec![
-            GuestEnv {
-                key: "GIT_CONFIG_COUNT",
-                value: "1".to_owned(),
-            },
-            GuestEnv {
-                key: "GIT_CONFIG_KEY_0",
-                value: "safe.directory".to_owned(),
-            },
-            GuestEnv {
-                key: "GIT_CONFIG_VALUE_0",
-                value: self.checkout_str().to_owned(),
-            },
-        ]
+        let mut config = vec![GitConfig {
+            key: "safe.directory",
+            value: self.checkout_str(),
+        }];
+        if self.access == GitAccess::Review {
+            config.push(GitConfig {
+                key: "lfs.storage",
+                value: GUEST_LFS_STORAGE,
+            });
+        }
+        git_config_env(&config)
     }
 
     /// Add the plan's bind mounts to a sandbox, start it in the checkout
@@ -241,6 +251,53 @@ impl MountPlan {
         });
         builder.workdir(self.checkout_str())
     }
+}
+
+/// Where git-lfs keeps its objects and temp files in a guest whose git dir
+/// is readonly: the guest's own disk, gone with the guest.
+pub const GUEST_LFS_STORAGE: &str = "/tmp/notedeck-agent-lfs";
+
+/// One git config entry, to be passed as environment.
+struct GitConfig<'a> {
+    key: &'a str,
+    value: &'a str,
+}
+
+/// The variable names for each slot of git's command-line config
+/// environment, as many as [`MountPlan::git_env`] ever sets.
+const GIT_CONFIG_SLOTS: [GitConfig<'static>; 2] = [
+    GitConfig {
+        key: "GIT_CONFIG_KEY_0",
+        value: "GIT_CONFIG_VALUE_0",
+    },
+    GitConfig {
+        key: "GIT_CONFIG_KEY_1",
+        value: "GIT_CONFIG_VALUE_1",
+    },
+];
+
+/// `config` as git's command-line config environment: `GIT_CONFIG_COUNT`
+/// and a `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pair per entry.
+fn git_config_env(config: &[GitConfig]) -> Vec<GuestEnv> {
+    assert!(
+        config.len() <= GIT_CONFIG_SLOTS.len(),
+        "add a GIT_CONFIG_SLOTS entry"
+    );
+    let mut env = vec![GuestEnv {
+        key: "GIT_CONFIG_COUNT",
+        value: config.len().to_string(),
+    }];
+    for (c, slot) in config.iter().zip(&GIT_CONFIG_SLOTS) {
+        env.push(GuestEnv {
+            key: slot.key,
+            value: c.key.to_owned(),
+        });
+        env.push(GuestEnv {
+            key: slot.value,
+            value: c.value.to_owned(),
+        });
+    }
+    env
 }
 
 /// Read what `<checkout>/.git` is.

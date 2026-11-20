@@ -105,7 +105,7 @@ async fn the_agent_runs_in_the_default_image_with_no_install_step() {
     use microsandbox::Sandbox;
     use notedeck_agent_proto::call::{BashInput, CodingCall, ReadInput};
 
-    let setup = GuestSetup::for_host(None).expect("scripts/build-guest-agent was run");
+    let setup = GuestSetup::for_host(None).unwrap_or_else(|e| panic!("{e}"));
     let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let plan = MountPlan::for_checkout(&checkout, GitAccess::Review).expect("plan");
     let egress = Egress::coding();

@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use agentium_sandbox::mounts::{GitAccess, Mount, MountPlan, RepoLayout};
+use agentium_sandbox::mounts::{GitAccess, GuestEnv, Mount, MountPlan, RepoLayout};
 
 /// A main repository with one commit, a linked worktree beside it, and a
 /// bare remote, all in one temp dir.
@@ -107,10 +107,23 @@ fn bwrap_works() -> bool {
 
 /// Run `sh -c script` in a "guest" that sees the host read-only, `hide`
 /// emptied, and then `mounts` bound back in at their own paths, in the
-/// plan's order. The working directory is `cwd`.
+/// plan's order. The working directory is `cwd`. `/tmp` is the guest's
+/// own and writable, as on a microVM's root disk.
 fn in_guest(hide: &Path, mounts: &[Mount], cwd: &Path, script: &str) -> Output {
+    in_guest_with(hide, mounts, cwd, &[], script)
+}
+
+/// [`in_guest`], with `env` set for every command, as a sandbox's env is.
+fn in_guest_with(
+    hide: &Path,
+    mounts: &[Mount],
+    cwd: &Path,
+    env: &[GuestEnv],
+    script: &str,
+) -> Output {
     let mut cmd = Command::new("bwrap");
     cmd.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
+    cmd.args(["--tmpfs", "/tmp"]);
     cmd.arg("--tmpfs").arg(hide);
     for m in mounts {
         cmd.arg(if m.readonly { "--ro-bind" } else { "--bind" })
@@ -125,6 +138,9 @@ fn in_guest(hide: &Path, mounts: &[Mount], cwd: &Path, script: &str) -> Output {
         .env("GIT_AUTHOR_EMAIL", "t@t")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@t");
+    for e in env {
+        cmd.env(e.key, &e.value);
+    }
     cmd.output().expect("run bwrap")
 }
 
@@ -412,4 +428,98 @@ fn git_env_is_empty_outside_a_repo() {
     let plan = MountPlan::for_checkout(dir.path(), GitAccess::Review).unwrap();
     assert_eq!(plan.layout, RepoLayout::NotARepo);
     assert!(plan.git_env().is_empty());
+}
+
+/// Whether git-lfs is installed; prints why not.
+fn git_lfs_works() -> bool {
+    let ok = Command::new("git-lfs")
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("SKIPPED: git-lfs isn't installed");
+    }
+    ok
+}
+
+/// `git status` in a Review guest of a repository with an LFS file. Its
+/// stat info no longer matches the index, as every file's doesn't in a real
+/// guest, so git runs the LFS clean filter, and git-lfs writes a temp file
+/// under `.git/lfs/tmp`: `read-only file system` under Review, and git dies.
+/// The plan's [`MountPlan::git_env`] moves LFS's storage into the guest's
+/// own `/tmp`. Commit's git dir is writable, so it isn't moved there.
+#[test]
+fn review_git_status_survives_the_lfs_clean_filter() {
+    if !bwrap_works() || !git_lfs_works() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("lfs");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "master"]);
+    // `git lfs install --local`, by hand: user and system config are off.
+    for (key, value) in [
+        ("filter.lfs.process", "git-lfs filter-process"),
+        ("filter.lfs.clean", "git-lfs clean -- %f"),
+        ("filter.lfs.smudge", "git-lfs smudge -- %f"),
+        ("filter.lfs.required", "true"),
+    ] {
+        git(&repo, &["config", key, value]);
+    }
+    std::fs::write(repo.join(".gitattributes"), "*.png filter=lfs -text\n").unwrap();
+    std::fs::write(repo.join("a.png"), b"not really a png").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "lfs"]);
+    let pointer = git_cmd(&repo)
+        .args(["cat-file", "-p", "HEAD:a.png"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&pointer.stdout).starts_with("version https://git-lfs"),
+        "a.png wasn't committed through LFS"
+    );
+    // Same content, new stat info: git has to re-hash it.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(repo.join("a.png"), b"not really a png").unwrap();
+
+    let review = MountPlan::for_checkout(&repo, GitAccess::Review).unwrap();
+    let status = "git status --porcelain";
+
+    let bare = in_guest(root.path(), &review.mounts, &repo, status);
+    assert!(
+        !bare.status.success()
+            && String::from_utf8_lossy(&bare.stderr).contains("read-only file system"),
+        "{}",
+        report("Review without git_env", &bare)
+    );
+
+    let fixed = in_guest_with(
+        root.path(),
+        &review.mounts,
+        &repo,
+        &review.git_env(),
+        &format!("{status} && git diff --stat"),
+    );
+    assert!(fixed.status.success(), "{}", report("Review", &fixed));
+    assert_eq!(
+        String::from_utf8_lossy(&fixed.stdout),
+        "",
+        "{}",
+        report("Review: an unchanged LFS file showed as changed", &fixed)
+    );
+
+    let commit = MountPlan::for_checkout(&repo, GitAccess::Commit).unwrap();
+    assert!(
+        commit.git_env().iter().all(|e| e.value != "lfs.storage"),
+        "Commit moved LFS storage out of the repository"
+    );
+    let out = in_guest_with(
+        root.path(),
+        &commit.mounts,
+        &repo,
+        &commit.git_env(),
+        status,
+    );
+    assert!(out.status.success(), "{}", report("Commit", &out));
 }
