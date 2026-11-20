@@ -29,6 +29,7 @@ struct Fixture {
     plan: MountPlan,
     setup: GuestSetup,
     egress: Egress,
+    env: BTreeMap<String, String>,
 }
 
 impl Fixture {
@@ -40,6 +41,7 @@ impl Fixture {
             plan,
             setup: GuestSetup::new("/x/notedeck-agent"),
             egress: Egress::offline(),
+            env: BTreeMap::new(),
         }
     }
 
@@ -50,6 +52,7 @@ impl Fixture {
             setup: &self.setup,
             egress: &self.egress,
             ipc: None,
+            env: &self.env,
             cpus: 1,
             memory_mib: 256,
         }

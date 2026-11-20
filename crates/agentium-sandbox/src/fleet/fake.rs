@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use notedeck_agent_guest::{serve, Executor};
+use notedeck_agent_guest::{serve, ChildEnv, Executor};
 use notedeck_agent_proto::wire::Version;
 use tokio::io::BufReader;
 
@@ -203,7 +203,12 @@ impl VmHost for FakeVms {
         let (host_out, guest_in) = tokio::io::duplex(1 << 16);
         let (guest_out, host_in) = tokio::io::duplex(1 << 16);
         tokio::spawn(serve(
-            Executor::new(spec.plan.checkout.clone()),
+            // The guest's executor inherits the VM's environment, which is
+            // what a real create sets `spec.env` on.
+            Executor::new(spec.plan.checkout.clone()).with_env(ChildEnv {
+                set: spec.env.clone(),
+                remove: Vec::new(),
+            }),
             Version::new(HOST_BUILD),
             BufReader::new(guest_in),
             guest_out,

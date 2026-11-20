@@ -89,6 +89,9 @@ ndb_testing = { workspace = true }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }
+# FakeVms, the in-memory VmHost a sandboxed session's guest routing is
+# tested over (src/sandbox.rs).
+agentium-sandbox = { workspace = true, features = ["test-support"] }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }

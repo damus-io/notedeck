@@ -799,23 +799,9 @@ fn start_app_call(
             Ok(job) => CallRunner::Job(job),
             Err(err) => return StartedCall::Done(Box::new(ToolResponses::Error(err))),
         },
-        // On the host, in the session's working tree (SpecTools refuses a
-        // spec whose coding tools would run anywhere else).
-        ToolSource::Coding => match session.agentic.as_ref() {
-            Some(agentic) => {
-                let env = crate::coding_tools::child_env(identity);
-                CallRunner::Job(crate::coding_tools::job(
-                    call.clone(),
-                    agentic.cwd.clone(),
-                    env,
-                ))
-            }
-            None => {
-                return StartedCall::Done(Box::new(ToolResponses::Error(format!(
-                    "'{}' needs a working tree, and this session has none",
-                    call.name
-                ))))
-            }
+        ToolSource::Coding => match coding_job(session, tools, identity, call) {
+            Ok(job) => CallRunner::Job(job),
+            Err(err) => return StartedCall::Done(Box::new(ToolResponses::Error(err))),
         },
     };
     let gate = match approval {
@@ -841,6 +827,77 @@ fn start_app_call(
             runner,
         }),
     }
+}
+
+/// The job that runs the coding tool `call`: in the session's guest when
+/// its spec runs coding in a sandbox, and then never anywhere else; on the
+/// host otherwise, in the session's working tree, its Bash with `identity`.
+fn coding_job(
+    session: &session::ChatSession,
+    tools: &crate::native_tools::SpecTools,
+    identity: BTreeMap<String, String>,
+    call: &AppToolCall,
+) -> Result<crate::tool_round::ToolJob, String> {
+    if tools.sandbox_git.is_some() {
+        let Some(sandbox) = session.sandbox.as_ref() else {
+            return Err(format!(
+                "'{}' runs in this session's sandbox, and it has none",
+                call.name
+            ));
+        };
+        return Ok(crate::coding_tools::guest_job(
+            call.clone(),
+            sandbox.calls.clone(),
+        ));
+    }
+    let Some(agentic) = session.agentic.as_ref() else {
+        return Err(format!(
+            "'{}' needs a working tree, and this session has none",
+            call.name
+        ));
+    };
+    let env = crate::coding_tools::child_env(identity);
+    Ok(crate::coding_tools::job(
+        call.clone(),
+        agentic.cwd.clone(),
+        env,
+    ))
+}
+
+/// Give `session` the guest its spec's coding calls run in, from
+/// `sandboxes`, when `tools` say they run in one; take it away when they
+/// don't. A session keeps the guest it has while the git profile is the
+/// same. Nothing is booted here: the first coding call boots it. Errs with
+/// why a sandboxed session can't have one, for the turn to fail with.
+fn attach_sandbox(
+    session: &mut session::ChatSession,
+    tools: &crate::native_tools::SpecTools,
+    sandboxes: &crate::sandbox::Sandboxes,
+) -> Result<(), String> {
+    let Some(git) = tools.sandbox_git else {
+        session.sandbox = None;
+        return Ok(());
+    };
+    if session.sandbox.as_ref().is_some_and(|s| s.git == git) {
+        return Ok(());
+    }
+    // Let go of a guest made for the other profile before asking for one.
+    session.sandbox = None;
+    let Some(agentic) = session.agentic.as_ref() else {
+        // Its coding calls answer that it has no sandbox.
+        return Ok(());
+    };
+    let request = crate::sandbox::GuestRequest {
+        session_id: agentic.event_session_id().to_owned(),
+        checkout: agentic.cwd.clone(),
+        git,
+        env: identity_env(session),
+    };
+    let sandbox = sandboxes.session_sandbox(request).map_err(|why| {
+        format!("this session's coding tools run in a microVM sandbox, and {why}")
+    })?;
+    session.sandbox = Some(sandbox);
+    Ok(())
 }
 
 /// The session's agentium identity as environment variables
@@ -1561,6 +1618,12 @@ pub(crate) fn dispatch_spec_turn(
     // Where this turn's tools run, from the spec the runner was built from,
     // for the session's `containment` tag.
     session.details.containment = Some(runner.built_from.spec.containment());
+    if let Err(err) = attach_sandbox(session, &runner.tools, deps.sandboxes) {
+        tracing::warn!("session {}: {err}", session.id);
+        let session_id = format!("dave-session-{}", session.id);
+        fail_turn(session, fallback, session_id, err, ctx.host.waker);
+        return;
+    }
     dispatch_turn(session, runner.backend.as_ref(), ctx);
 }
 
@@ -3410,6 +3473,136 @@ mod tests {
                     call_in_mode(PermissionMode::Plan, "headway_move_card"),
                     Outcome::Refused(_)
                 ));
+            }
+
+            /// A sandboxed coder's session after its Write ran.
+            struct SandboxedWrite {
+                test: crate::tests::TestDave,
+                sid: SessionId,
+                /// The session's working tree on the host, which the
+                /// Write must not touch.
+                host_tree: tempfile::TempDir,
+            }
+
+            /// A coder whose spec runs coding in a sandbox, mid-turn under
+            /// Accept Edits, with `sandbox` as the session's guest and an
+            /// empty host working tree: the model's Write of `notes.md`,
+            /// run, and the session after.
+            fn sandboxed_write(sandbox: Option<crate::sandbox::SessionSandbox>) -> SandboxedWrite {
+                let spec = AgentSpec::from_json(
+                    r#"{
+                      "slug": "coder",
+                      "model": { "provider": "anthropic", "model": "claude-opus-5-5" },
+                      "prompt": "Implement the card.",
+                      "toolsets": [{ "kind": "coding", "runner": { "kind": "local_executor" } }],
+                      "budget": { "max_steps": 10 }
+                    }"#,
+                )
+                .unwrap();
+                // As the Microsandbox runner builds on a host that can boot
+                // guests: the same six tools, run only in the guest.
+                let mut tools =
+                    SpecTools::for_spec(&spec, &[], |_| unreachable!("no sub-agent"), None)
+                        .unwrap();
+                tools.sandbox_git = Some(agentium_core::agent_spec::SandboxGit::ReadOnly);
+                let MidTurn {
+                    mut test,
+                    sid,
+                    stream,
+                    ..
+                } = mid_turn_under(Some(tools));
+                let host_tree = tempfile::tempdir().unwrap();
+                let session = test.dave.session_manager.get_mut(sid).unwrap();
+                session.sandbox = sandbox;
+                let agentic = session.agentic.as_mut().unwrap();
+                agentic.permission_mode = PermissionMode::AcceptEdits;
+                agentic.cwd = host_tree.path().to_owned();
+                stream
+                    .send(DaveApiResponse::ToolCalls(vec![ToolCall::new(
+                        "w".into(),
+                        ToolCalls::App(AppToolCall {
+                            name: "Write".into(),
+                            args: json!({ "file_path": "notes.md", "content": "hi\n" }),
+                        }),
+                    )]))
+                    .unwrap();
+                drop(stream);
+                test.dave
+                    .start_app_tool_calls(|_| panic!("a coding tool never reaches the registry"));
+                drain_until_send(&mut test, sid);
+                SandboxedWrite {
+                    test,
+                    sid,
+                    host_tree,
+                }
+            }
+
+            /// The answer the session's chat holds for the call `w`.
+            fn answer_to_w(test: &crate::tests::TestDave, sid: SessionId) -> ToolResponses {
+                let session = test.dave.session_manager.get(sid).unwrap();
+                session
+                    .chat
+                    .iter()
+                    .find_map(|m| match m {
+                        Message::ToolResponse(r) if r.id() == "w" => Some(r.responses().clone()),
+                        _ => None,
+                    })
+                    .expect("the call is answered")
+            }
+
+            /// A sandboxed coder's Write runs in its session's guest, booted
+            /// by that call, and never on the host: the file lands in the
+            /// guest's mounted tree, and the model gets the executor's text.
+            #[test]
+            fn a_sandboxed_coders_write_runs_in_its_guest() {
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                let vms = agentium_sandbox::fleet::fake::FakeVms::default();
+                let guest_tree = tempfile::tempdir().unwrap();
+                let pool = crate::sandbox::testing::pool(&vms, 1);
+                let sandbox = pool.sandbox_on(
+                    crate::sandbox::testing::request("s1", guest_tree.path()),
+                    runtime.handle().clone(),
+                );
+
+                let SandboxedWrite {
+                    test,
+                    sid,
+                    host_tree,
+                } = sandboxed_write(Some(sandbox));
+                assert_eq!(
+                    std::fs::read_to_string(guest_tree.path().join("notes.md")).unwrap(),
+                    "hi\n"
+                );
+                assert!(
+                    !host_tree.path().join("notes.md").exists(),
+                    "not on the host"
+                );
+                let name = agentium_sandbox::lifecycle::guest_name("s1").unwrap();
+                let ops = vms.ops_on(&name);
+                assert!(
+                    ops.contains(&agentium_sandbox::fleet::fake::Op::Create),
+                    "{ops:?}"
+                );
+                let ToolResponses::App(answer) = answer_to_w(&test, sid) else {
+                    panic!("the write answers");
+                };
+                assert!(answer.value.is_string(), "{:?}", answer.value);
+            }
+
+            /// A sandboxed coder whose session has no guest answers so, and
+            /// its call never falls back to the host.
+            #[test]
+            fn a_sandboxed_coder_without_a_guest_never_runs_on_the_host() {
+                let SandboxedWrite {
+                    test,
+                    sid,
+                    host_tree,
+                } = sandboxed_write(None);
+                assert!(!host_tree.path().join("notes.md").exists());
+                let ToolResponses::Error(err) = answer_to_w(&test, sid) else {
+                    panic!("the write is refused");
+                };
+                assert!(err.contains("sandbox, and it has none"), "{err}");
             }
 
             /// A coder's Write under Accept Edits runs unasked on the host,

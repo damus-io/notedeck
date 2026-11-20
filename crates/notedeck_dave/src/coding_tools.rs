@@ -1,11 +1,13 @@
 //! The Coding toolset's tools in the native loop: Read, Write, Edit, Grep,
 //! Glob and Bash (declared in [`agentium_core::agent_spec::coding`]), run on
-//! the host by [`Executor`] in the session's working tree.
+//! the host by [`Executor`] in the session's working tree ([`job`]), or in
+//! the session's microVM guest when its spec says so ([`guest_job`]).
 //!
 //! ```text
 //! model ─ ToolCalls::App{Edit, …} ─▶ start_app_call ── approval? ──▶ job (off the frame)
 //!                                                                      │
-//!          CodingCall::parse ─▶ Executor::run(call, round's stop)     ┤
+//!          CodingCall::parse ─┬▶ host:  Executor::run(call, round's stop)
+//!                             └▶ guest: GuestCalls::run(call, round's stop)
 //!                                                                      │
 //!   row:    ExecutedTool (summary, Bash output, Edit/Write diff) ◀─────┤ reported as progress
 //!   answer: the executor's text, or its error, for the model ◀─────────┘
@@ -24,17 +26,21 @@
 //! `AGENTIUM_SESSION_ID`), as a Claude session's CLI gets it, so `nd` and
 //! the skills that read it work from a spec session's shell too.
 //!
-//! ## Only the host runner
+//! ## The guest runner
 //!
-//! A spec whose coding toolset names the Microsandbox runner is refused when
-//! its session starts ([`SpecToolsError`](crate::native_tools::SpecToolsError)):
-//! running its calls here would put a session presented as sandboxed on the
-//! host.
+//! A spec whose coding toolset names the Microsandbox runner runs every
+//! call in the session's own guest ([`crate::sandbox`]), never here: a
+//! notedeck that can't run guests refuses the spec when its session starts
+//! ([`SpecToolsError::Sandbox`](crate::native_tools::SpecToolsError::Sandbox)).
+//! The guest runs the same executor, so a call's row and answer are the
+//! ones the host runner gives. Its Bash gets the session's identity from the
+//! guest's environment, and has no host environment to strip.
 //!
 //! [`ExecutedTool`]: crate::messages::ExecutedTool
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use agentium_core::agent_spec::coding::{file_update, CodingCall};
 use agentium_core::agent_spec::local_executor::{ChildEnv, ExecError, Executor};
@@ -42,6 +48,7 @@ use serde_json::Value;
 
 use crate::backend::shared::FinishedCall;
 use crate::messages::DaveApiResponse;
+use crate::sandbox::{GuestCallError, GuestCalls};
 use crate::tool_round::{block_on_own_runtime, JobCtx, ToolJob, CANCELLED};
 use crate::tools::{AppToolCall, AppToolResponse};
 use crate::ToolResponses;
@@ -70,21 +77,56 @@ pub(crate) fn job(call: AppToolCall, root: PathBuf, env: ChildEnv) -> ToolJob {
         let exec = Executor::new(root).with_env(env);
         let ran =
             block_on_own_runtime(async { Ok(exec.run(&coding, ctx.cancel().cancelled()).await) })?;
-        let text = match ran {
-            Ok(text) => text,
+        let ran = match ran {
+            Ok(text) => Ok(text),
             Err(ExecError::Cancelled) => return Err(CANCELLED.to_owned()),
-            Err(err) => {
+            Err(err) => Err(err.to_string()),
+        };
+        answer(ctx, call.name, &coding, ran)
+    })
+}
+
+/// The job that runs the coding tool `call` off the frame in the session's
+/// guest, booting it on the session's first call; the round's stop cancels
+/// it in the guest. A guest that can't boot fails the turn's view with why
+/// (a [`DaveApiResponse::Failed`] row) as well as the call.
+pub(crate) fn guest_job(call: AppToolCall, guest: Arc<dyn GuestCalls>) -> ToolJob {
+    Box::new(move |ctx| {
+        let coding = CodingCall::parse(&call.name, &call.args).map_err(|err| err.to_string())?;
+        let ran = match guest.run(&coding, ctx.cancel()) {
+            Ok(text) => Ok(text),
+            Err(GuestCallError::Cancelled) => return Err(CANCELLED.to_owned()),
+            Err(err @ GuestCallError::Boot(_)) => {
                 let err = err.to_string();
-                report_row(ctx, &coding, &err, true);
+                ctx.report(DaveApiResponse::Failed(err.clone()));
                 return Err(err);
             }
+            Err(GuestCallError::Call(err)) => Err(err),
         };
-        report_row(ctx, &coding, &text, false);
-        Ok(ToolResponses::App(AppToolResponse {
-            tool: call.name,
-            value: Value::String(text),
-        }))
+        answer(ctx, call.name, &coding, ran)
     })
+}
+
+/// A coding call's answer for the model, `ran`'s text either way, and its
+/// row in the chat: the same whichever runner ran it.
+fn answer(
+    ctx: &JobCtx,
+    tool: String,
+    coding: &CodingCall,
+    ran: Result<String, String>,
+) -> Result<ToolResponses, String> {
+    let text = match ran {
+        Ok(text) => text,
+        Err(err) => {
+            report_row(ctx, coding, &err, true);
+            return Err(err);
+        }
+    };
+    report_row(ctx, coding, &text, false);
+    Ok(ToolResponses::App(AppToolResponse {
+        tool,
+        value: Value::String(text),
+    }))
 }
 
 /// Show `coding`'s row in the chat: answered `text`, or failed with it.
@@ -213,6 +255,101 @@ mod tests {
         let out = run(dir.path(), "Read", json!({}));
         assert!(out.answer.is_err());
         assert!(out.rows.is_empty());
+    }
+
+    /// A guest that answers every call with `answer`.
+    struct Answers(Result<String, GuestCallError>);
+
+    impl GuestCalls for Answers {
+        fn run(&self, _: &CodingCall, _: &ToolCancel) -> Result<String, GuestCallError> {
+            self.0.clone()
+        }
+    }
+
+    /// What a job run in a guest did.
+    struct GuestRun {
+        answer: Result<ToolResponses, String>,
+        /// Everything it reported, in order.
+        reported: Vec<DaveApiResponse>,
+    }
+
+    /// Run `name(args)` in a guest that answers `answer`.
+    fn run_in_guest(answer: Result<String, GuestCallError>, name: &str, args: Value) -> GuestRun {
+        let (progress, reported) = std::sync::mpsc::channel();
+        let ctx = JobCtx::reporting("c1", ToolCancel::default(), progress);
+        let call = AppToolCall {
+            name: name.into(),
+            args,
+        };
+        let answer = guest_job(call, Arc::new(Answers(answer)))(&ctx);
+        GuestRun {
+            answer,
+            reported: reported.try_iter().collect(),
+        }
+    }
+
+    /// A call the guest answered shows the row the host runner's would:
+    /// keyed by the call, an Edit with its diff, and the guest's text is
+    /// the model's answer.
+    #[test]
+    fn a_guest_answer_shows_the_host_runners_row() {
+        let GuestRun { answer, reported } = run_in_guest(
+            Ok("The file a.txt has been updated.".into()),
+            "Edit",
+            json!({ "file_path": "a.txt", "old_string": "hello", "new_string": "bye" }),
+        );
+        let Ok(ToolResponses::App(answer)) = answer else {
+            panic!("an edit answers: {answer:?}");
+        };
+        assert_eq!(answer.value, "The file a.txt has been updated.");
+        let [DaveApiResponse::ToolResult(row)] = reported.as_slice() else {
+            panic!("one row");
+        };
+        assert_eq!(row.tool_name, "Edit");
+        assert_eq!(row.tool_use_id.as_deref(), Some("c1"));
+        assert!(row.file_update.is_some());
+        assert!(!row.is_error);
+    }
+
+    /// A tool that failed in the guest shows a failed row, as on the host.
+    #[test]
+    fn a_guest_tool_error_shows_a_failed_row() {
+        let GuestRun { answer, reported } = run_in_guest(
+            Err(GuestCallError::Call("a.txt: no such file".into())),
+            "Read",
+            json!({ "file_path": "a.txt" }),
+        );
+        assert_eq!(answer.err().as_deref(), Some("a.txt: no such file"));
+        let [DaveApiResponse::ToolResult(row)] = reported.as_slice() else {
+            panic!("one row");
+        };
+        assert!(row.is_error);
+    }
+
+    /// A guest that can't boot fails the turn's view with why (no tool row,
+    /// since nothing ran) and answers the model the same; a stop answers as
+    /// a cancelled host call does.
+    #[test]
+    fn a_guest_that_cant_boot_shows_why_and_a_stop_is_cancelled() {
+        let GuestRun { answer, reported } = run_in_guest(
+            Err(GuestCallError::Boot("all 4 guests are in use".into())),
+            "Bash",
+            json!({ "command": "true" }),
+        );
+        let err = answer.expect_err("nothing ran");
+        assert!(err.contains("all 4 guests are in use"), "{err}");
+        let [DaveApiResponse::Failed(shown)] = reported.as_slice() else {
+            panic!("only the failure shows");
+        };
+        assert_eq!(shown, &err);
+
+        let GuestRun { answer, reported } = run_in_guest(
+            Err(GuestCallError::Cancelled),
+            "Bash",
+            json!({ "command": "true" }),
+        );
+        assert_eq!(answer.err().as_deref(), Some(CANCELLED));
+        assert!(reported.is_empty());
     }
 
     /// A session's Bash child gets the session's identity and never

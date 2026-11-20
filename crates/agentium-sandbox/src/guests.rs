@@ -79,6 +79,10 @@ impl VmHost for Microsandbox {
             .memory(spec.memory_mib)
             .labels(labels.iter().map(|l| (l.key, l.value.as_str())));
         let builder = spec.setup.apply(spec.plan.apply(builder));
+        let builder = spec
+            .env
+            .iter()
+            .fold(builder, |b, (key, value)| b.env(key, value));
         let builder = match spec.ipc {
             Some(ipc) => ipc.apply(builder),
             None => builder,

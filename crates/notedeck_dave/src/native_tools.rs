@@ -57,21 +57,24 @@
 //! ([`crate::web_tools::job`], [`SubAgent::job`]), after the user allows it
 //! when its approval is gated, as the butler's `ask_researcher` is.
 //!
-//! ## Coding tools run on the host
+//! ## Coding tools run on the host or in the session's guest
 //!
 //! A Coding toolset's tools ([`coding`](agentium_core::agent_spec::coding))
-//! run as jobs too ([`crate::coding_tools::job`]), through
+//! run as jobs too. On the LocalExecutor runner each runs on the host
+//! ([`crate::coding_tools::job`]), through
 //! [`Executor`](agentium_core::agent_spec::local_executor::Executor)
-//! in the session's working tree. Only that runner exists: a spec naming the
-//! Microsandbox runner is refused when its session starts
-//! ([`SpecToolsError::NoSandboxRunner`]), since running its calls on the
-//! host would present an unconfined session as sandboxed.
+//! in the session's working tree. On the Microsandbox runner each runs in
+//! the session's own microVM guest ([`crate::coding_tools::guest_job`],
+//! [`crate::sandbox`]), and never on the host: a notedeck that can't run
+//! guests refuses the spec when its session starts with why
+//! ([`SpecToolsError::Sandbox`]), since running its calls on the host would
+//! present an unconfined session as sandboxed.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, Runner, Toolset};
+use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, Runner, SandboxGit, Toolset};
 use notedeck::{
     AppAction, AppActionQueue, AppContext, Started, ToolArgType, ToolOutcome, ToolSpec,
     UiToolAnswer, UiToolPending,
@@ -94,6 +97,9 @@ pub(crate) struct SpecTools {
     pub(crate) sub_agent: Option<Arc<SubAgent>>,
     /// The SearXNG instance a Web toolset's searches go to.
     pub(crate) search_url: Option<String>,
+    /// The git profile of the session's guest, when its Coding toolset runs
+    /// on the Microsandbox runner: its coding calls then run only there.
+    pub(crate) sandbox_git: Option<SandboxGit>,
 }
 
 /// Why a spec's tools can't be built.
@@ -104,9 +110,12 @@ pub(crate) enum SpecToolsError {
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
     /// The spec's Coding toolset runs in a Microsandbox guest, and this
-    /// build has no such runner yet.
-    #[error("agent spec {0}: this build can't run coding tools in a microsandbox yet")]
-    NoSandboxRunner(String),
+    /// notedeck can't boot one.
+    #[error("agent spec {slug}: its coding tools run in a microVM sandbox, and {why}")]
+    Sandbox {
+        slug: String,
+        why: crate::sandbox::Unavailable,
+    },
 }
 
 impl SpecTools {
@@ -120,16 +129,17 @@ impl SpecTools {
         search_url: Option<String>,
     ) -> Result<Self, SpecToolsError> {
         let catalog = Catalog::build(spec, available)?;
-        let sandboxed = spec.toolsets.iter().any(|t| {
-            matches!(
-                t,
-                Toolset::Coding {
-                    runner: Runner::Microsandbox { .. }
-                }
-            )
+        let sandbox_git = spec.toolsets.iter().find_map(|t| match t {
+            Toolset::Coding {
+                runner: Runner::Microsandbox { git },
+            } => Some(*git),
+            _ => None,
         });
-        if sandboxed {
-            return Err(SpecToolsError::NoSandboxRunner(spec.slug.clone()));
+        if sandbox_git.is_some() {
+            crate::sandbox::ready().map_err(|why| SpecToolsError::Sandbox {
+                slug: spec.slug.clone(),
+                why,
+            })?;
         }
         let child = spec.toolsets.iter().find_map(|t| match t {
             Toolset::SubAgent { spec } => Some(spec.as_str()),
@@ -142,6 +152,7 @@ impl SpecTools {
             model_tools,
             sub_agent,
             search_url,
+            sandbox_git,
         })
     }
 }
@@ -368,10 +379,10 @@ mod tests {
     }
 
     /// A coder on the host runner builds, offering its six tools to the
-    /// model; one on the Microsandbox runner is refused at the start, since
-    /// there is no guest to run its calls in.
+    /// model; one on the Microsandbox runner builds only where guests can
+    /// boot, and is refused with why everywhere else.
     #[test]
-    fn a_coder_runs_on_the_host_and_a_sandboxed_one_is_refused() {
+    fn a_coder_runs_on_the_host_and_a_sandboxed_one_only_where_guests_can() {
         let coder = |runner: &str| {
             AgentSpec::from_json(&format!(
                 r#"{{
@@ -389,11 +400,20 @@ mod tests {
             .expect("a host coder builds");
         assert_eq!(tools.model_tools.len(), 6);
         assert!(tools.model_tools.contains_key("Bash"));
+        assert_eq!(tools.sandbox_git, None);
 
         let sandboxed = coder(r#"{ "kind": "microsandbox", "git": "read_only" }"#);
-        let err = SpecTools::for_spec(&sandboxed, &[], |_| unreachable!("no sub-agent"), None)
-            .err()
-            .expect("no sandbox runner");
-        assert!(matches!(err, SpecToolsError::NoSandboxRunner(slug) if slug == "coder"));
+        let built = SpecTools::for_spec(&sandboxed, &[], |_| unreachable!("no sub-agent"), None);
+        match (crate::sandbox::ready(), built) {
+            (Ok(()), Ok(tools)) => {
+                assert_eq!(tools.sandbox_git, Some(SandboxGit::ReadOnly));
+                assert_eq!(tools.model_tools.len(), 6);
+            }
+            (Err(expected), Err(SpecToolsError::Sandbox { slug, why })) => {
+                assert_eq!(slug, "coder");
+                assert_eq!(why, expected);
+            }
+            (ready, built) => panic!("{ready:?} but built: {:?}", built.err()),
+        }
     }
 }

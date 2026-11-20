@@ -37,8 +37,10 @@ use crate::lifecycle::{
 use crate::mounts::MountPlan;
 use crate::SandboxError;
 
-#[cfg(test)]
-mod fake;
+/// The in-memory [`VmHost`], for this crate's tests and, with the
+/// `test-support` feature, a dependent's.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake;
 #[cfg(test)]
 mod tests;
 
@@ -63,6 +65,11 @@ pub struct GuestSpec<'a> {
     /// The opt-in route to notedeck's socket ([`crate::ipc`]); `None`, the
     /// default, leaves the guest with no way to act as the user.
     pub ipc: Option<&'a NotedeckIpc>,
+    /// Environment every command in the guest gets, on top of the git
+    /// config the mounts need ([`MountPlan::git_env`]): the session's own
+    /// identity (`AGENTIUM_SESSION`), as a host session's shell has it.
+    /// Never a credential: whatever is here, the agent can print.
+    pub env: &'a BTreeMap<String, String>,
     /// Virtual CPUs.
     pub cpus: u8,
     /// Memory, in MiB.

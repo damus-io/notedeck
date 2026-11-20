@@ -735,6 +735,11 @@ pub struct ChatSession {
     /// in place of Dave's own tools, and the approval each call needs.
     /// `None` for a session under no spec, which can call no app tool.
     pub(crate) spec_tools: Option<crate::native_tools::SpecTools>,
+    /// The microVM guest this session's coding calls run in, when its
+    /// spec's Coding toolset runs on the Microsandbox runner (see
+    /// [`crate::sandbox`]). Made at its spec turn's dispatch, booted by its
+    /// first coding call, shut down when this lets go of it.
+    pub(crate) sandbox: Option<crate::sandbox::SessionSandbox>,
     /// A wake-up turn (one the backend began on its own, when a background
     /// task, wake-up or cron resumed the session) is underway. Set by
     /// [`DaveApiResponse::WakeupTurnStarted`], cleared at its `QueryComplete`.
@@ -885,6 +890,7 @@ impl ChatSession {
             task_handle: None,
             tool_round: None,
             spec_tools: None,
+            sandbox: None,
             wakeup_turn: false,
             turn_started_at: None,
             turns: Turns::default(),
@@ -977,6 +983,7 @@ impl ChatSession {
             task_handle: None,
             tool_round: None,
             spec_tools: None,
+            sandbox: None,
             wakeup_turn: false,
             turn_started_at: None,
             turns: Turns::default(),

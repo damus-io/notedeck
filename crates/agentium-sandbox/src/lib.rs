@@ -171,7 +171,7 @@ pub enum SandboxError {
     #[error("microsandbox: {0}")]
     Microsandbox(#[from] microsandbox::MicrosandboxError),
     /// A call the test host (`fleet`'s `FakeVms`) was told to fail.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[error("fake vm host: {0}")]
     Fake(String),
 }

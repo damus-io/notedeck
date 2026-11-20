@@ -149,6 +149,8 @@ pub(crate) struct SpecDeps<'a> {
     pub(crate) host_tools: &'a HostTools,
     /// Renders tool answers for the model.
     pub(crate) ndb: &'a Ndb,
+    /// The guests a sandboxed spec session's coding calls run in.
+    pub(crate) sandboxes: &'a crate::sandbox::Sandboxes,
 }
 
 /// Every spec runner this Dave has built, by slug.
@@ -387,6 +389,7 @@ mod tests {
             profiles: &profiles,
             host_tools: &host_tools,
             ndb,
+            sandboxes: &Default::default(),
         };
         build(BuiltFrom::current(slug, &deps)?, &deps)
     }
@@ -416,6 +419,7 @@ mod tests {
             profiles: &profiles,
             host_tools,
             ndb,
+            sandboxes: &Default::default(),
         };
         runners
             .get_or_build("butler", &deps, busy)

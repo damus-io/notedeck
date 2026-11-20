@@ -38,6 +38,10 @@ default = []
 # Build the microVM runner. On a platform microsandbox can't run on this
 # is a no-op and `availability()` says so.
 microvm = ["dep:microsandbox", "dep:microsandbox-filesystem", "dep:microsandbox-network", "dep:libc"]
+# `fleet::fake::FakeVms`, the in-memory VmHost, for a dependent's tests
+# (notedeck_dave's guest routing). It serves calls with the real guest
+# loop, so it brings notedeck-agent-guest; never on in a shipped build.
+test-support = ["dep:notedeck-agent-guest"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -51,6 +55,8 @@ serde_json = { workspace = true }
 # `microvm`: the client is transport-generic and is tested over in-memory
 # pipes in every build.
 tokio = { workspace = true, features = ["sync", "time", "rt", "io-util", "macros"] }
+# The real guest loop FakeVms serves over in-memory pipes (`test-support`).
+notedeck-agent-guest = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 # Defaults off: `prebuilt` is the $HOME download above, `keyring` pulls

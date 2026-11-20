@@ -1334,6 +1334,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 profiles: &self.backend_profiles,
                 host_tools: &self.host_tools,
                 ndb: host.ndb,
+                sandboxes: &self.sandboxes,
             };
             let fallback = self.backends.for_type(session.backend_type);
             stream_events::dispatch_spec_turn(

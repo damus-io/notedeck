@@ -119,6 +119,7 @@ async fn the_agent_runs_in_the_default_image_with_no_install_step() {
             setup: &setup,
             egress: &egress,
             ipc: None,
+            env: &Default::default(),
             cpus: 1,
             memory_mib: 512,
         })
