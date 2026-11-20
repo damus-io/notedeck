@@ -82,7 +82,7 @@ pub use catalog::{Catalog, CatalogError, CatalogTool, ToolSource};
 pub use policy::{
     base_approval, Approval, Containment, Policy, PolicyError, SessionMode, Tighten, Widen,
 };
-pub use trigger::Trigger;
+pub use trigger::{Trigger, TriggerError, TriggerSession};
 
 /// The kind-31988 tag naming the spec a session runs under: `["agent-spec",
 /// <slug>]`. Separate from the `backend` tag, so an old reader still sees the
@@ -356,12 +356,13 @@ pub enum SpecError {
     /// A spec called as a sub-agent calls one of its own.
     #[error("agent spec {0} can't be a sub-agent: it calls a sub-agent of its own")]
     NestedSubAgent(String),
-    /// A trigger is missing its label or its prompt.
-    #[error("agent spec {0} has a trigger with no label or no prompt")]
-    IncompleteTrigger(String),
-    /// A card trigger on a spec that can't read the card it fires on.
-    #[error("agent spec {0} triggers on headway cards but has no headway tools")]
-    TriggerWithoutHeadway(String),
+    /// A trigger can't run.
+    #[error("agent spec {spec}: {source}")]
+    Trigger {
+        spec: String,
+        #[source]
+        source: TriggerError,
+    },
     /// The policy is malformed.
     #[error("agent spec {spec}: {source}")]
     Policy {
@@ -445,26 +446,14 @@ impl AgentSpec {
             return Err(SpecError::ZeroSteps(name()));
         }
         for trigger in &self.triggers {
-            if !trigger.is_complete() {
-                return Err(SpecError::IncompleteTrigger(name()));
-            }
-            let Trigger::CardDue { .. } = trigger;
-            if !self.reads_app("headway") {
-                return Err(SpecError::TriggerWithoutHeadway(name()));
-            }
+            trigger.validate().map_err(|source| SpecError::Trigger {
+                spec: name(),
+                source,
+            })?;
         }
         self.policy.validate().map_err(|source| SpecError::Policy {
             spec: name(),
             source,
-        })
-    }
-
-    /// Whether the spec's Notedeck toolset offers `app`'s tools, by name or
-    /// through [`ALL_APPS`].
-    pub fn reads_app(&self, app: &str) -> bool {
-        self.toolsets.iter().any(|t| match t {
-            Toolset::Notedeck { apps } => apps.iter().any(|a| a == app || a == ALL_APPS),
-            _ => false,
         })
     }
 

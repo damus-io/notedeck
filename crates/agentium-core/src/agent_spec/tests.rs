@@ -375,23 +375,25 @@ fn validate_rejects_malformed_specs() {
         SpecError::Policy { .. }
     ));
     assert!(matches!(
-        check(|s| s.triggers = vec![Trigger::CardDue {
-            label: "idea".into(),
-            prompt: " ".into(),
-        }]),
-        SpecError::IncompleteTrigger(_)
+        check(|s| s.triggers[0].prompt = " ".into()),
+        SpecError::Trigger {
+            source: TriggerError::NoPrompt(_),
+            ..
+        }
     ));
     assert!(matches!(
-        check(|s| {
-            s.toolsets[0] = Toolset::Notedeck {
-                apps: vec!["notebook".into()],
-            };
-            s.triggers = vec![Trigger::CardDue {
-                label: "idea".into(),
-                prompt: "Review {card}.".into(),
-            }];
-        }),
-        SpecError::TriggerWithoutHeadway(_)
+        check(|s| s.triggers[0].source = "headway".into()),
+        SpecError::Trigger {
+            source: TriggerError::Source(_),
+            ..
+        }
+    ));
+    assert!(matches!(
+        check(|s| s.triggers[0].session = TriggerSession::Per(String::new())),
+        SpecError::Trigger {
+            source: TriggerError::NoPerKey(_),
+            ..
+        }
     ));
 }
 

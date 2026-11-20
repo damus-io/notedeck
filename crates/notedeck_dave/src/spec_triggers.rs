@@ -3,8 +3,10 @@
 //!
 //! What fires and what the session is told are the spec's config
 //! (`agent_spec::trigger`), so nothing here knows about any one agent. The
-//! one trigger kind so far, [`Trigger::CardDue`], fires when a card carrying
-//! the trigger's label, on a board the account owns, reaches its due date.
+//! one event source so far, [`CARD_DUE_SOURCE`], is scanned here: a card on
+//! a board the account owns reaching its due date is an [`Event`], and a
+//! trigger bound to that source whose `label` match the card's labels meet
+//! fires.
 //! The butler uses it for its weekly idea review: it labels each idea card
 //! `butler` and sets the card's due date to the next review, and when that
 //! date arrives it runs on the card again.
@@ -39,6 +41,7 @@ use std::time::Duration;
 
 use agentium_core::agent_spec::record::{self, load_agent_spec_records_from_ndb, SpecRecord};
 use agentium_core::agent_spec::{AgentSpec, Trigger};
+use agentium_core::events::Event;
 use agentium_core::session_events::{
     self, AI_SESSION_COMMAND_KIND, TRIGGER_CLAIMANT_TAG, TRIGGER_CLAIM_COMMAND, TRIGGER_KEY_TAG,
 };
@@ -79,27 +82,38 @@ pub(crate) fn trigger_key(spec: &str, card: &NoteId, due: Date) -> String {
     format!("{TRIGGER_KEY_PREFIX}{spec}:{}:{due}", card.hex())
 }
 
-/// One [`Trigger::CardDue`] of one spec: what the scan looks for.
+/// The event source this module scans for: a headway card whose due date
+/// has arrived. Its events carry `card` (the card's ref), `due`
+/// (`YYYY-MM-DD`), `board` and `label` (every label of the card) as meta,
+/// and the card's title as content.
+pub(crate) const CARD_DUE_SOURCE: &str = "headway/card_due";
+
+/// The meta key a [`CARD_DUE_SOURCE`] trigger must match on to be scanned
+/// for, so no spec runs on every due card of every board.
+const LABEL_KEY: &str = "label";
+
+/// One [`CARD_DUE_SOURCE`] trigger of one spec: what the scan looks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CardRule {
     /// The spec the session runs under.
     pub(crate) spec: String,
-    /// The label that opts a card in.
-    pub(crate) label: String,
-    /// The session's first message, before its placeholders are filled.
-    pub(crate) prompt: String,
+    /// The trigger: its match and its prompt.
+    pub(crate) trigger: Trigger,
 }
 
-/// The card rules of `specs`, in their order.
+/// The card rules of `specs`, in their order: their triggers bound to
+/// [`CARD_DUE_SOURCE`] that match on a label. Other sources have no
+/// emitter yet.
 pub(crate) fn card_rules<'a>(specs: impl IntoIterator<Item = &'a AgentSpec>) -> Vec<CardRule> {
     let mut rules = Vec::new();
     for spec in specs {
         for trigger in &spec.triggers {
-            let Trigger::CardDue { label, prompt } = trigger;
+            if trigger.source != CARD_DUE_SOURCE || !trigger.r#match.contains_key(LABEL_KEY) {
+                continue;
+            }
             rules.push(CardRule {
                 spec: spec.slug.clone(),
-                label: label.clone(),
-                prompt: prompt.clone(),
+                trigger: trigger.clone(),
             });
         }
     }
@@ -148,19 +162,29 @@ pub(crate) fn firings(boards: &[BoardView], rules: &[CardRule], today: Date) -> 
                 let Some(due) = card.due.filter(|d| *d <= today) else {
                     continue;
                 };
+                let card_ref = headway::wordid::card_ref(&board.id, card.id.bytes());
+                let event = Event {
+                    source: CARD_DUE_SOURCE.to_owned(),
+                    key: format!("{}:{due}", card.id.hex()),
+                    content: card.title.clone(),
+                    meta: [
+                        ("card".to_owned(), vec![card_ref.clone()]),
+                        ("due".to_owned(), vec![due.to_string()]),
+                        ("board".to_owned(), vec![board.id.clone()]),
+                        (LABEL_KEY.to_owned(), card.labels.clone()),
+                    ]
+                    .into(),
+                };
                 for rule in rules {
-                    if !card.labels.contains(&rule.label) {
+                    if !rule.trigger.matches(&event) {
                         continue;
                     }
-                    let card_ref = headway::wordid::card_ref(&board.id, card.id.bytes());
-                    let prompt =
-                        Trigger::card_due_prompt(&rule.prompt, &card_ref, &due.to_string());
                     fired.push(Firing {
                         key: trigger_key(&rule.spec, &card.id, due),
                         spec: rule.spec.clone(),
-                        card_ref,
+                        card_ref: card_ref.clone(),
                         due,
-                        prompt,
+                        prompt: rule.trigger.prompt_for(&event),
                     });
                 }
             }

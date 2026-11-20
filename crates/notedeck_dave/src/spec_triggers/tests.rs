@@ -61,6 +61,16 @@ fn board(todo: Vec<CardView>, done: Vec<CardView>) -> BoardView {
     }
 }
 
+/// A spec's `headway/card_due` trigger on cards labelled `label`.
+fn card_due(label: &str, prompt: &str) -> Trigger {
+    Trigger {
+        source: CARD_DUE_SOURCE.into(),
+        r#match: [("label".to_owned(), vec![label.to_owned()])].into(),
+        session: Default::default(),
+        prompt: prompt.into(),
+    }
+}
+
 /// The butler's own trigger, as a rule: its spec, its label and its prompt.
 fn butler_rules() -> Vec<CardRule> {
     card_rules(&[builtin::find("butler").unwrap()])
@@ -72,8 +82,8 @@ fn the_butlers_trigger_is_one_card_rule() {
     let rules = butler_rules();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].spec, "butler");
-    assert_eq!(rules[0].label, "butler");
-    assert!(rules[0].prompt.contains("{card}"));
+    assert_eq!(rules[0].trigger.r#match["label"], ["butler"]);
+    assert!(rules[0].trigger.prompt.contains("{card}"));
 }
 
 /// Only specs with triggers give rules, the account's record replaces the
@@ -90,10 +100,19 @@ fn an_accounts_records_decide_which_triggers_run() {
     quiet_butler.triggers.clear();
     let mut triage = builtin::find("butler").unwrap();
     triage.slug = "triage".into();
-    triage.triggers = vec![Trigger::CardDue {
-        label: "bug".into(),
-        prompt: "Re-check {card}.".into(),
-    }];
+    triage.triggers = vec![
+        card_due("bug", "Re-check {card}."),
+        // Another source, and a card trigger matching no label: neither is
+        // scanned for.
+        Trigger {
+            source: "ext/cron-daily".into(),
+            ..card_due("bug", "Sweep.")
+        },
+        Trigger {
+            r#match: BTreeMap::new(),
+            ..card_due("bug", "Every card.")
+        },
+    ];
     let records: BTreeMap<String, SpecRecord> = [record(quiet_butler), record(triage)]
         .into_iter()
         .map(|r| (r.slug.clone(), r))
@@ -103,8 +122,7 @@ fn an_accounts_records_decide_which_triggers_run() {
         rules,
         [CardRule {
             spec: "triage".into(),
-            label: "bug".into(),
-            prompt: "Re-check {card}.".into(),
+            trigger: card_due("bug", "Re-check {card}."),
         }]
     );
     assert_eq!(
@@ -153,8 +171,7 @@ fn a_card_two_specs_watch_fires_for_each() {
     let mut rules = butler_rules();
     rules.push(CardRule {
         spec: "triage".into(),
-        label: "bug".into(),
-        prompt: "Re-check {card}.".into(),
+        trigger: card_due("bug", "Re-check {card}."),
     });
     let boards = [board(
         vec![card(1, &["butler", "bug"], Some("2026-11-18"))],

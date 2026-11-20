@@ -15,6 +15,7 @@ pub mod agent_spec;
 pub mod cli;
 pub mod config;
 pub mod engine;
+pub mod events;
 pub mod file_update;
 pub mod inspector_snapshot;
 pub mod messages;

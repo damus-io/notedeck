@@ -27,7 +27,8 @@
 //! | `["tighten", "tool" \| "class", name, to]` | `policy.tighten` |
 //! | `["trust", t]` | `trust`, when set |
 //! | `["max_steps", n]`, `["max_cost_cents", n]`, `["timeout_secs", n]` | `budget` |
-//! | `["trigger", "card_due", label, prompt]` | `triggers` |
+//! | `["trigger", source, session, prompt]` | `triggers`, `session` as `new` or `per:<key>` |
+//! | `["trigger-match", i, key, value, …]` | `triggers[i].match[key]` |
 //!
 //! The reader is as strict as [`AgentSpec::from_json`]'s `deny_unknown_fields`:
 //! a tag it doesn't know fails the whole record, so a restriction a newer
@@ -45,7 +46,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::{
-    builtin, AgentSpec, Budget, ModelRef, Policy, Runner, Tighten, Toolset, Trigger, Widen,
+    builtin, AgentSpec, Budget, ModelRef, Policy, Runner, Tighten, Toolset, Trigger,
+    TriggerSession, Widen,
 };
 use crate::config::validate_slug;
 use crate::session_events::{
@@ -207,15 +209,23 @@ pub fn build_agent_spec_event_at(
             .tag_str("timeout_secs")
             .tag_str(&secs.to_string());
     }
-    for trigger in &spec.triggers {
-        b = match trigger {
-            Trigger::CardDue { label, prompt } => b
+    for (i, trigger) in spec.triggers.iter().enumerate() {
+        b = b
+            .start_tag()
+            .tag_str("trigger")
+            .tag_str(&trigger.source)
+            .tag_str(&session_str(&trigger.session))
+            .tag_str(&trigger.prompt);
+        for (key, values) in &trigger.r#match {
+            b = b
                 .start_tag()
-                .tag_str("trigger")
-                .tag_str("card_due")
-                .tag_str(label)
-                .tag_str(prompt),
-        };
+                .tag_str("trigger-match")
+                .tag_str(&i.to_string())
+                .tag_str(key);
+            for value in values {
+                b = b.tag_str(value);
+            }
+        }
     }
     finalize_built_event(b, secret_key, AI_AGENT_SPEC_KIND)
 }
@@ -272,6 +282,9 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
     let mut max_cost_cents = None;
     let mut timeout_secs = None;
     let mut triggers = Vec::new();
+    // `trigger-match` tags, applied once every trigger is read: (index,
+    // key, values).
+    let mut matches = Vec::new();
     for tag in note.tags() {
         let name = tag.get_str(0).ok_or("a tag with no readable name")?;
         let at = |i: u16| -> Result<&str, String> {
@@ -306,14 +319,28 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
             "max_steps" => max_steps = Some(parse_number(name, at(1)?)?),
             "max_cost_cents" => max_cost_cents = Some(parse_number(name, at(1)?)?),
             "timeout_secs" => timeout_secs = Some(parse_number(name, at(1)?)?),
-            "trigger" => triggers.push(match at(1)? {
-                "card_due" => Trigger::CardDue {
-                    label: at(2)?.to_owned(),
-                    prompt: at(3)?.to_owned(),
-                },
-                other => return Err(format!("a trigger of an unknown kind {other:?}")),
+            "trigger" => triggers.push(Trigger {
+                source: at(1)?.to_owned(),
+                r#match: BTreeMap::new(),
+                session: parse_session(at(2)?)?,
+                prompt: at(3)?.to_owned(),
             }),
+            "trigger-match" => {
+                let index: usize = parse_number(name, at(1)?)?;
+                let values = (3..tag.count())
+                    .map(|i| at(i).map(str::to_owned))
+                    .collect::<Result<Vec<_>, _>>()?;
+                matches.push((index, at(2)?.to_owned(), values));
+            }
             other => return Err(format!("an unknown tag {other:?}")),
+        }
+    }
+    for (index, key, values) in matches {
+        let trigger = triggers
+            .get_mut(index)
+            .ok_or_else(|| format!("a trigger-match tag for no trigger {index}"))?;
+        if trigger.r#match.insert(key.clone(), values).is_some() {
+            return Err(format!("trigger {index} matches {key:?} twice"));
         }
     }
     Ok(AgentSpec {
@@ -362,6 +389,25 @@ fn toolset_from_tag(tag: &nostrdb::Tag) -> Result<Toolset, String> {
         other => return Err(format!("an unknown toolset {other:?}")),
     };
     Ok(toolset)
+}
+
+/// A trigger's session as its tag value: `new`, or `per:<key>`.
+fn session_str(session: &TriggerSession) -> String {
+    match session {
+        TriggerSession::New => "new".to_owned(),
+        TriggerSession::Per(key) => format!("per:{key}"),
+    }
+}
+
+/// [`session_str`] read back.
+fn parse_session(value: &str) -> Result<TriggerSession, String> {
+    if value == "new" {
+        return Ok(TriggerSession::New);
+    }
+    value
+        .strip_prefix("per:")
+        .map(|key| TriggerSession::Per(key.to_owned()))
+        .ok_or_else(|| format!("a trigger with an unknown session {value:?}"))
 }
 
 /// A unit enum's serde spelling (`gated`, `mutate_workspace`, `read_only`):
@@ -431,6 +477,27 @@ mod tests {
         });
         butler.budget.timeout_secs = Some(600);
         butler.budget.max_cost_cents = Some(250);
+        // A second trigger with a per-conversation session, a two-key
+        // multi-value match, and one with no match at all.
+        butler.triggers.push(Trigger {
+            source: "nostr/dm".into(),
+            r#match: [
+                (
+                    "from".to_owned(),
+                    vec!["alice".to_owned(), "bob".to_owned()],
+                ),
+                ("relay".to_owned(), vec!["wss://r.example".to_owned()]),
+            ]
+            .into(),
+            session: TriggerSession::Per("thread".into()),
+            prompt: "Reply to {content}".into(),
+        });
+        butler.triggers.push(Trigger {
+            source: "ext/cron-daily".into(),
+            r#match: BTreeMap::new(),
+            session: TriggerSession::New,
+            prompt: "Daily sweep".into(),
+        });
         let reviewer = AgentSpec::from_json(include_str!("examples/reviewer.json")).unwrap();
         let mut sandboxed = AgentSpec::from_json(include_str!("examples/coder.json")).unwrap();
         sandboxed.toolsets = vec![Toolset::Coding {

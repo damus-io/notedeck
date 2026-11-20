@@ -104,13 +104,17 @@ mod tests {
     #[test]
     fn the_butler_labels_its_cards_for_its_own_trigger() {
         let butler = find("butler").unwrap();
-        let [crate::agent_spec::Trigger::CardDue { label, prompt }] = &butler.triggers[..] else {
-            panic!("the butler has one card trigger");
+        let [trigger] = &butler.triggers[..] else {
+            panic!("the butler has one trigger");
+        };
+        assert_eq!(trigger.source, "headway/card_due");
+        let [label] = &trigger.r#match["label"][..] else {
+            panic!("the butler's trigger matches one label");
         };
         assert!(butler.prompt.contains(&format!("label `{label}`")));
         assert!(butler.prompt.contains("headway_set_due"));
-        assert!(prompt.contains(crate::agent_spec::trigger::CARD_PLACEHOLDER));
-        assert!(prompt.contains(crate::agent_spec::trigger::DUE_PLACEHOLDER));
+        assert!(trigger.prompt.contains("{card}"));
+        assert!(trigger.prompt.contains("{due}"));
     }
 
     /// Dave Code is the user's own coder: the Coding toolset on the host
