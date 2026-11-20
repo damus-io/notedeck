@@ -12,6 +12,8 @@
 //!   on one directly;
 //! - agentium-core (meant to drop into an iOS process) never reaches
 //!   agentium-sandbox;
+//! - a desktop build with default features (notedeck_chrome without its
+//!   `sandbox` feature) compiles no microsandbox: Dave's guests are opt-in;
 //! - microsandbox's own `prebuilt` feature stays off: it makes microsandbox's
 //!   build script download ~54 MB into `~/.microsandbox` on every machine
 //!   that compiles it.
@@ -88,6 +90,29 @@ fn only_the_sandbox_crate_depends_on_microsandbox() {
             [SANDBOX_CRATE],
             "{target}: microsandbox must be a dependency of {SANDBOX_CRATE} \
              and no other workspace crate"
+        );
+    }
+}
+
+/// Dave depends on agentium-sandbox in every build, but only its `sandbox`
+/// feature turns on the microVM runner, so a default desktop build stays
+/// free of microsandbox's graph.
+#[test]
+fn a_default_desktop_build_compiles_no_microsandbox() {
+    for target in DESKTOP_TARGETS {
+        let meta = Metadata::resolve(target, Features::Default);
+        let graph = meta.graph();
+        let reached: Vec<&str> = graph
+            .reachable(&graph.members)
+            .into_iter()
+            .map(|id| graph.nodes[id].name)
+            .filter(|name| is_microsandbox(name))
+            .collect();
+        assert!(
+            reached.is_empty(),
+            "{target}: a default build resolves {reached:?}; only a `sandbox` \
+             (notedeck_chrome, notedeck_dave) or `microvm` (agentium-sandbox) \
+             feature may turn microsandbox on"
         );
     }
 }

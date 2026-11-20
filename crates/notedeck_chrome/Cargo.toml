@@ -85,6 +85,8 @@ memory = ["re_memory"]
 puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 tracy = ["profiling/profile-with-tracy"]
 dave = ["notedeck_dave"]
+# Dave's microVM sandboxes (desktop only; see notedeck_dave's `sandbox`).
+sandbox = ["dave", "notedeck_dave/sandbox"]
 messages = ["notedeck_messages"]
 notebook = ["notedeck_notebook"]
 headway = ["notedeck_headway"]

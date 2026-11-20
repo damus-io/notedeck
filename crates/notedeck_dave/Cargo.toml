@@ -5,6 +5,10 @@ version.workspace = true
 
 [dependencies]
 agentium-core = { workspace = true }
+# A spec session's coding tools in a microVM guest (`src/sandbox.rs`). Light
+# without its `microvm` feature (no microsandbox), which only `sandbox`
+# below turns on; it tells every build whether it can run guests.
+agentium-sandbox = { workspace = true }
 headway = { workspace = true }
 notedeck_ipc = { workspace = true }
 async-openai = { version = "0.28.0", default-features = false, features = ["rustls-webpki-roots"] }
@@ -62,6 +66,12 @@ ndb_testing = { workspace = true, optional = true }
 # `test_support`'s seeded Dave, public, for another crate's tests (chrome's
 # end-to-end key tests host one).
 test-support = ["dep:ndb_testing"]
+# DESKTOP ONLY: run sandboxed specs' coding tools in microsandbox guests.
+# Compiles microsandbox's graph, so it is off by default and in every
+# mobile build; on a platform microsandbox can't run on it does nothing
+# (build.rs sets `cfg(sandbox)` only on KVM Linux and Apple-Silicon macOS).
+# crates/bin_testing/tests/sandbox_desktop_only.rs checks the fences.
+sandbox = ["agentium-sandbox/microvm"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

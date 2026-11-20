@@ -35,6 +35,7 @@ pub mod reference;
 pub mod render;
 mod restore;
 mod run_configs;
+mod sandbox;
 pub mod scene_edges;
 pub mod scene_layout;
 pub mod scene_orbits;
@@ -414,6 +415,10 @@ pub struct Dave {
     /// card falling due), started on a host's first update with a signing
     /// account. See [`spec_triggers`].
     trigger_scheduler: Option<spec_triggers::TriggerScheduler>,
+    /// The microVM guests sandboxed spec sessions' coding tools run in,
+    /// swept of a crashed notedeck's leftovers on a host's first update
+    /// (see [`sandbox`]). Empty in a build without the `sandbox` feature.
+    sandboxes: sandbox::Sandboxes,
 }
 
 use update::PermissionPublish;
@@ -642,6 +647,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
             restored_accounts: HashSet::new(),
             trigger_scheduler: None,
+            sandboxes: sandbox::Sandboxes::default(),
         }
     }
 
@@ -1411,6 +1417,10 @@ impl notedeck::App for Dave {
         // What a spec session's Notedeck toolset picks from, copied again
         // only when the registry changed.
         self.host_tools.refresh(ctx);
+
+        // Reap the microVM guests a crashed notedeck left behind, once, on a
+        // task; only a host runs guests, so only a host sweeps.
+        self.sandboxes.sweep_at_startup();
 
         // Copied out up front: the backend dispatches below hand a clone of this
         // to worker tasks, and each of those calls needs it while `ctx` is

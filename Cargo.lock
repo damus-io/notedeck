@@ -7799,6 +7799,7 @@ name = "notedeck_dave"
 version = "0.11.0-beta.1"
 dependencies = [
  "agentium-core",
+ "agentium-sandbox",
  "arboard",
  "async-openai",
  "base64 0.22.1",
