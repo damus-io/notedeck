@@ -28,6 +28,11 @@
 //! while a spec configures our own loop. What the two share is a credential,
 //! and a spec only names one ([`ModelRef::provider`]), never holds it.
 //!
+//! What does travel is a session's changes to its spec: its model (the
+//! session's `model` tag) and its prompt and budget ([`SpecOverrides`],
+//! `spec-*` tags), set at spawn for that session alone and applied over the
+//! host's spec when its turns run ([`overrides`]).
+//!
 //! ## Private data and egress never share a context
 //!
 //! An agent that can read private boards and also fetch arbitrary URLs is an
@@ -65,6 +70,7 @@ pub mod builtin;
 pub mod catalog;
 pub mod coding;
 pub mod local_executor;
+pub mod overrides;
 pub mod policy;
 pub mod pricing;
 pub mod provider;
@@ -79,6 +85,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::validate_slug;
 use crate::tool::{Capability, ToolSpec};
 pub use catalog::{Catalog, CatalogError, CatalogTool, ToolSource};
+pub use overrides::SpecOverrides;
 pub use policy::{
     base_approval, Approval, Containment, Policy, PolicyError, SessionMode, Tighten, Widen,
 };

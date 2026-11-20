@@ -17,6 +17,7 @@
 
 use std::time::Duration;
 
+use agentium_core::agent_spec::SpecOverrides;
 use agentium_core::cli::config::{
     describe, pick_place, render_list, render_published, render_show, replacing, required_field,
     resolve_config, ConfigFilters, ConfigJson,
@@ -376,6 +377,14 @@ struct SpawnArgs {
     #[serde(default)]
     spec: Option<String>,
     #[serde(default)]
+    system_prompt: Option<String>,
+    #[serde(default)]
+    max_steps: Option<u32>,
+    #[serde(default)]
+    max_cost_cents: Option<u32>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
     child: bool,
     #[serde(default)]
     successor: bool,
@@ -427,6 +436,30 @@ impl SpawnArgs {
                 "a spec runs in the native loop (backend `openai`), not `{other}`"
             )),
         }
+    }
+
+    /// What the session changes about its spec's prompt and budget, for it
+    /// alone; its model override is `model`. Every override needs a `spec`
+    /// to change, and a step cap is at least 1. Whatever else the resolved
+    /// spec must satisfy is checked by its host, which has the spec.
+    fn spec_overrides(&self, spec: Option<&str>) -> Result<SpecOverrides, String> {
+        let overrides = SpecOverrides {
+            prompt: self.system_prompt.clone().filter(|p| !p.is_empty()),
+            max_steps: self.max_steps,
+            max_cost_cents: self.max_cost_cents,
+            timeout_secs: self.timeout_secs,
+        };
+        if spec.is_none() && !overrides.is_empty() {
+            return Err(
+                "`system_prompt`, `max_steps`, `max_cost_cents` and `timeout_secs` \
+                        override a spec's: name one with `spec`"
+                    .to_owned(),
+            );
+        }
+        if overrides.max_steps == Some(0) {
+            return Err("`max_steps` is at least 1".to_owned());
+        }
+        Ok(overrides)
     }
 
     /// Whether to wait for the host's answer: `wait` or `print_ref`
@@ -498,10 +531,19 @@ impl SlowTool for Spawn {
                 )
                 .from_file("prompt-file"),
                 ToolArg::new("permission_mode", ToolArgType::String, "The permission mode it starts in: default, plan, accept_edits, auto, … (aliases are normalized)."),
-                ToolArg::new("model", ToolArgType::String, "The model it starts on, as the backend names it (`opus`, a full id)."),
+                ToolArg::new("model", ToolArgType::String, "The model it starts on, as the backend names it (`opus`, a full id). Under a `spec`, it replaces the spec's model for this session only: `provider/model`, or a model on the spec's provider."),
                 ToolArg::new("issue_url", ToolArgType::String, "The issue it works, as a URI, e.g. `headway:<board>/<word-id>`."),
                 ToolArg::new("profile", ToolArgType::String, "The backend profile it runs under. Defaults to the current session's unless `backend` is given."),
-                ToolArg::new("spec", ToolArgType::String, "The agent spec it runs under, e.g. `butler`: the native loop on the spec's model, prompt, tools and budget. Implies backend `openai`; excludes `profile`."),
+                ToolArg::new("spec", ToolArgType::String, "The agent spec it runs under, e.g. `butler`: the native loop on the spec's model, prompt, tools and budget. Implies backend `openai`; excludes `profile`. `model`, `system_prompt`, `max_steps`, `max_cost_cents` and `timeout_secs` override it for this session only; the account's spec is unchanged."),
+                ToolArg::new(
+                    "system_prompt",
+                    ToolArgType::String,
+                    "Replaces the spec's system prompt for this session (not the first message, which is `prompt`). Needs `spec`.",
+                )
+                .from_file("system-prompt-file"),
+                ToolArg::new("max_steps", ToolArgType::Integer, "Replaces the spec's cap on tool-call steps per run, at least 1. Needs `spec`."),
+                ToolArg::new("max_cost_cents", ToolArgType::Integer, "Replaces the spec's cap on one run's spend, in US cents. Needs `spec`."),
+                ToolArg::new("timeout_secs", ToolArgType::Integer, "Replaces the spec's wall-clock limit on one run, in seconds. Needs `spec`."),
                 ToolArg::new("child", ToolArgType::Boolean, "Record it as a child of the current session, which it reports back to."),
                 ToolArg::new("successor", ToolArgType::Boolean, "Record it as the current session's successor, which carries its work on."),
                 ToolArg::new("idempotency_key", ToolArgType::String, "Your own name for this request, so a retry of it is recognized as one."),
@@ -530,6 +572,7 @@ impl SlowTool for Spawn {
     ) -> Result<ToolJob<SpawnAnswer>, String> {
         let relation = args.relation()?;
         let spec = args.agent_spec()?;
+        let spec_overrides = args.spec_overrides(spec)?;
         let permission_mode = args
             .permission_mode
             .as_deref()
@@ -587,6 +630,7 @@ impl SlowTool for Spawn {
             relation,
             profile: target.profile.as_deref(),
             spec,
+            spec_overrides: Some(&spec_overrides),
         };
         // `allow_duplicate` omits the key: opting out of the guard has to opt
         // out of the host's dedupe too, or the host would re-impose it.
@@ -1539,5 +1583,42 @@ mod tests {
         let err = spec(json!({"spec": "butler", "profile": "hydra"})).unwrap_err();
         assert!(err.contains("exclusive"), "{err}");
         assert!(spec(json!({"spec": "not a slug!"})).is_err());
+    }
+
+    /// The prompt and budget overrides change a spec, so each needs one;
+    /// a step cap of zero is refused before anything is published
+    /// (headway:dave/west-try-slab).
+    #[test]
+    fn spec_overrides_need_a_spec_and_a_step() {
+        let overrides = |args| {
+            let args = spawn_args(args);
+            let spec = args.agent_spec().unwrap();
+            args.spec_overrides(spec)
+        };
+        let got = overrides(json!({
+            "spec": "butler",
+            "system_prompt": "Review only.",
+            "max_steps": 5,
+            "max_cost_cents": 40,
+            "timeout_secs": 300,
+        }))
+        .unwrap();
+        assert_eq!(
+            got,
+            SpecOverrides {
+                prompt: Some("Review only.".into()),
+                max_steps: Some(5),
+                max_cost_cents: Some(40),
+                timeout_secs: Some(300),
+            }
+        );
+        assert!(overrides(json!({"spec": "butler"})).unwrap().is_empty());
+        assert!(overrides(json!({})).unwrap().is_empty());
+        let err = overrides(json!({"max_steps": 5})).unwrap_err();
+        assert!(err.contains("`spec`"), "{err}");
+        let err = overrides(json!({"system_prompt": "x"})).unwrap_err();
+        assert!(err.contains("`spec`"), "{err}");
+        let err = overrides(json!({"spec": "butler", "max_steps": 0})).unwrap_err();
+        assert!(err.contains("at least 1"), "{err}");
     }
 }

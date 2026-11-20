@@ -1080,6 +1080,13 @@ pub struct SessionState {
     /// `butler`, never the spec itself, which is local config. Absent for a
     /// session that runs under none, and on states written before specs.
     pub agent_spec: Option<String>,
+    /// What this session changes about [`agent_spec`](Self::agent_spec)'s
+    /// prompt and budget, for it alone (the `spec-*` tags,
+    /// [`SpecOverrides`](crate::agent_spec::SpecOverrides)); its model
+    /// override is [`model`](Self::model). Empty for a session that runs its
+    /// spec as it is, and for one under no spec.
+    #[serde(skip_serializing_if = "crate::agent_spec::SpecOverrides::is_empty")]
+    pub spec_overrides: crate::agent_spec::SpecOverrides,
     /// Where the session's tools run (`containment` tag,
     /// [`CONTAINMENT_TAG`](crate::agent_spec::CONTAINMENT_TAG)): beside the
     /// spec rather than in the `backend` tag, so a reader that doesn't know
@@ -1178,6 +1185,7 @@ impl SessionState {
             agent_spec: get_tag_value(note, crate::agent_spec::SPEC_TAG)
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
+            spec_overrides: crate::agent_spec::SpecOverrides::from_note(note),
             containment: get_tag_value(note, crate::agent_spec::CONTAINMENT_TAG)
                 .and_then(crate::agent_spec::Containment::from_tag_str),
             created_at: note.created_at(),
@@ -2337,6 +2345,7 @@ mod tests {
             relation: Default::default(),
             profile: None,
             agent_spec: None,
+            spec_overrides: Default::default(),
             containment: None,
         }
     }
@@ -3914,6 +3923,7 @@ mod tests {
             relation: Default::default(),
             profile: None,
             agent_spec: None,
+            spec_overrides: Default::default(),
             containment: None,
         };
 
@@ -4010,6 +4020,7 @@ mod tests {
             relation: crate::session_events::SessionRelation::Successor,
             profile: Some("hydra".to_string()),
             agent_spec: Some("butler".to_string()),
+            spec_overrides: Default::default(),
             containment: Some(crate::agent_spec::Containment::Host),
         };
         let event = state.build_event(&sk).unwrap().to_event_json();

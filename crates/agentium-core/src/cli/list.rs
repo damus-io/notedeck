@@ -335,6 +335,7 @@ pub(crate) mod tests {
             relation: Default::default(),
             profile: None,
             agent_spec: None,
+            spec_overrides: Default::default(),
             containment: None,
         }
     }

@@ -129,6 +129,15 @@ pub enum ProviderError {
     },
 }
 
+/// Whether `slug` names a provider [`resolve`] looks up: one of `profiles`
+/// or a built-in. Says nothing of whether it resolves (a missing key, a
+/// Claude profile): that is `resolve`'s to report. What tells
+/// `provider/model` from a model id with a `/` of its own
+/// ([`ModelRef::overridden`]).
+pub fn is_known(slug: &str, profiles: &BTreeMap<String, BackendProfile>) -> bool {
+    profiles.contains_key(slug) || builtin(slug).is_some()
+}
+
 /// Resolve `model` to the endpoint its requests go to.
 ///
 /// `profiles` is the account's backend profiles by slug (every backend; the

@@ -1341,7 +1341,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // A session under an agent spec runs on its spec's runner, whatever
         // backends this host was configured with.
-        if let Some(slug) = session.details.agent_spec.clone() {
+        if session.details.agent_spec.is_some() {
             let deps = spec_runner::SpecDeps {
                 specs: &self.agent_specs,
                 profiles: &self.backend_profiles,
@@ -1352,7 +1352,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let fallback = self.backends.for_type(session.backend_type);
             stream_events::dispatch_spec_turn(
                 session,
-                &slug,
                 &mut self.spec_runners,
                 &deps,
                 busy,
@@ -1371,21 +1370,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         dispatch_turn(session, self.backends.for_type(session.backend_type), &ctx);
     }
 
-    /// Whether any session under `sid`'s agent spec, `sid` included, is
-    /// mid-run: its stop lives in the spec's cached runner, so an edited
-    /// spec doesn't replace that runner yet (see [`spec_runner`]). False for
-    /// a session under no spec.
+    /// Whether any session on `sid`'s spec runner (the same spec, model and
+    /// overrides), `sid` included, is mid-run: its stop lives in that cached
+    /// runner, so an edited spec doesn't replace it yet (see
+    /// [`spec_runner`]). False for a session under no spec.
     fn spec_sessions_streaming(&self, sid: SessionId) -> bool {
-        let Some(slug) = self
+        let Some(want) = self
             .session_manager
             .get(sid)
-            .and_then(|s| s.details.agent_spec.as_deref())
+            .and_then(spec_runner::SessionSpec::of)
         else {
             return false;
         };
         self.session_manager
             .iter()
-            .any(|s| s.details.agent_spec.as_deref() == Some(slug) && s.is_streaming())
+            .any(|s| spec_runner::SessionSpec::of(s) == Some(want) && s.is_streaming())
     }
 }
 

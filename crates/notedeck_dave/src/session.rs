@@ -1,4 +1,4 @@
-use agentium_core::agent_spec::Containment;
+use agentium_core::agent_spec::{Containment, SpecOverrides};
 use agentium_core::session_events::SessionRelation;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -242,6 +242,11 @@ pub struct SessionDetails {
     /// spec. Set when the session is created and fixed for its life, like
     /// `profile`; a slug this host has no spec for fails every turn.
     pub agent_spec: Option<String>,
+    /// What this session changes about its spec's prompt and budget, for
+    /// it alone (a spawn's `--system-prompt`, `--max-steps`, …). Its model
+    /// override is `requested_model`. Set at spawn and fixed for its life,
+    /// like `agent_spec`; synced through the kind-31988 `spec-*` tags.
+    pub spec_overrides: SpecOverrides,
     /// Where the spec's tools run (in notedeck, on the host, in a
     /// sandbox), taken from the spec each time a turn dispatches on its
     /// runner, so it names where the last turn actually ran. Synced through
@@ -941,6 +946,7 @@ impl ChatSession {
                 requested_model: None,
                 profile: None,
                 agent_spec: None,
+                spec_overrides: SpecOverrides::default(),
                 containment: None,
                 model: None,
             },
@@ -1034,6 +1040,7 @@ impl ChatSession {
                 requested_model: None,
                 profile: None,
                 agent_spec: None,
+                spec_overrides: SpecOverrides::default(),
                 containment: None,
                 model: None,
             },

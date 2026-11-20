@@ -54,6 +54,12 @@ impl AccountRecords<BackendProfile> {
         provider::resolve(model, self.records(), |var| std::env::var(var).ok())
     }
 
+    /// Whether `slug` names a provider a spec's model can be sent to: a
+    /// profile of the account's or a built-in ([`provider::is_known`]).
+    pub(crate) fn knows_provider(&self, slug: &str) -> bool {
+        provider::is_known(slug, self.records())
+    }
+
     /// Every profile, Claude and OpenAI, by slug: what a spec's sub-agent
     /// resolves its own model against.
     pub(crate) fn all(&self) -> &BTreeMap<String, BackendProfile> {

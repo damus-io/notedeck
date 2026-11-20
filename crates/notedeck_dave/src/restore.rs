@@ -1261,6 +1261,9 @@ fn hydrate_session_from_state(
     // And the spec it runs under, so its next turn goes to the spec's loop
     // with the spec's tools rather than the host's default backend.
     session.details.agent_spec = state.agent_spec.clone();
+    // And what it changes about that spec, so a restart doesn't quietly
+    // run it on the spec's own prompt and budget.
+    session.details.spec_overrides = state.spec_overrides.clone();
     session.details.containment = state.containment;
     session.details.parent_session = state.parent_session.clone();
     session.details.relation = state.relation;
@@ -1405,6 +1408,7 @@ mod tests {
             relation: session_events::SessionRelation::Successor,
             profile: Some("hydra".to_string()),
             agent_spec: None,
+            spec_overrides: Default::default(),
             containment: None,
         }
     }

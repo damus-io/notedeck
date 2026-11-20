@@ -1,22 +1,33 @@
 //! Sessions run under an agent spec: the spec's slug on the session, a
-//! runner per slug on Dave.
+//! runner per resolved spec on Dave.
 //!
 //! ```text
-//! nd agentium spawn --spec butler ─▶ kind-31989 ["agent-spec","butler"]
-//!   host: session.details.agent_spec = "butler"   (rides kind-31988 too)
+//! nd agentium spawn --spec butler [--model ..] [--max-steps ..]
+//!   ─▶ kind-31989 ["agent-spec","butler"] ["model",..] ["spec-max-steps",..]
+//!   host: session.details.agent_spec = "butler", .requested_model, .spec_overrides
+//!         (all ride kind-31988 too)
 //!
-//! each turn: SpecRunners::get_or_build("butler")
-//!   AgentSpecs::find ─▶ AgentSpec ─┬─ model ─▶ BackendProfiles::resolve_provider ─▶ Endpoint
-//!   (account record,               ├─ toolsets ─▶ SpecTools (Catalog + researcher)
-//!    else built-in)                └─ prompt, budget
+//! each turn: SpecRunners::get_or_build(SessionSpec { "butler", model, overrides })
+//!   AgentSpecs::find ─▶ AgentSpec ─▶ SpecOverrides::apply ─▶ resolved AgentSpec
+//!   (account record,                                         ┬─ model ─▶ resolve_provider ─▶ Endpoint
+//!    else built-in)                                          ├─ toolsets ─▶ SpecTools
+//!                                                            └─ prompt, budget
 //!                                        ▼
 //!   OpenAiBackend::for_endpoint(..).with_system_prompt(..).with_budget(..)
 //!   session.spec_tools = runner.tools   ─▶ dispatch_turn on runner.backend
 //!   session.details.containment = spec.containment()   (kind-31988 ["containment", ..])
 //! ```
 //!
-//! A runner is shared by every session under its spec, so nothing in it is
-//! a session's own. What is (its `agentium:` ref) rides each turn's session
+//! A runner is keyed on the session's [`SessionSpec`]: its slug, its model
+//! and its overrides. Sessions that ask for the same share one; two sessions
+//! under one slug with different overrides never do. A spawn's overrides
+//! are the session's alone and never touch the account's spec record (see
+//! [`agentium_core::agent_spec::overrides`]). A `/model` in a spec session
+//! sets its `requested_model` too, so the next turn runs on the runner for
+//! that model.
+//!
+//! A runner is shared by every session that asks for the same spec, so
+//! nothing in it is a session's own. What is (its `agentium:` ref) rides each turn's session
 //! env: the backend tells the model its ref after the spec's prompt, a
 //! left-out `from_session` is filled from it
 //! ([`with_session_defaults`](crate::native_tools::with_session_defaults)),
@@ -30,10 +41,11 @@
 //! kept: the turn fails with why, and the next turn tries again, so a
 //! provider profile created after the failure is picked up.
 //!
-//! A runner remembers the specs it was built from ([`BuiltFrom`]). When the
-//! account's record of either (the spec's own, or its sub-agent's) has
-//! changed by the next turn, the runner is rebuilt from the new one, unless
-//! another session under the spec is mid-run: its stop lives in the old
+//! A runner remembers the specs it was built from ([`BuiltFrom`]), the
+//! session's overrides applied. When the account's record of either (the
+//! spec's own, or its sub-agent's) has changed by the next turn, the runner
+//! is rebuilt from the new one, unless another session on that runner is
+//! mid-run: its stop lives in the old
 //! runner's backend, so the old runner stays until the spec's sessions are
 //! idle, and the edit applies on the first turn after.
 //!
@@ -45,7 +57,9 @@
 use std::collections::HashMap;
 
 use agentium_core::agent_spec::record::LookupError;
-use agentium_core::agent_spec::{pricing, provider::ProviderError, AgentSpec, Toolset};
+use agentium_core::agent_spec::{
+    pricing, provider::ProviderError, AgentSpec, SpecError, SpecOverrides, Toolset,
+};
 use nostrdb::Ndb;
 use notedeck::{AppContext, ToolSpec};
 
@@ -68,6 +82,75 @@ pub(crate) struct SpecRunner {
     pub(crate) built_from: BuiltFrom,
 }
 
+/// What a session asks to run under: its spec's slug, its own model (the
+/// `model` tag, which a spawn's `--model` and a `/model` set) and its
+/// overrides of the spec's prompt and budget. Borrowed from the session, so
+/// finding its runner allocates nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionSpec<'a> {
+    /// The spec's slug.
+    pub(crate) slug: &'a str,
+    /// The session's model, `provider/model` or a model on the spec's
+    /// provider; `None` keeps the spec's.
+    pub(crate) model: Option<&'a str>,
+    /// The session's changes to the spec's prompt and budget.
+    pub(crate) overrides: &'a SpecOverrides,
+}
+
+impl<'a> SessionSpec<'a> {
+    /// What `session` runs under, if it runs under a spec.
+    pub(crate) fn of(session: &'a ChatSession) -> Option<Self> {
+        Some(Self {
+            slug: session.details.agent_spec.as_deref()?,
+            model: session.details.requested_model.as_deref(),
+            overrides: &session.details.spec_overrides,
+        })
+    }
+
+    /// The slug alone: the spec as its record has it.
+    #[cfg(test)]
+    pub(crate) fn plain(slug: &'a str) -> Self {
+        Self {
+            slug,
+            model: None,
+            overrides: &SpecOverrides::NONE,
+        }
+    }
+}
+
+/// A [`SessionSpec`] a runner was built for, owned so the runner can be
+/// kept under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunnerKey {
+    slug: String,
+    model: Option<String>,
+    overrides: SpecOverrides,
+}
+
+impl RunnerKey {
+    /// Whether this is the key `want` names.
+    fn is(&self, want: &SessionSpec<'_>) -> bool {
+        self.slug == want.slug
+            && self.model.as_deref() == want.model
+            && self.overrides == *want.overrides
+    }
+
+    /// `want`, owned.
+    fn of(want: &SessionSpec<'_>) -> Self {
+        Self {
+            slug: want.slug.to_owned(),
+            model: want.model.map(str::to_owned),
+            overrides: want.overrides.clone(),
+        }
+    }
+}
+
+/// One built runner, under the session spec it was built for.
+struct KeyedRunner {
+    key: RunnerKey,
+    runner: SpecRunner,
+}
+
 /// What a runner was built from: the spec, the sub-agent spec its
 /// [`Toolset::SubAgent`] names, if it has one, and which copy of the host's
 /// tools.
@@ -80,11 +163,19 @@ pub(crate) struct BuiltFrom {
 }
 
 impl BuiltFrom {
-    /// `slug`'s spec and its sub-agent's, as `deps.specs` has them now, and
-    /// the host's tools as `deps` has them. A sub-agent spec that can't be
-    /// found is left `None` here: building the runner reports it.
-    fn current(slug: &str, deps: &SpecDeps<'_>) -> Result<Self, SpecRunnerError> {
-        let spec = deps.specs.find(slug)?;
+    /// `want`'s spec as `deps.specs` has it now with the session's model and
+    /// overrides applied, its sub-agent's, and the host's tools as `deps`
+    /// has them. A sub-agent spec that can't be found is left `None` here:
+    /// building the runner reports it.
+    fn current(want: &SessionSpec<'_>, deps: &SpecDeps<'_>) -> Result<Self, SpecRunnerError> {
+        let base = deps.specs.find(want.slug)?;
+        let spec = want
+            .overrides
+            .apply(&base, want.model, |p| deps.profiles.knows_provider(p))
+            .map_err(|err| SpecRunnerError::Override {
+                slug: want.slug.to_owned(),
+                err,
+            })?;
         let sub_agent = spec.toolsets.iter().find_map(|t| match t {
             Toolset::SubAgent { spec } => deps.specs.find(spec).ok(),
             _ => None,
@@ -136,6 +227,10 @@ pub(crate) enum SpecRunnerError {
     /// Its tools can't be built.
     #[error("agent spec {slug:?}: {err}")]
     Tools { slug: String, err: SpecToolsError },
+    /// The session's model or overrides make a spec that can't run (a zero
+    /// step cap, say).
+    #[error("agent spec {slug:?} as this session overrides it: {err}")]
+    Override { slug: String, err: SpecError },
 }
 
 /// What building a runner reads from the host.
@@ -153,30 +248,40 @@ pub(crate) struct SpecDeps<'a> {
     pub(crate) sandboxes: &'a crate::sandbox::Sandboxes,
 }
 
-/// Every spec runner this Dave has built, by slug.
+/// Every spec runner this Dave has built, by the [`SessionSpec`] it was
+/// built for. A handful at most, so a list scanned in place: finding a
+/// session's runner borrows and allocates nothing.
 #[derive(Default)]
 pub(crate) struct SpecRunners {
-    runners: HashMap<String, SpecRunner>,
+    runners: Vec<KeyedRunner>,
 }
 
 impl SpecRunners {
-    /// The runner for `slug`, if one has been built.
-    pub(crate) fn get(&self, slug: &str) -> Option<&SpecRunner> {
-        self.runners.get(slug)
+    /// The runner for `want`, if one has been built.
+    pub(crate) fn get(&self, want: &SessionSpec<'_>) -> Option<&SpecRunner> {
+        self.position(want).map(|i| &self.runners[i].runner)
     }
 
-    /// The runner for `slug`, built from the spec `deps.specs` has for it on
-    /// first use, and rebuilt when that spec (or its sub-agent's) or the
-    /// host's tools have changed since, unless `busy`: another session under
-    /// `slug` is mid-run on the cached runner, which must keep its stop.
+    /// Where `want`'s runner is kept.
+    fn position(&self, want: &SessionSpec<'_>) -> Option<usize> {
+        self.runners.iter().position(|r| r.key.is(want))
+    }
+
+    /// The runner for `want`, built from the spec `deps.specs` has for its
+    /// slug with its model and overrides applied on first use, and rebuilt
+    /// when that spec (or its sub-agent's) or the host's tools have changed
+    /// since, unless `busy`: another session on the cached runner is
+    /// mid-run, and must keep its stop.
     pub(crate) fn get_or_build(
         &mut self,
-        slug: &str,
+        want: &SessionSpec<'_>,
         deps: &SpecDeps<'_>,
         busy: bool,
     ) -> Result<&SpecRunner, SpecRunnerError> {
-        let current = BuiltFrom::current(slug, deps)?;
-        let stale = match self.runners.get(slug) {
+        let slug = want.slug;
+        let current = BuiltFrom::current(want, deps)?;
+        let at = self.position(want);
+        let stale = match at.map(|i| &self.runners[i].runner) {
             None => true,
             Some(runner) if runner.built_from == current => false,
             Some(_) if busy => {
@@ -192,18 +297,35 @@ impl SpecRunners {
                 true
             }
         };
-        if stale {
-            let runner = build(current, deps)?;
-            self.runners.insert(slug.to_owned(), runner);
-        }
-        Ok(&self.runners[slug])
+        let at = match (at, stale) {
+            (Some(i), false) => i,
+            (Some(i), true) => {
+                self.runners[i].runner = build(current, deps)?;
+                i
+            }
+            (None, _) => {
+                let runner = build(current, deps)?;
+                self.runners.push(KeyedRunner {
+                    key: RunnerKey::of(want),
+                    runner,
+                });
+                self.runners.len() - 1
+            }
+        };
+        Ok(&self.runners[at].runner)
     }
 
-    /// Keep `runner` as `slug`'s, for a test to run a spec on a fake
+    /// Keep `runner` as `want`'s, for a test to run a spec on a fake
     /// backend.
     #[cfg(test)]
-    pub(crate) fn insert(&mut self, slug: &str, runner: SpecRunner) {
-        self.runners.insert(slug.to_owned(), runner);
+    pub(crate) fn insert(&mut self, want: &SessionSpec<'_>, runner: SpecRunner) {
+        match self.position(want) {
+            Some(i) => self.runners[i].runner = runner,
+            None => self.runners.push(KeyedRunner {
+                key: RunnerKey::of(want),
+                runner,
+            }),
+        }
     }
 }
 
@@ -322,8 +444,8 @@ impl<'a> SessionBackends<'a> {
     /// backend answers for it.
     pub(crate) fn for_session(self, session: Option<&ChatSession>) -> &'a dyn AiBackend {
         let spec_backend = session
-            .and_then(|s| s.details.agent_spec.as_deref())
-            .and_then(|slug| self.runners.get(slug))
+            .and_then(SessionSpec::of)
+            .and_then(|want| self.runners.get(&want))
             .map(|runner| runner.backend.as_ref());
         if let Some(backend) = spec_backend {
             return backend;
@@ -381,6 +503,11 @@ mod tests {
 
     /// Build `slug`'s runner from the built-ins (no account records).
     fn build_named(slug: &str, ndb: &Ndb) -> Result<SpecRunner, SpecRunnerError> {
+        build_for(&SessionSpec::plain(slug), ndb)
+    }
+
+    /// Build `want`'s runner from the built-ins (no account records).
+    fn build_for(want: &SessionSpec<'_>, ndb: &Ndb) -> Result<SpecRunner, SpecRunnerError> {
         let specs = AgentSpecs::default();
         let profiles = profiles();
         let host_tools = host_tools();
@@ -391,7 +518,7 @@ mod tests {
             ndb,
             sandboxes: &Default::default(),
         };
-        build(BuiltFrom::current(slug, &deps)?, &deps)
+        build(BuiltFrom::current(want, &deps)?, &deps)
     }
 
     /// Get or build `slug`'s runner over `specs`, answering what it was
@@ -422,7 +549,7 @@ mod tests {
             sandboxes: &Default::default(),
         };
         runners
-            .get_or_build("butler", &deps, busy)
+            .get_or_build(&SessionSpec::plain("butler"), &deps, busy)
             .expect("the butler builds")
             .built_from
             .clone()
@@ -474,6 +601,109 @@ mod tests {
         );
     }
 
+    /// Two sessions under one slug with different overrides each get a
+    /// runner built for theirs, while a session asking for the same as
+    /// another shares its runner; the account's record is never touched
+    /// (headway:dave/west-try-slab).
+    #[test]
+    fn overrides_key_their_own_runner() {
+        use agentium_core::agent_spec::builtin;
+
+        let test = crate::tests::TestDave::new();
+        let specs = AgentSpecs::default();
+        let profiles = profiles();
+        let host_tools = host_tools();
+        let deps = SpecDeps {
+            specs: &specs,
+            profiles: &profiles,
+            host_tools: &host_tools,
+            ndb: &test.ndb,
+            sandboxes: &Default::default(),
+        };
+        let terse = SpecOverrides {
+            prompt: Some("Be terse.".into()),
+            max_steps: Some(3),
+            ..Default::default()
+        };
+        let plain = SessionSpec::plain("butler");
+        let overridden = SessionSpec {
+            slug: "butler",
+            model: Some("anthropic/claude-haiku-5-5"),
+            overrides: &terse,
+        };
+        let mut runners = SpecRunners::default();
+        let butler = builtin::find("butler").unwrap();
+        let built = |runners: &mut SpecRunners, want| {
+            runners
+                .get_or_build(&want, &deps, false)
+                .expect("builds")
+                .built_from
+                .spec
+                .clone()
+        };
+
+        assert_eq!(built(&mut runners, plain), butler);
+        let resolved = built(&mut runners, overridden);
+        assert_eq!(resolved.prompt, "Be terse.");
+        assert_eq!(resolved.budget.max_steps, 3);
+        assert_eq!(resolved.model.provider, "anthropic");
+        assert_eq!(resolved.model.model, "claude-haiku-5-5");
+        assert_eq!(resolved.toolsets, butler.toolsets);
+        assert_eq!(runners.runners.len(), 2, "one runner each");
+
+        let same = SpecOverrides {
+            prompt: Some("Be terse.".into()),
+            max_steps: Some(3),
+            ..Default::default()
+        };
+        let again = SessionSpec {
+            overrides: &same,
+            ..overridden
+        };
+        assert_eq!(built(&mut runners, again), resolved);
+        assert_eq!(runners.runners.len(), 2, "the same ask shares its runner");
+        assert_eq!(
+            built(&mut runners, plain),
+            butler,
+            "the plain one is untouched"
+        );
+        assert_eq!(specs.find("butler").unwrap(), butler, "no record written");
+    }
+
+    /// An override that makes a spec that can't run fails the build with
+    /// the spec named, and keeps no runner.
+    #[test]
+    fn a_bad_override_fails_the_build() {
+        let test = crate::tests::TestDave::new();
+        let specs = AgentSpecs::default();
+        let profiles = profiles();
+        let host_tools = host_tools();
+        let deps = SpecDeps {
+            specs: &specs,
+            profiles: &profiles,
+            host_tools: &host_tools,
+            ndb: &test.ndb,
+            sandboxes: &Default::default(),
+        };
+        let zero = SpecOverrides {
+            max_steps: Some(0),
+            ..Default::default()
+        };
+        let want = SessionSpec {
+            slug: "butler",
+            model: None,
+            overrides: &zero,
+        };
+        let mut runners = SpecRunners::default();
+        let err = runners
+            .get_or_build(&want, &deps, false)
+            .err()
+            .expect("refused");
+        assert!(matches!(err, SpecRunnerError::Override { .. }), "{err}");
+        assert!(err.to_string().contains("\"butler\""), "{err}");
+        assert!(runners.get(&want).is_none());
+    }
+
     /// A change to the host's tools (an app started, so its UI tools are
     /// registered) rebuilds the runner on its next idle turn, with the new
     /// tools offered; a mid-run session keeps the old one.
@@ -497,7 +727,7 @@ mod tests {
         let busy = runner_over(&mut runners, &specs, &tools, &test.ndb, true);
         assert_eq!(busy, first, "kept while a session is mid-run");
         assert!(runners
-            .get("butler")
+            .get(&SessionSpec::plain("butler"))
             .unwrap()
             .tools
             .catalog
@@ -507,7 +737,7 @@ mod tests {
         let idle = runner_over(&mut runners, &specs, &tools, &test.ndb, false);
         assert_eq!(idle.tools, Some(2), "rebuilt");
         assert!(runners
-            .get("butler")
+            .get(&SessionSpec::plain("butler"))
             .unwrap()
             .tools
             .catalog
@@ -575,7 +805,7 @@ mod tests {
         let runner_backend = says_ok();
         let runner = runner_backend.log();
         test.dave.spec_runners.insert(
-            "butler",
+            &SessionSpec::plain("butler"),
             SpecRunner {
                 backend: Box::new(runner_backend),
                 tools: butler.tools,
@@ -657,6 +887,70 @@ mod tests {
         backend.interrupt_session("dave-session-x".into(), run.test.waker.clone());
         assert_eq!(run.runner.interrupts(), 1);
         assert_eq!(run.host.interrupts(), 0);
+    }
+
+    /// A session with overrides runs on the runner built for them, not the
+    /// plain spec's, and its turn asks for no model of its own: the runner
+    /// was built on the overridden one, which may be on another provider
+    /// than the raw `provider/model` names. Its stop reaches that runner.
+    #[test]
+    fn an_overridden_sessions_turn_goes_to_its_own_runner() {
+        let mut test = crate::tests::TestDave::new();
+        let [sid] = test.add_sessions(["/tmp/butler"], BackendType::OpenAI);
+        let terse = SpecOverrides {
+            max_steps: Some(3),
+            ..Default::default()
+        };
+        {
+            let details = &mut test.dave.session_manager.get_mut(sid).unwrap().details;
+            details.agent_spec = Some("butler".into());
+            details.requested_model = Some("anthropic/claude-haiku-5-5".into());
+            details.spec_overrides = terse.clone();
+        }
+        let says_ok = || RecordingBackend::new().replying(Reply::Says("ok".into()));
+        let mut install = |want: &SessionSpec<'_>| {
+            let built = build_for(want, &test.ndb).unwrap();
+            let backend = says_ok();
+            let log = backend.log();
+            test.dave.spec_runners.insert(
+                want,
+                SpecRunner {
+                    backend: Box::new(backend),
+                    tools: built.tools,
+                    built_from: built.built_from,
+                },
+            );
+            log
+        };
+        let plain = install(&SessionSpec::plain("butler"));
+        let own = install(&SessionSpec {
+            slug: "butler",
+            model: Some("anthropic/claude-haiku-5-5"),
+            overrides: &terse,
+        });
+
+        let parts = test.parts();
+        assert!(parts
+            .dave
+            .add_user_message_for_session(sid, &parts.host, "go".into(), Vec::new()));
+        parts.dave.send_user_message_for(sid, &parts.host);
+        parts.dave.process_events(&parts.host);
+
+        assert!(
+            plain.turns().is_empty(),
+            "the plain butler's runner is idle"
+        );
+        let turns = own.turns();
+        let [turn] = turns.as_slice() else {
+            panic!("one turn on the overridden runner, got {}", turns.len());
+        };
+        assert_eq!(turn.model, None, "the runner's own model goes out");
+
+        let backend = SessionBackends::new(&test.dave.backends, &test.dave.spec_runners)
+            .for_session(test.dave.session_manager.get(sid));
+        backend.interrupt_session("dave-session-x".into(), test.waker.clone());
+        assert_eq!(own.interrupts(), 1);
+        assert_eq!(plain.interrupts(), 0);
     }
 
     /// A turn on a spec's runner records where the spec's tools run on the
@@ -785,7 +1079,7 @@ mod tests {
         let backend = RecordingBackend::new().replying(Reply::Says("ok".into()));
         let runner = backend.log();
         test.dave.spec_runners.insert(
-            "dave-code",
+            &SessionSpec::plain("dave-code"),
             SpecRunner {
                 backend: Box::new(backend),
                 tools: built.tools,

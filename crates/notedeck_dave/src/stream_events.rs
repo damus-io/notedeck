@@ -12,7 +12,7 @@ use crate::publish::{
     record_dispatch, record_published, Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
-use crate::spec_runner::{SessionBackends, SpecDeps, SpecRunners};
+use crate::spec_runner::{SessionBackends, SessionSpec, SpecDeps, SpecRunners};
 use crate::tool_round::{
     AnsweredRound, AskedGate, CallRunner, Gate, RoundCall, StartedCall, ToolRound, WaitingCall,
 };
@@ -1549,11 +1549,17 @@ pub(crate) fn dispatch_turn(
         .unwrap_or(claude_agent_sdk_rs::PermissionMode::Default);
     // A model picked for the session wins; otherwise a profile starts on its
     // own default, since the backend's default names a model its endpoint
-    // may not serve.
-    let model_name = session
-        .details
-        .resolve_model()
-        .or_else(|| profile.and_then(|p| p.default_model.clone()));
+    // may not serve. A spec session's runner was built for its model
+    // (`SessionSpec`), possibly on another provider, so the runner's own
+    // model goes out, never the raw `provider/model` it was asked as.
+    let model_name = if session.details.agent_spec.is_some() {
+        None
+    } else {
+        session
+            .details
+            .resolve_model()
+            .or_else(|| profile.and_then(|p| p.default_model.clone()))
+    };
     // `rx` is `None` for persistent-stream backends on subsequent turns — the
     // session already owns a long-lived channel we must keep, so only replace
     // `incoming_tokens` when a new receiver was minted.
@@ -1580,8 +1586,9 @@ pub(crate) fn dispatch_turn(
     session.task_handle = stream.task;
 }
 
-/// Start a turn on `session`, which runs under the agent spec `slug`: on the
-/// spec's runner ([`SpecRunners::get_or_build`]), offered the spec's tools.
+/// Start a turn on `session`, which runs under an agent spec: on the runner
+/// for its [`SessionSpec`] (the spec with the session's model and overrides
+/// applied, [`SpecRunners::get_or_build`]), offered the spec's tools.
 ///
 /// When the runner can't be built (no such spec here, no key for its
 /// provider, a toolset the host can't offer) the turn fails with why
@@ -1590,14 +1597,16 @@ pub(crate) fn dispatch_turn(
 /// down any stream the session still holds.
 pub(crate) fn dispatch_spec_turn(
     session: &mut session::ChatSession,
-    slug: &str,
     runners: &mut SpecRunners,
     deps: &SpecDeps<'_>,
     busy: bool,
     fallback: &dyn AiBackend,
     ctx: &DispatchCtx<'_>,
 ) {
-    let runner = match runners.get_or_build(slug, deps, busy) {
+    let Some(want) = SessionSpec::of(session) else {
+        return;
+    };
+    let runner = match runners.get_or_build(&want, deps, busy) {
         Ok(runner) => runner,
         Err(err) => {
             tracing::warn!("session {}: {err}", session.id);

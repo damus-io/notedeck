@@ -1651,6 +1651,9 @@ pub fn build_session_state_event(
             .start_tag()
             .tag_str(crate::agent_spec::SPEC_TAG)
             .tag_str(spec);
+        // What this session changes about the spec, so a restart or another
+        // host runs it the way it was spawned.
+        builder = state.spec_overrides.write_tags(builder);
     }
     // Where its tools run, as its own tag too: an old reader still sees
     // `backend=openai` and simply doesn't learn whether it was sandboxed.
@@ -1861,6 +1864,12 @@ pub struct SpawnOptions<'a> {
     /// spawns a session under no spec. Ignored on a resume, whose rehydrated
     /// state already carries its spec.
     pub spec: Option<&'a str>,
+    /// What the session changes about [`spec`](Self::spec)'s prompt and
+    /// budget, for it alone ([`SpecOverrides`](crate::agent_spec::SpecOverrides),
+    /// one `spec-*` tag per set field). Its model override is
+    /// [`model`](Self::model). Carried only beside a spec; `None` or an
+    /// empty set runs the spec as it is.
+    pub spec_overrides: Option<&'a crate::agent_spec::SpecOverrides>,
 }
 
 /// How long a host and client treat a spawn's [`idempotency_key`] as still
@@ -1933,6 +1942,29 @@ pub fn spawn_idempotency_key(
         hasher.update(b"spec");
         hasher.update((spec.len() as u64).to_le_bytes());
         hasher.update(spec.as_bytes());
+    }
+    // Labelled and hashed only when set, like the spec, so a spawn without
+    // overrides keeps the key it had before they existed.
+    if let Some(overrides) = opts.spec_overrides.filter(|o| !o.is_empty()) {
+        hasher.update(b"spec-overrides");
+        for field in [
+            overrides.prompt.clone().unwrap_or_default(),
+            overrides
+                .max_steps
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            overrides
+                .max_cost_cents
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            overrides
+                .timeout_secs
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+        ] {
+            hasher.update((field.len() as u64).to_le_bytes());
+            hasher.update(field.as_bytes());
+        }
     }
     hex::encode(&hasher.finalize()[..16])
 }
@@ -2063,6 +2095,12 @@ pub fn build_spawn_command_event(
                 .start_tag()
                 .tag_str(crate::agent_spec::SPEC_TAG)
                 .tag_str(spec);
+            // What this session changes about the spec, which the host copies
+            // onto its state beside the slug. Never without a spec: there is
+            // nothing for them to change.
+            if let Some(overrides) = opts.spec_overrides {
+                builder = overrides.write_tags(builder);
+            }
         }
     }
 

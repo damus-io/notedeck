@@ -9,3 +9,4 @@ status-line tests, a flaky fan-out), so each card reruns them on a stash.
 - headway:ux-feedback/typical-ice-renew — ~3 min: a WIP commit and a rerun on its parent to show the_chat_heads_and_foots_its_turns and a_running_turn_shows_its_time_on_the_status_line were red before the change; should have read this file first
 - headway:ux-feedback/venture-lock-now — read this file first and skipped the rerun: the same two ui status-line tests were the only red ones
 - headway:ux-feedback/rare-flash-issue — ~2 min: a reverse-applied patch and a rerun to show the_chat_heads_and_foots_its_turns and a_running_turn_shows_its_time_on_the_status_line were red before the change; skimmed past this file
+- headway:dave/west-try-slab — instrumented a_remote_stop's action poll (it saw zero notes: an ingest race, not runner routing) before finding this file

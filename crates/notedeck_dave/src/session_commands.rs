@@ -7,6 +7,7 @@ use crate::{
     session_events, session_loader, update, Dave, DaveOverlay, HostCtx, NewSession, SessionId,
     SessionMessage,
 };
+use agentium_core::agent_spec::SpecOverrides;
 use agentium_core::session_events::SessionRelation;
 use claude_agent_sdk_rs::PermissionMode;
 use nostrdb::Transaction;
@@ -112,6 +113,9 @@ struct SpawnRequest {
     /// `agent-spec` tag. A session under a spec always runs in the native
     /// loop, whatever backend the command names.
     spec: Option<String>,
+    /// What the session changes about `spec`'s prompt and budget, from the
+    /// command's `spec-*` tags. Empty without a spec.
+    spec_overrides: SpecOverrides,
     /// The request's identity, from the command's `idempotency_key` tag.
     /// Two commands carrying the same key are one spawn asked for twice, so
     /// the second is answered with the session the first produced rather
@@ -266,6 +270,12 @@ fn decode_session_command(
             let spec = session_events::get_tag_value(note, agentium_core::agent_spec::SPEC_TAG)
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            // Overrides only mean something beside the spec they change.
+            let spec_overrides = if spec.is_some() {
+                SpecOverrides::from_note(note)
+            } else {
+                SpecOverrides::default()
+            };
             // A spec's model is served by the native loop, never a CLI.
             let backend = if spec.is_some() {
                 BackendType::OpenAI
@@ -287,6 +297,7 @@ fn decode_session_command(
                     model,
                     profile,
                     spec,
+                    spec_overrides,
                     idempotency_key,
                 }),
             })
@@ -338,6 +349,7 @@ impl Dave {
             model,
             profile,
             spec,
+            spec_overrides,
             idempotency_key,
         } = request;
 
@@ -409,6 +421,9 @@ impl Dave {
             session.details.issue_url = issue_url;
             session.details.parent_session = parent_session;
             session.details.relation = relation;
+            // Before the first message dispatches below, like the spec: the
+            // dispatch resolves the spec with them.
+            session.details.spec_overrides = spec_overrides;
             // Set the mode *here*, before the first message is queued below:
             // `dispatch` reads it to build the backend's options, and that
             // dispatch happens later in this same frame. Applying it afterwards —
@@ -905,6 +920,84 @@ mod tests {
         assert_eq!(state.agent_spec.as_deref(), Some("butler"));
     }
 
+    /// A spawn's overrides of its spec (the model, the prompt and the
+    /// budget) reach the session the host makes, for it alone, and ride its
+    /// kind-31988 state so a restart or another host runs it the same way
+    /// (headway:dave/west-try-slab).
+    #[tokio::test]
+    async fn a_spawn_overrides_its_spec_for_that_session() {
+        use agentium_core::session_loader::SessionState;
+
+        let sk = test_secret_key();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let overrides = SpecOverrides {
+            prompt: Some("Review only; never edit.".into()),
+            max_steps: Some(5),
+            max_cost_cents: Some(40),
+            timeout_secs: Some(300),
+        };
+        let cmd = session_events::build_spawn_command_event(
+            "host-a",
+            "/work/ideas",
+            "openai",
+            &session_events::SpawnOptions {
+                spec: Some("butler"),
+                model: Some("anthropic/claude-haiku-5-5"),
+                spec_overrides: Some(&overrides),
+                ..Default::default()
+            },
+            "spawn-butler",
+            None,
+            &sk,
+        )
+        .unwrap();
+        let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+        ndb.process_event_with(&cmd.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        ndb.wait_for_all_notes(sub, 1).await.unwrap();
+
+        let request = {
+            let txn = Transaction::new(&ndb).unwrap();
+            let note = ndb.get_note_by_id(&txn, &cmd.note_id).unwrap();
+            let Some(SessionCommand::Spawn { request, .. }) =
+                decode_session_command(&note, "host-a", BackendType::OpenAI)
+            else {
+                panic!("expected a Spawn command for this host");
+            };
+            *request
+        };
+        assert_eq!(request.spec_overrides, overrides);
+
+        let mut host = TestDave::new();
+        let before: Vec<_> = host.dave.session_manager.iter().map(|s| s.id).collect();
+        host.dave.apply_spawn_command(request, 1_800_000_000);
+        let spawned = host
+            .dave
+            .session_manager
+            .iter()
+            .find(|s| !before.contains(&s.id))
+            .expect("the spawn materialized a session");
+        assert_eq!(spawned.details.spec_overrides, overrides);
+        assert_eq!(
+            spawned.details.requested_model.as_deref(),
+            Some("anthropic/claude-haiku-5-5")
+        );
+
+        let state =
+            crate::publish::session_state_snapshot(spawned, "idle".into(), "host-a".into(), 1)
+                .expect("agentic session");
+        let built = state.build_event(&sk).unwrap();
+        let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+        ndb.process_event_with(&built.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        ndb.wait_for_all_notes(sub, 1).await.unwrap();
+        let txn = Transaction::new(&ndb).unwrap();
+        let note = ndb.get_note_by_id(&txn, &built.note_id).unwrap();
+        let read = SessionState::from_note(&note, None).expect("a state");
+        assert_eq!(read.spec_overrides, overrides);
+        assert_eq!(read.model.as_deref(), Some("anthropic/claude-haiku-5-5"));
+    }
+
     /// A spawn under a profile keeps it the whole trip: a Dave queueing the
     /// spawn for another host (the picker's profile row, or a remote clone)
     /// puts its profile and model on the kind-31989 command, and the host that
@@ -1125,6 +1218,7 @@ mod tests {
             model: None,
             profile: None,
             spec: None,
+            spec_overrides: SpecOverrides::default(),
             idempotency_key: key.map(str::to_string),
         }
     }
