@@ -6,7 +6,7 @@
 //! what the policy loosens or tightens, and how far it may go before it stops.
 //!
 //! ```text
-//! AgentSpec { slug, name, model, prompt, toolsets, policy, trust, budget }
+//! AgentSpec { slug, name, model, prompt, toolsets, policy, trust, budget, triggers }
 //!               │                     │          │
 //!               │      Toolset ── Runner ── Containment ─┐
 //!               │      ToolSpec ── Capability ───────────┤
@@ -71,6 +71,7 @@ pub mod provider;
 pub mod record;
 #[cfg(test)]
 mod tests;
+pub mod trigger;
 pub mod web;
 
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,7 @@ pub use catalog::{Catalog, CatalogError, CatalogTool, ToolSource};
 pub use policy::{
     base_approval, Approval, Containment, Policy, PolicyError, SessionMode, Tighten, Widen,
 };
+pub use trigger::Trigger;
 
 /// The kind-31988 tag naming the spec a session runs under: `["agent-spec",
 /// <slug>]`. Separate from the `backend` tag, so an old reader still sees the
@@ -119,6 +121,10 @@ pub struct AgentSpec {
     pub trust: Option<Trust>,
     /// When the loop stops on its own.
     pub budget: Budget,
+    /// When a session starts under the spec unasked (see [`trigger`]).
+    /// Empty for a spec that only runs when someone starts it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<Trigger>,
 }
 
 /// What a spec's [`trust`](AgentSpec::trust) opts it into.
@@ -347,6 +353,12 @@ pub enum SpecError {
     /// A spec called as a sub-agent calls one of its own.
     #[error("agent spec {0} can't be a sub-agent: it calls a sub-agent of its own")]
     NestedSubAgent(String),
+    /// A trigger is missing its label or its prompt.
+    #[error("agent spec {0} has a trigger with no label or no prompt")]
+    IncompleteTrigger(String),
+    /// A card trigger on a spec that can't read the card it fires on.
+    #[error("agent spec {0} triggers on headway cards but has no headway tools")]
+    TriggerWithoutHeadway(String),
     /// The policy is malformed.
     #[error("agent spec {spec}: {source}")]
     Policy {
@@ -429,9 +441,27 @@ impl AgentSpec {
         if self.budget.max_steps == 0 {
             return Err(SpecError::ZeroSteps(name()));
         }
+        for trigger in &self.triggers {
+            if !trigger.is_complete() {
+                return Err(SpecError::IncompleteTrigger(name()));
+            }
+            let Trigger::CardDue { .. } = trigger;
+            if !self.reads_app("headway") {
+                return Err(SpecError::TriggerWithoutHeadway(name()));
+            }
+        }
         self.policy.validate().map_err(|source| SpecError::Policy {
             spec: name(),
             source,
+        })
+    }
+
+    /// Whether the spec's Notedeck toolset offers `app`'s tools, by name or
+    /// through [`ALL_APPS`].
+    pub fn reads_app(&self, app: &str) -> bool {
+        self.toolsets.iter().any(|t| match t {
+            Toolset::Notedeck { apps } => apps.iter().any(|a| a == app || a == ALL_APPS),
+            _ => false,
         })
     }
 

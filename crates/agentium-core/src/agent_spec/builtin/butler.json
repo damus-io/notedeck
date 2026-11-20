@@ -31,5 +31,12 @@
     "max_steps": 40,
     "max_cost_cents": 200,
     "timeout_secs": 900
-  }
+  },
+  "triggers": [
+    {
+      "kind": "card_due",
+      "label": "butler",
+      "prompt": "Scheduled review of {card}: its review date, {due}, has arrived. Read the card and the last idea template in its comments, re-check what has changed since, grade the last review (evidence moved / no change / killed), post the updated template, and propose the next review date."
+    }
+  ]
 }

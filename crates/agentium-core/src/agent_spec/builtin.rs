@@ -3,7 +3,7 @@
 //!
 //! | slug | does | toolsets |
 //! |---|---|---|
-//! | `butler` | validates an idea from a brainstorm transcript onto its headway card | Notedeck (headway, notebook) + the researcher |
+//! | `butler` | validates an idea from a brainstorm transcript onto its headway card, and again each time the card falls due | Notedeck (headway, notebook) + the researcher |
 //! | `researcher` | answers one web question for another agent | Web |
 //! | `dave-code` | "Dave Code": codes in the session's checkout, on the host, like Claude Code | Coding on the host + Notedeck (every app), `trust: host` |
 //!
@@ -12,12 +12,6 @@
 //! code.
 
 use super::AgentSpec;
-
-/// The label the butler gives an idea card, and its due date is the card's next
-/// review: a Dave host re-runs the butler on every card carrying it when that
-/// date arrives (`notedeck_dave`'s `review_schedule`). The butler's prompt
-/// names it, so the two cannot drift apart unnoticed (a test checks).
-pub const REVIEW_LABEL: &str = "butler";
 
 /// Every built-in spec's slug, in the order `find` knows them.
 pub const SLUGS: [&str; 3] = ["butler", "researcher", "dave-code"];
@@ -104,13 +98,19 @@ mod tests {
         }
     }
 
-    /// The butler labels its idea cards with the label the review schedule
-    /// re-runs it on, and sets the due date that schedule reads.
+    /// The butler re-runs on a card when its due date arrives, and its
+    /// prompt labels its idea cards with that trigger's label and sets the
+    /// due date the trigger reads, so the two can't drift apart.
     #[test]
-    fn the_butler_labels_its_cards_for_scheduled_reviews() {
-        let prompt = find("butler").unwrap().prompt;
-        assert!(prompt.contains(&format!("label `{REVIEW_LABEL}`")));
-        assert!(prompt.contains("headway_set_due"));
+    fn the_butler_labels_its_cards_for_its_own_trigger() {
+        let butler = find("butler").unwrap();
+        let [crate::agent_spec::Trigger::CardDue { label, prompt }] = &butler.triggers[..] else {
+            panic!("the butler has one card trigger");
+        };
+        assert!(butler.prompt.contains(&format!("label `{label}`")));
+        assert!(butler.prompt.contains("headway_set_due"));
+        assert!(prompt.contains(crate::agent_spec::trigger::CARD_PLACEHOLDER));
+        assert!(prompt.contains(crate::agent_spec::trigger::DUE_PLACEHOLDER));
     }
 
     /// Dave Code is the user's own coder: the Coding toolset on the host

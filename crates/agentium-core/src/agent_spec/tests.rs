@@ -374,6 +374,25 @@ fn validate_rejects_malformed_specs() {
         check(|s| s.policy.widen[0].why.clear()),
         SpecError::Policy { .. }
     ));
+    assert!(matches!(
+        check(|s| s.triggers = vec![Trigger::CardDue {
+            label: "idea".into(),
+            prompt: " ".into(),
+        }]),
+        SpecError::IncompleteTrigger(_)
+    ));
+    assert!(matches!(
+        check(|s| {
+            s.toolsets[0] = Toolset::Notedeck {
+                apps: vec!["notebook".into()],
+            };
+            s.triggers = vec![Trigger::CardDue {
+                label: "idea".into(),
+                prompt: "Review {card}.".into(),
+            }];
+        }),
+        SpecError::TriggerWithoutHeadway(_)
+    ));
 }
 
 /// Every example spec's model resolves to the built-in Anthropic endpoint

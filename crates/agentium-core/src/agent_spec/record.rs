@@ -27,6 +27,7 @@
 //! | `["tighten", "tool" \| "class", name, to]` | `policy.tighten` |
 //! | `["trust", t]` | `trust`, when set |
 //! | `["max_steps", n]`, `["max_cost_cents", n]`, `["timeout_secs", n]` | `budget` |
+//! | `["trigger", "card_due", label, prompt]` | `triggers` |
 //!
 //! The reader is as strict as [`AgentSpec::from_json`]'s `deny_unknown_fields`:
 //! a tag it doesn't know fails the whole record, so a restriction a newer
@@ -43,7 +44,9 @@ use nostrdb::{Ndb, Note, Transaction};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use super::{builtin, AgentSpec, Budget, ModelRef, Policy, Runner, Tighten, Toolset, Widen};
+use super::{
+    builtin, AgentSpec, Budget, ModelRef, Policy, Runner, Tighten, Toolset, Trigger, Widen,
+};
 use crate::config::validate_slug;
 use crate::session_events::{
     finalize_built_event, get_tag_value, init_note_builder, BuiltEvent, EventBuildError,
@@ -204,6 +207,16 @@ pub fn build_agent_spec_event_at(
             .tag_str("timeout_secs")
             .tag_str(&secs.to_string());
     }
+    for trigger in &spec.triggers {
+        b = match trigger {
+            Trigger::CardDue { label, prompt } => b
+                .start_tag()
+                .tag_str("trigger")
+                .tag_str("card_due")
+                .tag_str(label)
+                .tag_str(prompt),
+        };
+    }
     finalize_built_event(b, secret_key, AI_AGENT_SPEC_KIND)
 }
 
@@ -258,6 +271,7 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
     let mut max_steps = None;
     let mut max_cost_cents = None;
     let mut timeout_secs = None;
+    let mut triggers = Vec::new();
     for tag in note.tags() {
         let name = tag.get_str(0).ok_or("a tag with no readable name")?;
         let at = |i: u16| -> Result<&str, String> {
@@ -292,6 +306,13 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
             "max_steps" => max_steps = Some(parse_number(name, at(1)?)?),
             "max_cost_cents" => max_cost_cents = Some(parse_number(name, at(1)?)?),
             "timeout_secs" => timeout_secs = Some(parse_number(name, at(1)?)?),
+            "trigger" => triggers.push(match at(1)? {
+                "card_due" => Trigger::CardDue {
+                    label: at(2)?.to_owned(),
+                    prompt: at(3)?.to_owned(),
+                },
+                other => return Err(format!("a trigger of an unknown kind {other:?}")),
+            }),
             other => return Err(format!("an unknown tag {other:?}")),
         }
     }
@@ -308,6 +329,7 @@ fn spec_from_note(note: &Note, slug: &str) -> Result<AgentSpec, String> {
             max_cost_cents,
             timeout_secs,
         },
+        triggers,
     })
 }
 

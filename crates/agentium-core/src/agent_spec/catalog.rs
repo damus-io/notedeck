@@ -305,6 +305,7 @@ mod tests {
             }],
             policy,
             trust: None,
+            triggers: Vec::new(),
             budget: Budget {
                 max_steps: 10,
                 max_cost_cents: None,
