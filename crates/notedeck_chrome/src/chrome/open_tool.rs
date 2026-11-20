@@ -16,7 +16,9 @@ use notedeck::{
 /// Open a reference in the app that owns it, and raise the window.
 pub const OPEN: &str = "open";
 
-/// The open tool, for the host's tool registry.
+/// The open tool, for the host's tool registry. An agent may call it (see
+/// [`ToolSpec::agent`]): it is how one shows the user what it is talking
+/// about.
 pub(super) fn open_tools() -> [ToolSpec; 1] {
     [ToolSpec::new(
         OPEN,
@@ -37,7 +39,8 @@ pub(super) fn open_tools() -> [ToolSpec; 1] {
             ),
         ],
     )
-    .titled("Open reference")]
+    .titled("Open reference")
+    .agent()]
 }
 
 impl Chrome {

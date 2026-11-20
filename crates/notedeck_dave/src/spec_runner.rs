@@ -36,13 +36,18 @@
 //! another session under the spec is mid-run: its stop lives in the old
 //! runner's backend, so the old runner stays until the spec's sessions are
 //! idle, and the edit applies on the first turn after.
+//!
+//! It remembers the host's tools it was offered from the same way
+//! ([`HostTools`]): the registry lists a UI tool only while its app runs, so
+//! opening Columns after a session started adds `nostr_open_thread`, and
+//! the spec's next idle turn is rebuilt with it.
 
 use std::collections::HashMap;
 
 use agentium_core::agent_spec::record::LookupError;
 use agentium_core::agent_spec::{pricing, provider::ProviderError, AgentSpec, Toolset};
 use nostrdb::Ndb;
-use notedeck::ToolSpec;
+use notedeck::{AppContext, ToolSpec};
 
 use crate::agent_specs::AgentSpecs;
 use crate::backend::OpenAiBackend;
@@ -63,25 +68,58 @@ pub(crate) struct SpecRunner {
     pub(crate) built_from: BuiltFrom,
 }
 
-/// The specs a runner was built from: the spec, and the sub-agent spec its
-/// [`Toolset::SubAgent`] names, if it has one.
+/// What a runner was built from: the spec, the sub-agent spec its
+/// [`Toolset::SubAgent`] names, if it has one, and which copy of the host's
+/// tools.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BuiltFrom {
     pub(crate) spec: AgentSpec,
     pub(crate) sub_agent: Option<AgentSpec>,
+    /// The [`HostTools::generation`] its Notedeck toolset picked from.
+    pub(crate) tools: Option<u64>,
 }
 
 impl BuiltFrom {
-    /// `slug`'s spec and its sub-agent's, as `specs` has them now. A
-    /// sub-agent spec that can't be found is left `None` here: building the
-    /// runner reports it.
-    fn current(slug: &str, specs: &AgentSpecs) -> Result<Self, SpecRunnerError> {
-        let spec = specs.find(slug)?;
+    /// `slug`'s spec and its sub-agent's, as `deps.specs` has them now, and
+    /// the host's tools as `deps` has them. A sub-agent spec that can't be
+    /// found is left `None` here: building the runner reports it.
+    fn current(slug: &str, deps: &SpecDeps<'_>) -> Result<Self, SpecRunnerError> {
+        let spec = deps.specs.find(slug)?;
         let sub_agent = spec.toolsets.iter().find_map(|t| match t {
-            Toolset::SubAgent { spec } => specs.find(spec).ok(),
+            Toolset::SubAgent { spec } => deps.specs.find(spec).ok(),
             _ => None,
         });
-        Ok(Self { spec, sub_agent })
+        Ok(Self {
+            spec,
+            sub_agent,
+            tools: deps.host_tools.generation,
+        })
+    }
+}
+
+/// The host's tools ([`AppContext::tool_specs`]), which a spec's Notedeck
+/// toolset picks from, copied again whenever the host's tool registry
+/// changes. It changes when an app starts or stops, since a UI tool is
+/// registered only while its app runs.
+#[derive(Default)]
+pub(crate) struct HostTools {
+    /// The registry's [generation](notedeck::ToolRegistry::generation) the
+    /// specs were copied at; `None` before the first copy.
+    pub(crate) generation: Option<u64>,
+    /// Every tool the host offers.
+    pub(crate) specs: Vec<ToolSpec>,
+}
+
+impl HostTools {
+    /// Copy the host's tools if its registry changed since the last copy.
+    /// Called each frame: comparing the generation allocates nothing.
+    pub(crate) fn refresh(&mut self, ctx: &AppContext<'_>) {
+        let generation = ctx.registries.tools.generation();
+        if self.generation == Some(generation) {
+            return;
+        }
+        self.specs = ctx.tool_specs();
+        self.generation = Some(generation);
     }
 }
 
@@ -107,9 +145,8 @@ pub(crate) struct SpecDeps<'a> {
     /// The account's provider profiles, for the spec's model and its
     /// sub-agent's.
     pub(crate) profiles: &'a BackendProfiles,
-    /// The host's tools ([`notedeck::AppContext::tool_specs`]), which a
-    /// Notedeck toolset picks from.
-    pub(crate) host_tools: &'a [ToolSpec],
+    /// The host's tools, which a Notedeck toolset picks from.
+    pub(crate) host_tools: &'a HostTools,
     /// Renders tool answers for the model.
     pub(crate) ndb: &'a Ndb,
 }
@@ -127,27 +164,29 @@ impl SpecRunners {
     }
 
     /// The runner for `slug`, built from the spec `deps.specs` has for it on
-    /// first use, and rebuilt when that spec (or its sub-agent's) has
-    /// changed since, unless `busy`: another session under `slug` is
-    /// mid-run on the cached runner, which must keep its stop.
+    /// first use, and rebuilt when that spec (or its sub-agent's) or the
+    /// host's tools have changed since, unless `busy`: another session under
+    /// `slug` is mid-run on the cached runner, which must keep its stop.
     pub(crate) fn get_or_build(
         &mut self,
         slug: &str,
         deps: &SpecDeps<'_>,
         busy: bool,
     ) -> Result<&SpecRunner, SpecRunnerError> {
-        let current = BuiltFrom::current(slug, deps.specs)?;
+        let current = BuiltFrom::current(slug, deps)?;
         let stale = match self.runners.get(slug) {
             None => true,
             Some(runner) if runner.built_from == current => false,
             Some(_) if busy => {
                 tracing::info!(
-                    "agent spec {slug} changed; keeping its runner until its sessions are idle"
+                    "agent spec {slug} or the host's tools changed; keeping its runner until its sessions are idle"
                 );
                 false
             }
             Some(_) => {
-                tracing::info!("agent spec {slug} changed; rebuilding its runner");
+                tracing::info!(
+                    "agent spec {slug} or the host's tools changed; rebuilding its runner"
+                );
                 true
             }
         };
@@ -189,12 +228,11 @@ fn build(from: BuiltFrom, deps: &SpecDeps<'_>) -> Result<SpecRunner, SpecRunnerE
             search_url.clone(),
         )
     };
-    let tools = SpecTools::for_spec(spec, deps.host_tools, sub_agent, search_url.clone()).map_err(
-        |err| SpecRunnerError::Tools {
+    let tools = SpecTools::for_spec(spec, &deps.host_tools.specs, sub_agent, search_url.clone())
+        .map_err(|err| SpecRunnerError::Tools {
             slug: slug.to_owned(),
             err,
-        },
-    )?;
+        })?;
     if spec.budget.max_cost_cents.is_some() && pricing::rate(&endpoint.model).is_none() {
         tracing::warn!(
             "agent spec {slug}: no price for model {:?}, so its max_cost_cents isn't enforced",
@@ -314,19 +352,29 @@ mod tests {
         BackendProfiles::from_profiles([anthropic])
     }
 
-    /// Headway and notebook tools as the host offers them.
-    fn host_tools() -> Vec<ToolSpec> {
-        vec![
-            ToolSpec::new("headway_show_card", "Show a card.", vec![])
-                .read_only()
-                .command(&["headway", "show"]),
-            ToolSpec::new("headway_comment_card", "Comment on a card.", vec![])
-                .command(&["headway", "comment"]),
-            ToolSpec::new("headway_add_card", "Add a card.", vec![]).command(&["headway", "add"]),
-            ToolSpec::new("notebook_show", "Show the canvas.", vec![])
-                .read_only()
-                .command(&["notebook", "show"]),
-        ]
+    /// Headway and notebook tools as the host offers them, filed under
+    /// their apps as the shell files them, at the generation a Dave that
+    /// hasn't copied its host's tools yet has.
+    fn host_tools() -> HostTools {
+        HostTools {
+            generation: None,
+            specs: vec![
+                ToolSpec::new("headway_show_card", "Show a card.", vec![])
+                    .read_only()
+                    .command(&["headway", "show"])
+                    .in_app("headway"),
+                ToolSpec::new("headway_comment_card", "Comment on a card.", vec![])
+                    .command(&["headway", "comment"])
+                    .in_app("headway"),
+                ToolSpec::new("headway_add_card", "Add a card.", vec![])
+                    .command(&["headway", "add"])
+                    .in_app("headway"),
+                ToolSpec::new("notebook_show", "Show the canvas.", vec![])
+                    .read_only()
+                    .command(&["notebook", "show"])
+                    .in_app("notebook"),
+            ],
+        }
     }
 
     /// Build `slug`'s runner from the built-ins (no account records).
@@ -340,7 +388,7 @@ mod tests {
             host_tools: &host_tools,
             ndb,
         };
-        build(BuiltFrom::current(slug, &specs)?, &deps)
+        build(BuiltFrom::current(slug, &deps)?, &deps)
     }
 
     /// Get or build `slug`'s runner over `specs`, answering what it was
@@ -351,12 +399,22 @@ mod tests {
         ndb: &Ndb,
         busy: bool,
     ) -> BuiltFrom {
+        runner_over(runners, specs, &host_tools(), ndb, busy)
+    }
+
+    /// [`runner_from`] over `host_tools`.
+    fn runner_over(
+        runners: &mut SpecRunners,
+        specs: &AgentSpecs,
+        host_tools: &HostTools,
+        ndb: &Ndb,
+        busy: bool,
+    ) -> BuiltFrom {
         let profiles = profiles();
-        let host_tools = host_tools();
         let deps = SpecDeps {
             specs,
             profiles: &profiles,
-            host_tools: &host_tools,
+            host_tools,
             ndb,
         };
         runners
@@ -410,6 +468,47 @@ mod tests {
             edited,
             "an unchanged spec keeps its runner"
         );
+    }
+
+    /// A change to the host's tools (an app started, so its UI tools are
+    /// registered) rebuilds the runner on its next idle turn, with the new
+    /// tools offered; a mid-run session keeps the old one.
+    #[test]
+    fn new_host_tools_rebuild_the_runner_unless_busy() {
+        let test = crate::tests::TestDave::new();
+        let specs = AgentSpecs::default();
+        let mut runners = SpecRunners::default();
+        let mut tools = host_tools();
+        tools.generation = Some(1);
+        let first = runner_over(&mut runners, &specs, &tools, &test.ndb, false);
+        assert_eq!(first.tools, Some(1));
+
+        tools.generation = Some(2);
+        tools.specs.push(
+            ToolSpec::new("headway_open", "Open a card.", vec![])
+                .ui()
+                .agent()
+                .in_app("headway"),
+        );
+        let busy = runner_over(&mut runners, &specs, &tools, &test.ndb, true);
+        assert_eq!(busy, first, "kept while a session is mid-run");
+        assert!(runners
+            .get("butler")
+            .unwrap()
+            .tools
+            .catalog
+            .get("headway_open")
+            .is_none());
+
+        let idle = runner_over(&mut runners, &specs, &tools, &test.ndb, false);
+        assert_eq!(idle.tools, Some(2), "rebuilt");
+        assert!(runners
+            .get("butler")
+            .unwrap()
+            .tools
+            .catalog
+            .get("headway_open")
+            .is_some());
     }
 
     /// The butler builds from its built-in spec: the account's provider,

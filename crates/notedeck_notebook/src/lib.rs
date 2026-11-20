@@ -1147,6 +1147,11 @@ impl notedeck::App for Notebook {
         tools::tools()
     }
 
+    /// Its tools are `notebook`'s to an agent spec, as they are to `nd`.
+    fn tool_app(&self) -> Option<&'static str> {
+        Some("notebook")
+    }
+
     /// Contribute the notebook's inline renderers:
     /// - the **longform** (kind 30023) renderer, so a `nostr:naddr…` reference —
     ///   inline in a text node, or as a note-embed node — previews the note.

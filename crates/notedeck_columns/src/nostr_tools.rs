@@ -45,6 +45,10 @@ use serde::{Deserialize, Serialize};
 /// What the nostr tools are filed under in a command bar.
 const TOOL_CATEGORY: &str = "Nostr";
 
+/// The app an agent spec names to reach these tools, `nd`'s namespace for
+/// them too (see [`App::tool_app`](notedeck::App::tool_app)).
+pub const TOOL_APP: &str = "nostr";
+
 /// Notes a timeline answers when the caller doesn't say.
 const DEFAULT_TIMELINE_LIMIT: u64 = 20;
 

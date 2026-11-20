@@ -653,6 +653,14 @@ impl RegisteredTool {
         self
     }
 
+    /// File the tool under `app`, the name an agent spec reaches it by (see
+    /// [`ToolSpec::in_app`]). The shell does this as it collects the apps'
+    /// tools, from [`App::tool_app`](crate::App::tool_app).
+    pub fn in_app(mut self, app: &'static str) -> Self {
+        self.spec = self.spec.in_app(app);
+        self
+    }
+
     /// The app slot that contributed it, if the shell has said.
     pub fn owner(&self) -> Option<AppId> {
         self.owner
@@ -862,6 +870,8 @@ pub struct ToolRegistry {
     tools: Vec<RegisteredTool>,
     ui_tools: Vec<UiToolEntry>,
     by_name: HashMap<String, ToolSlot>,
+    /// Bumped on every change (see [`generation`](Self::generation)).
+    generation: u64,
 }
 
 impl ToolRegistry {
@@ -874,6 +884,7 @@ impl ToolRegistry {
             tracing::warn!("ignoring duplicate agent tool '{name}'");
             return;
         }
+        self.generation = self.generation.wrapping_add(1);
         self.by_name
             .insert(name.to_owned(), ToolSlot::Data(self.tools.len()));
         self.tools.push(tool);
@@ -887,6 +898,7 @@ impl ToolRegistry {
             tracing::warn!("ignoring duplicate UI tool '{name}'");
             return;
         }
+        self.generation = self.generation.wrapping_add(1);
         self.by_name
             .insert(name.to_owned(), ToolSlot::Ui(self.ui_tools.len()));
         self.ui_tools.push(entry);
@@ -902,12 +914,24 @@ impl ToolRegistry {
         self.tools.clear();
         self.ui_tools.clear();
         self.by_name.clear();
+        self.generation = self.generation.wrapping_add(1);
         for tool in update.tools {
             self.register(tool);
         }
         for entry in update.ui_tools {
             self.register_ui(entry);
         }
+    }
+
+    /// A number that changes whenever the registered tools may have: on each
+    /// [`register`](Self::register), [`register_ui`](Self::register_ui) and
+    /// [`reset`](Self::reset). A caller that keeps a copy of the
+    /// [`specs`](Self::specs) (Dave's spec sessions) compares it each frame,
+    /// which costs nothing, and copies again only when it moved: the shell
+    /// resets the registry whenever an app starts or stops, since a UI tool is
+    /// registered only while its app runs.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The specs for every registered app tool, data tools then UI tools. A
@@ -1449,6 +1473,32 @@ mod tests {
         // The duplicate is dropped; only one spec is advertised.
         assert_eq!(reg.specs().filter(|s| s.name() == "echo").count(), 1);
         assert!(reg.contains("echo"));
+    }
+
+    /// The generation moves on every change and stays put otherwise, so a
+    /// copy of the specs can tell it is stale without comparing them.
+    #[test]
+    fn registry_generation_moves_on_each_change() {
+        let mut reg = ToolRegistry::default();
+        let fresh = reg.generation();
+        reg.register(RegisteredTool::new(Echo));
+        let registered = reg.generation();
+        assert_ne!(registered, fresh);
+        reg.register(RegisteredTool::new(Echo));
+        assert_eq!(
+            reg.generation(),
+            registered,
+            "a skipped duplicate changes nothing"
+        );
+        reg.reset(ToolUpdate::default());
+        assert_ne!(reg.generation(), registered, "a reset is a change");
+    }
+
+    /// The app a tool is filed under reaches its advertised spec.
+    #[test]
+    fn a_registered_tool_carries_its_app() {
+        let tool = RegisteredTool::new(Echo).in_app("test");
+        assert_eq!(tool.spec().app(), Some("test"));
     }
 
     /// A UI tool spec owned by app slot `owner`.

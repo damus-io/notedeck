@@ -37,7 +37,9 @@ pub const NAV_BACK: &str = "chrome_nav_back";
 /// after [`JUMP_FORWARD`](super::JUMP_FORWARD).
 pub const NAV_FORWARD: &str = "chrome_nav_forward";
 
-/// The nav stack's UI tools, for the host's tool registry.
+/// The nav stack's UI tools, for the host's tool registry. An agent may call
+/// them (see [`ToolSpec::agent`]), to take the user back from where it
+/// opened something.
 pub(super) fn nav_tools() -> [ToolSpec; 2] {
     [
         ToolSpec::new(
@@ -45,13 +47,15 @@ pub(super) fn nav_tools() -> [ToolSpec; 2] {
             "Go back in the active app's history, or to the app a cross-app open came from (Alt-←).",
             Vec::new(),
         )
-        .titled("Back"),
+        .titled("Back")
+        .agent(),
         ToolSpec::new(
             NAV_FORWARD,
             "Go forward again in the active app's history (Alt-→).",
             Vec::new(),
         )
-        .titled("Forward"),
+        .titled("Forward")
+        .agent(),
     ]
 }
 

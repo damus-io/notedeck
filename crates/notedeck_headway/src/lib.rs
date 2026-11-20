@@ -668,6 +668,11 @@ impl App for Headway {
         HeadwayUiTool::specs()
     }
 
+    /// Its tools are `headway`'s to an agent spec, as they are to `nd`.
+    fn tool_app(&self) -> Option<&'static str> {
+        Some("headway")
+    }
+
     /// Queue the tool for the next render pass, which runs it where its key
     /// runs (see [`ui_tools`]): the board view it acts on only exists there.
     /// So a call that parses answers `null` at once, whatever it then does.

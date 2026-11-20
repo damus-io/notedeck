@@ -513,7 +513,8 @@ fn set_following(cx: &mut ToolContext, target: &Pubkey, follow: bool) -> Result<
 // ---------------------------------------------------------------------------
 
 /// The UI action tools' specs, for [`App::ui_tools`](notedeck::App::ui_tools)
-/// beside the opens.
+/// beside the opens. An agent may call the zap ([`ToolSpec::agent`]); as
+/// ActAsUser, its spec's policy gates it.
 pub fn ui_specs() -> Vec<ToolSpec> {
     vec![ToolSpec::new(
         ZAP,
@@ -546,6 +547,7 @@ pub fn ui_specs() -> Vec<ToolSpec> {
     .capability(Capability::ActAsUser)
     .command(&["nostr", "zap"])
     .ui()
+    .agent()
     .filed_under(TOOL_CATEGORY)]
 }
 
@@ -644,6 +646,7 @@ mod tests {
         assert_eq!(spec.name(), ZAP);
         assert_eq!(spec.kind(), notedeck::ToolKind::Ui);
         assert_eq!(spec.command_path(), ["nostr", "zap"]);
+        assert!(spec.agent_callable());
         assert_eq!(spec.capability_class(), Capability::ActAsUser);
     }
 }

@@ -44,6 +44,8 @@ macro_rules! answer_note {
 }
 
 /// The open tools' specs, for [`App::ui_tools`](notedeck::App::ui_tools).
+/// Each is one an agent may call ([`ToolSpec::agent`]), to show the user what
+/// it found.
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new(
@@ -98,7 +100,7 @@ pub fn specs() -> Vec<ToolSpec> {
         .command(&["nostr", "open-hashtag"]),
     ]
     .into_iter()
-    .map(|spec| spec.ui().filed_under(TOOL_CATEGORY))
+    .map(|spec| spec.ui().agent().filed_under(TOOL_CATEGORY))
     .collect()
 }
 
@@ -165,6 +167,7 @@ mod tests {
         assert_eq!(names, [OPEN_PROFILE, OPEN_THREAD, OPEN_HASHTAG]);
         for spec in &specs {
             assert_eq!(spec.kind(), ToolKind::Ui, "{}", spec.name());
+            assert!(spec.agent_callable(), "{}", spec.name());
             assert_eq!(spec.command_path().first(), Some(&"nostr"));
             assert_eq!(spec.capability_class(), Capability::Navigate);
             assert!(spec.description().contains("\"applied\": true"));

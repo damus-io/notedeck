@@ -390,10 +390,10 @@ pub struct Dave {
     /// The account's agent spec records (kind-31993) over the built-ins,
     /// which a spec session's runner is built from (see [`agent_specs`]).
     agent_specs: agent_specs::AgentSpecs,
-    /// The host's tools, which a spec's Notedeck toolset picks from. Read
-    /// once, on the first frame: apps register their tools when the host
-    /// builds them, so the list doesn't change after.
-    host_tools: Option<Vec<notedeck::ToolSpec>>,
+    /// The host's tools, which a spec's Notedeck toolset picks from, copied
+    /// again whenever the host's tool registry changes (an app starting
+    /// registers its UI tools).
+    host_tools: spec_runner::HostTools,
     /// ndb subscription for remote sessions' kind-31990 inspector snapshots.
     inspector_snapshot_sub: Option<nostrdb::Subscription>,
     /// When the wake scheduled for a snapshot held back by its interval
@@ -636,7 +636,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             backend_profiles: Default::default(),
             spec_runners: Default::default(),
             agent_specs: Default::default(),
-            host_tools: None,
+            host_tools: spec_runner::HostTools::default(),
             inspector_snapshot_sub: None,
             snapshot_wake_at: None,
             session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
@@ -1326,7 +1326,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let deps = spec_runner::SpecDeps {
                 specs: &self.agent_specs,
                 profiles: &self.backend_profiles,
-                host_tools: self.host_tools.as_deref().unwrap_or_default(),
+                host_tools: &self.host_tools,
                 ndb: host.ndb,
             };
             let fallback = self.backends.for_type(session.backend_type);
@@ -1408,10 +1408,9 @@ impl notedeck::App for Dave {
             return;
         }
 
-        // Once: what a spec session's Notedeck toolset picks from.
-        if self.host_tools.is_none() {
-            self.host_tools = Some(ctx.tool_specs());
-        }
+        // What a spec session's Notedeck toolset picks from, copied again
+        // only when the registry changed.
+        self.host_tools.refresh(ctx);
 
         // Copied out up front: the backend dispatches below hand a clone of this
         // to worker tasks, and each of those calls needs it while `ctx` is
@@ -1794,6 +1793,11 @@ impl notedeck::App for Dave {
     /// The agentium read tools, over nostrdb alone (see [`data_tools`]).
     fn tools(&self) -> Vec<notedeck::RegisteredTool> {
         data_tools::tools()
+    }
+
+    /// Its tools are `agentium`'s to an agent spec, as they are to `nd`.
+    fn tool_app(&self) -> Option<&'static str> {
+        Some("agentium")
     }
 
     /// The normal-mode chord's actions, by name (see [`ui_tools`]).

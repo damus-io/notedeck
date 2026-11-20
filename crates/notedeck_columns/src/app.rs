@@ -1151,6 +1151,11 @@ impl notedeck::App for Damus {
         specs
     }
 
+    /// Its tools are `nostr`'s to an agent spec, as they are to `nd`.
+    fn tool_app(&self) -> Option<&'static str> {
+        Some(crate::nostr_tools::TOOL_APP)
+    }
+
     /// Run a navigation tool or the zap: its answer is the click's
     /// [`AppAction::Note`](notedeck::AppAction::Note), which the chrome routes
     /// next, switching to Columns.

@@ -317,7 +317,8 @@ pub enum ToolKind {
 ///
 /// It says what a call would reach, not whether a given caller allows it:
 /// each caller decides about [`Window`](Self::Window) on its own (`nd mcp`
-/// needs `--ui`; a catalog offers a UI tool that has a command line).
+/// needs `--ui`; a catalog offers a UI tool that opted in with
+/// [`ToolSpec::agent`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelReach {
     /// A model can't call it at all: it streams, and a model's call
@@ -448,6 +449,12 @@ pub struct ToolSpec {
     /// The capability class it declared (see
     /// [`capability`](ToolSpec::capability)); `None` derives one.
     capability: Option<Capability>,
+    /// The app it belongs to, as an agent spec names it (see
+    /// [`in_app`](ToolSpec::in_app)); `None` until the shell says.
+    app: Option<&'static str>,
+    /// Whether an agent spec may be offered this UI tool (see
+    /// [`agent`](ToolSpec::agent)).
+    agent: bool,
 }
 
 impl ToolSpec {
@@ -467,6 +474,8 @@ impl ToolSpec {
             starts_app: false,
             streams: None,
             capability: None,
+            app: None,
+            agent: false,
         }
     }
 
@@ -583,6 +592,47 @@ impl ToolSpec {
     pub fn capability(mut self, class: Capability) -> Self {
         self.capability = Some(class);
         self
+    }
+
+    /// Say which app the tool belongs to: the name an agent spec's
+    /// `Notedeck { apps: [..] }` toolset reaches it by, `"headway"` or
+    /// `"chrome"`. The shell stamps it on every tool it collects, from the
+    /// app's `App::tool_app` in notedeck (the shell's own
+    /// tools are `"chrome"`), so an app never needs to. A tool with none is
+    /// offered to no agent spec. Independent of its
+    /// [`command`](Self::command), which is for the `nd` CLI alone.
+    pub fn in_app(mut self, app: &'static str) -> Self {
+        self.app = Some(app);
+        self
+    }
+
+    /// The app it belongs to (see [`in_app`](Self::in_app)).
+    pub fn app(&self) -> Option<&'static str> {
+        self.app
+    }
+
+    /// Let an agent spec offer this [`ToolKind::Ui`] tool to its model. A
+    /// data tool is offered without it. A UI tool isn't, since most are a
+    /// key binding's action (a cursor move, a key-hint toggle) that means
+    /// nothing to a model; one an agent can use to show the user something,
+    /// like opening a reference or going back, opts in here. What the call
+    /// needs is still its [class](Self::capability_class) under the spec's
+    /// policy.
+    pub fn agent(mut self) -> Self {
+        self.agent = true;
+        self
+    }
+
+    /// Whether an agent spec may offer it to its model: a
+    /// [`Data`](ModelReach::Data) tool always, a
+    /// [`Window`](ModelReach::Window) one only once it
+    /// [opted in](Self::agent), a stream never.
+    pub fn agent_callable(&self) -> bool {
+        match self.model_reach() {
+            ModelReach::Never => false,
+            ModelReach::Data => true,
+            ModelReach::Window => self.agent,
+        }
     }
 
     /// What the tool may do. The declared class when there is one, else one
@@ -870,6 +920,21 @@ mod tests {
         );
         assert!(current.needs_current());
         assert_eq!(current.model_reach(), ModelReach::Data);
+    }
+
+    /// A data tool is agent-callable as it is, a UI tool only once it opts
+    /// in, and a stream never, opted in or not.
+    #[test]
+    fn a_ui_tool_reaches_an_agent_only_when_it_opts_in() {
+        assert!(ToolSpec::new("t_show", "Show.", vec![]).agent_callable());
+        let ui = ToolSpec::new("t_down", "Cursor down.", vec![]).ui();
+        assert!(!ui.agent_callable(), "a key binding's action");
+        assert!(ui.agent().agent_callable());
+        let stream = ToolSpec::new("t_watch", "Watch.", vec![])
+            .ui()
+            .agent()
+            .streams(StreamMode::Redraw);
+        assert!(!stream.agent_callable());
     }
 
     /// The derived class follows what the spec already says, and a declared

@@ -88,6 +88,11 @@ const MAX_APPS: usize = 256;
 /// ([`notedeck::ToolSpec::category`]).
 const TOOL_CATEGORY: &str = "Chrome";
 
+/// The app the chrome's own tools are filed under for an agent spec
+/// ([`notedeck::ToolSpec::in_app`]): `Notedeck { apps: ["chrome"] }` reaches
+/// the ones that opted in (`open`, back, forward).
+pub const TOOL_APP: &str = "chrome";
+
 /// What the tool registry is built from: which apps run, and how many are
 /// installed. Every installed app lists its data tools, only a running one
 /// its UI tools, so either changing rebuilds it.
@@ -522,9 +527,12 @@ impl notedeck::App for Chrome {
     /// starts the app first (see [`Chrome::start_tool_owner`]). Each tool is
     /// tagged with its app's slot, so a call to a UI tool reaches the right
     /// app (see [`Chrome::call_ui_tool`]) and a command bar lists a data tool
-    /// only while its app runs. Called by the host on the top app each frame
-    /// (see `App::take_tool_update`); returns `None` when nothing changed so
-    /// no per-frame allocation happens.
+    /// only while its app runs. Each tool is filed under its app's
+    /// [`tool_app`](notedeck::App::tool_app) name, and the chrome's own under
+    /// [`TOOL_APP`], which is what an agent spec's toolset picks by. Called by
+    /// the host on the top app each frame (see `App::take_tool_update`);
+    /// returns `None` when nothing changed so no per-frame allocation
+    /// happens.
     fn take_tool_update(&mut self) -> Option<notedeck::ToolUpdate> {
         let mut snapshot = ToolsSnapshot {
             running: [0u16; MAX_APPS / 16],
@@ -551,22 +559,37 @@ impl notedeck::App for Chrome {
             .chain(nav::nav_tools())
             .chain(command_bar::command_bar_tools())
             .chain(open_tool::open_tools())
-            .map(|spec| notedeck::UiToolEntry::shell(spec.filed_under(TOOL_CATEGORY)));
+            .map(|spec| {
+                let spec = spec.filed_under(TOOL_CATEGORY).in_app(TOOL_APP);
+                notedeck::UiToolEntry::shell(spec)
+            });
         Some(notedeck::ToolUpdate {
             tools: apps()
                 .flat_map(|(i, app)| {
-                    app.tools()
-                        .into_iter()
-                        .map(move |tool| tool.owned_by(notedeck::AppId(i)))
+                    let name = app.tool_app();
+                    app.tools().into_iter().map(move |tool| {
+                        let tool = tool.owned_by(notedeck::AppId(i));
+                        match name {
+                            Some(name) => tool.in_app(name),
+                            None => tool,
+                        }
+                    })
                 })
                 .collect(),
             ui_tools: chrome_tools
                 .chain(apps().flat_map(|(i, app)| {
                     let is_running = bitset_get(&running, i as u16);
+                    let name = app.tool_app();
                     app.ui_tools()
                         .into_iter()
                         .filter(move |spec| is_running || spec.is_app_starter())
-                        .map(move |spec| notedeck::UiToolEntry::new(spec, notedeck::AppId(i)))
+                        .map(move |spec| {
+                            let spec = match name {
+                                Some(name) => spec.in_app(name),
+                                None => spec,
+                            };
+                            notedeck::UiToolEntry::new(spec, notedeck::AppId(i))
+                        })
                 }))
                 .collect(),
         })

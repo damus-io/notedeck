@@ -2829,9 +2829,11 @@ mod tests {
                 let host = [
                     ToolSpec::new("headway_show_board", "Show a board.", vec![])
                         .read_only()
-                        .command(&["headway", "show"]),
+                        .command(&["headway", "show"])
+                        .in_app("headway"),
                     ToolSpec::new("headway_move_card", "Move a card.", vec![])
-                        .command(&["headway", "move"]),
+                        .command(&["headway", "move"])
+                        .in_app("headway"),
                 ];
                 SpecTools::for_spec(&spec, &host, |_| unreachable!("no sub-agent"), None).unwrap()
             }
@@ -3163,12 +3165,15 @@ mod tests {
                 let host = [
                     ToolSpec::new("headway_show_board", "Show a board.", vec![])
                         .read_only()
-                        .command(&["headway", "show"]),
+                        .command(&["headway", "show"])
+                        .in_app("headway"),
                     ToolSpec::new("headway_comment_card", "Comment.", vec![])
-                        .command(&["headway", "comment"]),
+                        .command(&["headway", "comment"])
+                        .in_app("headway"),
                     ToolSpec::new("notebook_show", "Show.", vec![])
                         .read_only()
-                        .command(&["notebook", "show"]),
+                        .command(&["notebook", "show"])
+                        .in_app("notebook"),
                 ];
                 let child = |slug: &str| {
                     let researcher = AgentSpec::from_json(include_str!(
@@ -3306,9 +3311,11 @@ mod tests {
                 let host = [
                     ToolSpec::new("headway_tidy", "Tidy the local board.", vec![])
                         .capability(Capability::MutateWorkspace)
-                        .command(&["headway", "tidy"]),
+                        .command(&["headway", "tidy"])
+                        .in_app("headway"),
                     ToolSpec::new("headway_move_card", "Move a card.", vec![])
-                        .command(&["headway", "move"]),
+                        .command(&["headway", "move"])
+                        .in_app("headway"),
                 ];
                 let tools =
                     SpecTools::for_spec(&spec, &host, |_| unreachable!("no sub-agent"), None)

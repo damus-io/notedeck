@@ -162,8 +162,11 @@ pub enum Toolset {
     /// user's nostr data.
     Notedeck {
         /// Which apps' tools, e.g. `["headway", "notebook"]`; never empty.
-        /// `["*"]` ([`ALL_APPS`]) is every app's: whatever `nd` offers on
-        /// the host the session runs on.
+        /// An app is named as the host's tool registry files its tools
+        /// (`chrome` for the shell's own; see the
+        /// [catalog](catalog#the-notedeck-toolset-is-the-apps-registered-tools)).
+        /// `["*"]` ([`ALL_APPS`]) is every app's on the host the session
+        /// runs on, the shell's included.
         apps: Vec<String>,
     },
     /// Web search and fetch, in-process.

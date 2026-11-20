@@ -518,3 +518,88 @@ async fn every_data_tool_describes_exactly_its_args() {
         .count();
     assert!(checked >= 40, "only {checked} of {} checked", tools.len());
 }
+
+/// The UI tool [`AgentApp`] lets an agent call.
+const AGENT_UI_TOOL: &str = "test_show";
+
+/// An app named `test` to agent specs, with a data tool, a key binding's UI
+/// tool and a UI tool an agent may call.
+struct AgentApp;
+
+impl App for AgentApp {
+    fn render(&mut self, _ctx: &mut notedeck::AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
+        AppResponse::none()
+    }
+
+    fn tools(&self) -> Vec<RegisteredTool> {
+        vec![RegisteredTool::new(TestTool)]
+    }
+
+    fn ui_tools(&self) -> Vec<ToolSpec> {
+        vec![
+            ToolSpec::new(UI_TOOL, "Move the cursor down.", Vec::new()),
+            ToolSpec::new(AGENT_UI_TOOL, "Show the user a thing.", Vec::new()).agent(),
+        ]
+    }
+
+    fn tool_app(&self) -> Option<&'static str> {
+        Some("test")
+    }
+}
+
+/// A spec running `apps` over the host's tools: the names it is offered.
+fn offered(ctx: &notedeck::AppContext<'_>, apps: &str) -> Vec<&'static str> {
+    use agentium_core::agent_spec::{catalog::Catalog, AgentSpec};
+    let spec = AgentSpec::from_json(&format!(
+        r#"{{
+          "slug": "probe",
+          "model": {{ "provider": "anthropic", "model": "claude-sonnet-5-5" }},
+          "prompt": "Probe.",
+          "toolsets": [{{ "kind": "notedeck", "apps": {apps} }}],
+          "budget": {{ "max_steps": 1 }}
+        }}"#
+    ))
+    .expect("the spec parses");
+    let host = ctx.tool_specs();
+    let catalog = Catalog::build(&spec, &host).expect("the catalog builds");
+    catalog.tools().iter().map(|t| t.spec.name()).collect()
+}
+
+/// The chrome files each tool under its app's name and its own under
+/// `chrome`, so an agent spec reaches tools no `nd` command runs: the
+/// shell's `open`, back and forward under `["chrome"]`, an app's data tool
+/// and opted-in UI tool under its name, and all of them under `["*"]`. A
+/// key binding's UI tool reaches none.
+#[tokio::test]
+async fn agent_specs_reach_tools_by_the_app_the_chrome_files_them_under() {
+    let dir = tempfile::TempDir::new().expect("tmp dir");
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let egui_ctx = egui::Context::default();
+    let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
+    let mut chrome = Chrome::new_headless_with_apps(
+        &mut notedeck,
+        [NotedeckApp::Other("test".to_owned(), Box::new(AgentApp))],
+    );
+    let update = notedeck::App::take_tool_update(&mut chrome).expect("the running set changed");
+    notedeck.apply_tool_update(update);
+    let ctx = notedeck.app_context();
+
+    let chrome_tools = offered(&ctx, r#"["chrome"]"#);
+    assert_eq!(
+        chrome_tools,
+        [
+            notedeck_chrome::NAV_BACK,
+            notedeck_chrome::NAV_FORWARD,
+            notedeck_chrome::OPEN
+        ]
+    );
+    assert_eq!(offered(&ctx, r#"["test"]"#), ["test_tool", AGENT_UI_TOOL]);
+
+    let every = offered(&ctx, r#"["*"]"#);
+    for name in chrome_tools.iter().chain(&["test_tool", AGENT_UI_TOOL]) {
+        assert!(every.contains(name), "{name} under *: {every:?}");
+    }
+    for name in [UI_TOOL, notedeck_chrome::TOGGLE_KEY_HINTS, "query"] {
+        assert!(!every.contains(&name), "{name} reached an agent");
+    }
+}

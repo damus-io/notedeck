@@ -19,8 +19,8 @@
 //!
 //! ## A UI tool's call waits on the chrome's answer
 //!
-//! A spec may be offered a UI tool (one with an `nd` command line, see
-//! [`Catalog`]). The registry can't run it, since it needs its app's own
+//! A spec may be offered a UI tool (one that opted in with
+//! [`ToolSpec::agent`](notedeck::ToolSpec::agent), see [`Catalog`]). The registry can't run it, since it needs its app's own
 //! state, so it answers with an [`Intent`](ToolOutcome::Intent) carrying
 //! [`AppAction::CallTool`]. Dave queues that call with a reply
 //! ([`AppActionQueue::call_tool`]) and the call becomes a job: the chrome

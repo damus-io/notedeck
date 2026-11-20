@@ -438,6 +438,10 @@ impl notedeck::App for NotedeckApp {
         self.as_app().ui_tools()
     }
 
+    fn tool_app(&self) -> Option<&'static str> {
+        self.as_app().tool_app()
+    }
+
     fn call_ui_tool(
         &mut self,
         ctx: &mut AppContext<'_>,

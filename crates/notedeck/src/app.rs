@@ -412,6 +412,17 @@ pub trait App {
         Vec::new()
     }
 
+    /// The name this app's tools go by in an agent spec's
+    /// `Notedeck { apps: [..] }` toolset, e.g. `"headway"`, usually its `nd`
+    /// namespace. The shell stamps it on each of the app's
+    /// [`tools`](Self::tools) and [`ui_tools`](Self::ui_tools) as it collects
+    /// them ([`ToolSpec::in_app`](crate::ToolSpec::in_app)), so a spec reaches
+    /// them by it. Defaults to none: the app's tools still run from keys, the
+    /// command bar and `nd`, but no agent spec is offered them.
+    fn tool_app(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Run the UI tool `name`, one of this app's [`ui_tools`](Self::ui_tools),
     /// with `args`. Returns [`Data`](crate::ToolOutcome::Data) or an
     /// [`Error`](crate::ToolOutcome::Error) for the caller, or an

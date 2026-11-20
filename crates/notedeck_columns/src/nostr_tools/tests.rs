@@ -415,9 +415,15 @@ fn a_nostr_toolset_offers_reads_and_opens_unasked_and_gates_the_actions() {
         "budget": { "max_steps": 10 }
     }))
     .expect("spec");
-    let data: Vec<ToolSpec> = tools().iter().map(|t| t.spec().clone()).collect();
+    // Filed under `nostr`, as the chrome files Columns' tools from its
+    // `tool_app`.
+    let data: Vec<ToolSpec> = tools()
+        .into_iter()
+        .map(|t| t.in_app(TOOL_APP).spec().clone())
+        .collect();
     let mut ui = open::specs();
     ui.extend(act::ui_specs());
+    let ui: Vec<ToolSpec> = ui.into_iter().map(|s| s.in_app(TOOL_APP)).collect();
     let catalog = Catalog::build(&spec, data.iter().chain(&ui)).expect("catalog");
 
     let offered: Vec<_> = catalog.tools().iter().map(|t| t.spec.name()).collect();
