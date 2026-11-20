@@ -13,4 +13,4 @@
 //! the approval table), so a session using this runner must never be
 //! presented as sandboxed.
 
-pub use notedeck_agent_guest::{ExecError, Executor};
+pub use notedeck_agent_guest::{ChildEnv, ExecError, Executor};

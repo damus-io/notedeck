@@ -33,5 +33,5 @@ pub mod executor;
 pub mod ipc_bridge;
 mod serve;
 
-pub use executor::{ExecError, Executor};
+pub use executor::{ChildEnv, ExecError, Executor};
 pub use serve::serve;

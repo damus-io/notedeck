@@ -183,12 +183,26 @@ impl OpenAiBackend {
     }
 }
 
-/// `prompt` as a system message, with today's date after it: an agent's
-/// prompt can say "a week from today" and have the model know what today is.
-fn dated_system_prompt(prompt: &str) -> Message {
+/// `prompt` as a system message, with today's date after it (an agent's
+/// prompt can say "a week from today" and have the model know what today
+/// is), and the session's own `agentium:` ref when `session_env` has one.
+///
+/// The ref is the `AGENTIUM_SESSION` a Claude session's CLI gets in its
+/// environment ([`session_env`](super::shared::session_env)). A native
+/// loop's agent runs inside notedeck, with no environment of its own, so
+/// this is how it knows which session it is: to quote itself in a headway
+/// comment, or pass itself as a spawn's or a message's `from_session`.
+fn dated_system_prompt(prompt: &str, session_env: &BTreeMap<String, String>) -> Message {
     let today = chrono::Local::now().format("%Y-%m-%d");
-    Message::System(format!("{prompt}\n\nToday is {today}.").into())
+    let mut text = format!("{prompt}\n\nToday is {today}.");
+    if let Some(me) = session_env.get(SESSION_ENV) {
+        text.push_str(&format!(" Your agentium session is `{me}`."));
+    }
+    Message::System(text.into())
 }
+
+/// The variable holding a session's own `agentium:` ref in its env.
+const SESSION_ENV: &str = "AGENTIUM_SESSION";
 
 /// The model a request goes out on when neither its session nor the
 /// backend's endpoint names one.
@@ -227,7 +241,7 @@ impl AiBackend for OpenAiBackend {
         model: Option<String>,
         user_id: String,
         session_id: String,
-        _session_env: BTreeMap<String, String>,
+        session_env: BTreeMap<String, String>,
         _cwd: Option<PathBuf>,
         _resume_session_id: Option<String>,
         _permission_mode: PermissionMode,
@@ -267,7 +281,10 @@ impl AiBackend for OpenAiBackend {
 
         let api_messages: Vec<ChatCompletionRequestMessage> = {
             let txn = Transaction::new(&self.ndb).expect("txn");
-            let role = self.system_prompt.as_deref().map(dated_system_prompt);
+            let role = self
+                .system_prompt
+                .as_deref()
+                .map(|prompt| dated_system_prompt(prompt, &session_env));
             role.iter()
                 .chain(messages.iter())
                 .filter_map(|c| message_to_api(c, &txn, &self.ndb))
@@ -935,13 +952,22 @@ mod tests {
 
     /// [`request`], for a test with a local named `request`.
     fn request_of(backend: &OpenAiBackend, messages: Vec<Message>) -> ResponseStream {
+        request_in(backend, messages, BTreeMap::new())
+    }
+
+    /// [`request`] from a session whose env is `session_env`.
+    fn request_in(
+        backend: &OpenAiBackend,
+        messages: Vec<Message>,
+        session_env: BTreeMap<String, String>,
+    ) -> ResponseStream {
         backend.stream_request(
             messages,
             Arc::new(HashMap::new()),
             None,
             "user".to_string(),
             "s".to_string(),
-            BTreeMap::new(),
+            session_env,
             None,
             None,
             PermissionMode::Default,
@@ -1026,6 +1052,34 @@ mod tests {
             format!("You are the butler.\n\nToday is {today}."),
         );
         assert_eq!(body["messages"][1]["role"], "user", "the chat follows");
+    }
+
+    /// A session with an agentium identity is told its own ref after the
+    /// date, so it can name itself without an environment to read it from
+    /// (headway:dave/talk-giraffe-south).
+    #[tokio::test]
+    async fn the_system_prompt_names_the_session() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let seen = FakeOpenAi::silent();
+        let endpoint = seen.endpoint("qwen3");
+        let backend = OpenAiBackend::for_endpoint(&endpoint, ndb.clone())
+            .with_system_prompt("You are the butler.".into());
+        let env = super::super::shared::session_env(Some("d-tag"), &BTreeMap::new(), None);
+        let me = env["AGENTIUM_SESSION"].clone();
+
+        let stream = request_in(&backend, run_of(0), env);
+        let request = tokio::task::spawn_blocking(move || seen.request())
+            .await
+            .unwrap();
+        stream.task.unwrap().abort();
+
+        let body = &request[request.find("\r\n\r\n").expect("a body") + 4..];
+        let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(
+            body["messages"][0]["content"],
+            format!("You are the butler.\n\nToday is {today}. Your agentium session is `{me}`."),
+        );
     }
 
     /// A keyless endpoint is sent an empty bearer, not the process's

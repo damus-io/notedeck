@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use super::{ExecError, OnOutput, STREAM_BUDGET};
+use super::{ChildEnv, ExecError, OnOutput, STREAM_BUDGET};
 use notedeck_agent_proto::call::BashInput;
 use notedeck_agent_proto::wire::OutputStream;
 
@@ -154,9 +154,11 @@ enum Ended {
 
 /// Run the call's command in `root` until it exits, its timeout passes or
 /// `cancelled` resolves, and answer its output and exit status. What it
-/// writes reaches `on_output` as it is written.
+/// writes reaches `on_output` as it is written. Its environment is this
+/// process's, changed as `env` says.
 pub(super) async fn bash(
     root: &Path,
+    env: &ChildEnv,
     input: &BashInput,
     cancelled: impl Future<Output = ()>,
     on_output: OnOutput<'_>,
@@ -174,6 +176,10 @@ pub(super) async fn bash(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for name in &env.remove {
+        command.env_remove(name);
+    }
+    command.envs(&env.set);
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command.spawn().map_err(ExecError::Spawn)?;
@@ -284,7 +290,14 @@ mod tests {
     }
 
     async fn run(root: &Path, command: &str) -> Result<String, ExecError> {
-        bash(root, &call(command, None), pending(), &|_, _| {}).await
+        bash(
+            root,
+            &ChildEnv::default(),
+            &call(command, None),
+            pending(),
+            &|_, _| {},
+        )
+        .await
     }
 
     /// stdout and stderr both reach the model, and a failing exit says its
@@ -317,6 +330,7 @@ mod tests {
         let begun = Instant::now();
         let err = bash(
             dir.path(),
+            &ChildEnv::default(),
             &call(&command, Some(500)),
             pending(),
             &|_, _| {},
@@ -355,9 +369,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let begun = Instant::now();
         let cancel = tokio::time::sleep(Duration::from_millis(100));
-        let err = bash(dir.path(), &call("sleep 30", None), cancel, &|_, _| {})
-            .await
-            .unwrap_err();
+        let err = bash(
+            dir.path(),
+            &ChildEnv::default(),
+            &call("sleep 30", None),
+            cancel,
+            &|_, _| {},
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ExecError::Cancelled));
         assert!(begun.elapsed() < Duration::from_secs(10));
     }
@@ -405,9 +425,15 @@ mod tests {
                 .push((stream, text.to_owned(), begun.elapsed()));
         };
         let command = "for i in 1 2 3 4 5; do echo $i; sleep 0.2; done; echo oops >&2";
-        let out = bash(dir.path(), &call(command, None), pending(), &watch)
-            .await
-            .unwrap();
+        let out = bash(
+            dir.path(),
+            &ChildEnv::default(),
+            &call(command, None),
+            pending(),
+            &watch,
+        )
+        .await
+        .unwrap();
         assert_eq!(out, "1\n2\n3\n4\n5\noops\n");
         let seen = seen.into_inner().unwrap();
         let stdout: String = seen
@@ -453,9 +479,15 @@ mod tests {
             "head -c {} /dev/zero | tr '\\0' x; echo; echo last",
             STREAM_BUDGET * 3
         );
-        let out = bash(dir.path(), &call(&command, None), pending(), &watch)
-            .await
-            .unwrap();
+        let out = bash(
+            dir.path(),
+            &ChildEnv::default(),
+            &call(&command, None),
+            pending(),
+            &watch,
+        )
+        .await
+        .unwrap();
         assert!(out.ends_with("x\nlast\n"));
         assert_eq!(streamed.into_inner(), STREAM_BUDGET);
     }

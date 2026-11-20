@@ -37,6 +37,18 @@
 //!                                           ◀── chrome render: Applied
 //! ```
 //!
+//! ## A call names its own session
+//!
+//! A tool argument the `nd` CLI fills from the caller's environment
+//! ([`ToolArg::env`](notedeck::ToolArg::env)), such as `agentium_spawn`'s
+//! `from_session` or `headway_review`'s agentium session from
+//! `$AGENTIUM_SESSION`, has no caller environment here: the tool runs in the
+//! notedeck process, which hosts many sessions. So before a call is asked
+//! for or started, each such argument the model left out is filled from the
+//! calling session's own identity ([`with_session_defaults`]), the same
+//! variables a Claude session's CLI is given
+//! ([`session_env`](crate::backend::shared::session_env)).
+//!
 //! ## Web and sub-agent tools run as jobs
 //!
 //! A spec's Web and SubAgent toolsets have no app behind them
@@ -55,13 +67,14 @@
 //! ([`SpecToolsError::NoSandboxRunner`]), since running its calls on the
 //! host would present an unconfined session as sandboxed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
 use agentium_core::agent_spec::{AgentSpec, Catalog, CatalogError, Runner, Toolset};
 use notedeck::{
-    AppAction, AppActionQueue, AppContext, Started, ToolOutcome, UiToolAnswer, UiToolPending,
+    AppAction, AppActionQueue, AppContext, Started, ToolArgType, ToolOutcome, ToolSpec,
+    UiToolAnswer, UiToolPending,
 };
 
 use crate::sub_agent::{SubAgent, SubAgentError};
@@ -131,6 +144,38 @@ impl SpecTools {
             search_url,
         })
     }
+}
+
+/// `call` with each string argument of `spec` that the model left out (or
+/// sent empty) and that a command line fills from an environment variable
+/// set in `identity` filled from it. `identity` is the calling session's
+/// own environment ([`session_env`](crate::backend::shared::session_env)
+/// with only its identity), so a call made without its `from_session` still
+/// names the session that made it. What the model did pass is kept.
+pub(crate) fn with_session_defaults(
+    call: &AppToolCall,
+    spec: &ToolSpec,
+    identity: &BTreeMap<String, String>,
+) -> AppToolCall {
+    let mut call = call.clone();
+    let Some(args) = call.args.as_object_mut() else {
+        return call;
+    };
+    for arg in spec.arguments() {
+        if !matches!(arg.typ(), ToolArgType::String) {
+            continue;
+        }
+        let Some(value) = arg.cli().env.and_then(|var| identity.get(var)) else {
+            continue;
+        };
+        let given = args
+            .get(arg.name())
+            .is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
+        if !given {
+            args.insert(arg.name().to_owned(), value.clone().into());
+        }
+    }
+    call
 }
 
 /// How long a UI tool's call waits on the chrome's answer. Data and errors
@@ -275,6 +320,51 @@ mod tests {
         drop(queue.take_tool_calls());
         let err = run_job(call).expect_err("nothing answered");
         assert!(err.contains("no shell"), "{err}");
+    }
+
+    /// A string argument the CLI fills from `$AGENTIUM_SESSION` is filled
+    /// from the session's identity when the model leaves it out or sends it
+    /// empty, never over a value it gave, and never for a variable the
+    /// identity lacks.
+    #[test]
+    fn a_left_out_session_argument_names_the_caller() {
+        use notedeck::ToolArg;
+        let spec = ToolSpec::new(
+            "agentium_spawn",
+            "Spawn.",
+            vec![
+                ToolArg::new("from_session", ToolArgType::String, "The parent.")
+                    .env("AGENTIUM_SESSION"),
+                ToolArg::new("board", ToolArgType::String, "A board.").env("HEADWAY_BOARD"),
+                ToolArg::new("title", ToolArgType::String, "A title."),
+            ],
+        );
+        let identity =
+            BTreeMap::from([("AGENTIUM_SESSION".to_owned(), "agentium:a-b-c".to_owned())]);
+        let call = |args| AppToolCall {
+            name: "agentium_spawn".into(),
+            args,
+        };
+
+        let filled =
+            with_session_defaults(&call(serde_json::json!({ "title": "x" })), &spec, &identity);
+        assert_eq!(
+            filled.args,
+            serde_json::json!({ "title": "x", "from_session": "agentium:a-b-c" })
+        );
+        let empty = with_session_defaults(
+            &call(serde_json::json!({ "from_session": "" })),
+            &spec,
+            &identity,
+        );
+        assert_eq!(empty.args["from_session"], "agentium:a-b-c");
+        let given = serde_json::json!({ "from_session": "agentium:x-y-z" });
+        assert_eq!(
+            with_session_defaults(&call(given.clone()), &spec, &identity).args,
+            given
+        );
+        let none = with_session_defaults(&call(serde_json::json!({})), &spec, &BTreeMap::new());
+        assert_eq!(none.args, serde_json::json!({}));
     }
 
     /// A coder on the host runner builds, offering its six tools to the

@@ -15,6 +15,14 @@
 //!   session.details.containment = spec.containment()   (kind-31988 ["containment", ..])
 //! ```
 //!
+//! A runner is shared by every session under its spec, so nothing in it is
+//! a session's own. What is (its `agentium:` ref) rides each turn's session
+//! env: the backend tells the model its ref after the spec's prompt, a
+//! left-out `from_session` is filled from it
+//! ([`with_session_defaults`](crate::native_tools::with_session_defaults)),
+//! and a Bash child gets it as `AGENTIUM_SESSION`
+//! ([`child_env`](crate::coding_tools::child_env)).
+//!
 //! A runner is built the first time a session under its spec dispatches,
 //! and kept: its backend holds each session's run (the stop an interrupt
 //! sends), so every turn, stop and cleanup of the spec's sessions goes to the

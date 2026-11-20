@@ -16,6 +16,14 @@
 //! the call's id. The model gets the executor's text as is, not the row:
 //! the row is for the user, the text is what the model reads.
 //!
+//! ## What a Bash child sees
+//!
+//! Bash inherits notedeck's environment, less what a session must never
+//! see ([`STRIPPED_ENV`]: the key notedeck may have been launched with),
+//! plus the session's own identity (`AGENTIUM_SESSION`,
+//! `AGENTIUM_SESSION_ID`), as a Claude session's CLI gets it, so `nd` and
+//! the skills that read it work from a spec session's shell too.
+//!
 //! ## Only the host runner
 //!
 //! A spec whose coding toolset names the Microsandbox runner is refused when
@@ -25,10 +33,11 @@
 //!
 //! [`ExecutedTool`]: crate::messages::ExecutedTool
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use agentium_core::agent_spec::coding::{file_update, CodingCall};
-use agentium_core::agent_spec::local_executor::{ExecError, Executor};
+use agentium_core::agent_spec::local_executor::{ChildEnv, ExecError, Executor};
 use serde_json::Value;
 
 use crate::backend::shared::FinishedCall;
@@ -37,12 +46,28 @@ use crate::tool_round::{block_on_own_runtime, JobCtx, ToolJob, CANCELLED};
 use crate::tools::{AppToolCall, AppToolResponse};
 use crate::ToolResponses;
 
+/// Variables a Bash child never inherits from notedeck: `DAVE_SEC` is a
+/// secret key notedeck can be launched with, and `DAVE` rides beside it.
+/// A session's shell has no use for either, and an `env` would print the
+/// key into its transcript.
+pub(crate) const STRIPPED_ENV: [&str; 2] = ["DAVE", "DAVE_SEC"];
+
+/// What a session's Bash children get on top of notedeck's environment:
+/// `identity` (the session's own variables) set, [`STRIPPED_ENV`] removed.
+pub(crate) fn child_env(identity: BTreeMap<String, String>) -> ChildEnv {
+    ChildEnv {
+        set: identity,
+        remove: STRIPPED_ENV.iter().map(|name| (*name).to_owned()).collect(),
+    }
+}
+
 /// The job that runs the coding tool `call` off the frame, in the working
-/// tree `root`; the round's stop kills a running Bash.
-pub(crate) fn job(call: AppToolCall, root: PathBuf) -> ToolJob {
+/// tree `root`, a Bash call with `env` ([`child_env`]); the round's stop
+/// kills a running Bash.
+pub(crate) fn job(call: AppToolCall, root: PathBuf, env: ChildEnv) -> ToolJob {
     Box::new(move |ctx| {
         let coding = CodingCall::parse(&call.name, &call.args).map_err(|err| err.to_string())?;
-        let exec = Executor::new(root);
+        let exec = Executor::new(root).with_env(env);
         let ran =
             block_on_own_runtime(async { Ok(exec.run(&coding, ctx.cancel().cancelled()).await) })?;
         let text = match ran {
@@ -96,7 +121,7 @@ mod tests {
             name: name.into(),
             args,
         };
-        let answer = job(call, root.to_owned())(&ctx);
+        let answer = job(call, root.to_owned(), ChildEnv::default())(&ctx);
         let rows = rows
             .try_iter()
             .map(|r| match r {
@@ -188,5 +213,18 @@ mod tests {
         let out = run(dir.path(), "Read", json!({}));
         assert!(out.answer.is_err());
         assert!(out.rows.is_empty());
+    }
+
+    /// A session's Bash child gets the session's identity and never
+    /// notedeck's key (headway:dave/talk-giraffe-south).
+    #[test]
+    fn a_bash_child_gets_the_identity_and_not_the_key() {
+        let identity = crate::backend::shared::session_env(Some("d-tag"), &BTreeMap::new(), None);
+        let env = child_env(identity);
+        assert_eq!(env.set["AGENTIUM_SESSION_ID"], "d-tag");
+        assert!(env.set["AGENTIUM_SESSION"].starts_with("agentium:"));
+        for name in ["DAVE", "DAVE_SEC"] {
+            assert!(env.remove.iter().any(|n| n == name), "{name} stripped");
+        }
     }
 }

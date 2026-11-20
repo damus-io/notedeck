@@ -32,6 +32,14 @@
 //! relative path and a command start. On the host the session's permission
 //! mode is the only guard; in a guest, the VM is.
 //!
+//! ## A Bash child's environment
+//!
+//! Bash inherits this process's environment, as Claude Code's does, with
+//! what [`ChildEnv`] adds and removes. On the host, notedeck's own
+//! environment holds things a session must not see (a key it was launched
+//! with) and lacks things a session needs (its own `AGENTIUM_SESSION`), so
+//! the caller sets both through [`Executor::with_env`].
+//!
 //! ## What we don't have
 //!
 //! Claude Code's tools carry years of ergonomics these don't: no fuzzy edit
@@ -44,6 +52,7 @@ mod bash;
 mod files;
 mod search;
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
@@ -65,6 +74,19 @@ pub const STREAM_BUDGET: usize = 512 * 1024;
 #[derive(Debug, Clone)]
 pub struct Executor {
     root: PathBuf,
+    /// How a Bash child's environment differs from this process's.
+    env: ChildEnv,
+}
+
+/// How a Bash child's environment differs from the process it starts
+/// from: variables it gets set, and variables it doesn't inherit.
+#[derive(Debug, Clone, Default)]
+pub struct ChildEnv {
+    /// Set in the child, over any inherited value.
+    pub set: BTreeMap<String, String>,
+    /// Left out of the child even when this process has them. A name in
+    /// `set` too is set: removal only stops inheritance.
+    pub remove: Vec<String>,
 }
 
 /// Why a coding call didn't do what it asked. Its text is what the model
@@ -121,7 +143,16 @@ impl Executor {
     /// An executor whose relative paths and commands start in `root`, the
     /// session's working tree.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            env: ChildEnv::default(),
+        }
+    }
+
+    /// The same executor, with `env` applied to every Bash child.
+    pub fn with_env(mut self, env: ChildEnv) -> Self {
+        self.env = env;
+        self
     }
 
     /// Where a relative path and a Bash command start.
@@ -159,7 +190,7 @@ impl Executor {
             ),
             CodingCall::Grep(g) => search::grep(g, &self.resolve_dir(g.path.as_deref())),
             CodingCall::Glob(g) => search::glob(&g.pattern, &self.resolve_dir(g.path.as_deref())),
-            CodingCall::Bash(b) => bash::bash(&self.root, b, cancelled, on_output).await,
+            CodingCall::Bash(b) => bash::bash(&self.root, &self.env, b, cancelled, on_output).await,
         }
     }
 
@@ -201,6 +232,25 @@ mod tests {
         });
         let text = exec.run(&read, pending()).await.unwrap();
         assert_eq!(text, "     1\tfn main() {}\n");
+    }
+
+    /// A Bash child gets what [`ChildEnv`] sets and loses what it
+    /// removes; the rest it inherits.
+    #[tokio::test]
+    async fn a_bash_child_gets_its_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = ChildEnv {
+            set: BTreeMap::from([("AGENTIUM_SESSION".into(), "agentium:a-b-c".into())]),
+            remove: vec!["HOME".into()],
+        };
+        let exec = Executor::new(dir.path()).with_env(env);
+        let call = CodingCall::Bash(notedeck_agent_proto::call::BashInput {
+            command: "echo \"$AGENTIUM_SESSION ${HOME-unset} ${PATH:+path}\"".into(),
+            description: None,
+            timeout: None,
+        });
+        let text = exec.run(&call, pending()).await.unwrap();
+        assert!(text.contains("agentium:a-b-c unset path"), "{text}");
     }
 
     /// A call the model sends, as Claude Code's tool_use block, runs

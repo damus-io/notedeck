@@ -785,6 +785,10 @@ fn start_app_call(
     let Some(approval) = tools.catalog.approval_in(&call.name, mode) else {
         return not_offered(call);
     };
+    // The session's own identity: what a left-out `from_session` (and the
+    // like) means here, and what its Bash children are given.
+    let identity = identity_env(session);
+    let call = &crate::native_tools::with_session_defaults(call, &tool.spec, &identity);
     let runner = match &tool.source {
         ToolSource::App => CallRunner::Registry,
         ToolSource::Web => CallRunner::Job(crate::web_tools::job(
@@ -799,7 +803,12 @@ fn start_app_call(
         // spec whose coding tools would run anywhere else).
         ToolSource::Coding => match session.agentic.as_ref() {
             Some(agentic) => {
-                CallRunner::Job(crate::coding_tools::job(call.clone(), agentic.cwd.clone()))
+                let env = crate::coding_tools::child_env(identity);
+                CallRunner::Job(crate::coding_tools::job(
+                    call.clone(),
+                    agentic.cwd.clone(),
+                    env,
+                ))
             }
             None => {
                 return StartedCall::Done(Box::new(ToolResponses::Error(format!(
@@ -832,6 +841,15 @@ fn start_app_call(
             runner,
         }),
     }
+}
+
+/// The session's agentium identity as environment variables
+/// (`AGENTIUM_SESSION`, `AGENTIUM_SESSION_ID`), as
+/// [`session_env`](crate::backend::shared::session_env) gives a Claude
+/// session's CLI; empty for a session that isn't agentic.
+fn identity_env(session: &session::ChatSession) -> BTreeMap<String, String> {
+    let id = session.agentic.as_ref().map(|a| a.event_session_id());
+    crate::backend::shared::session_env(id, &BTreeMap::new(), None)
 }
 
 /// The session's permission mode (the Ctrl+M cycle), as the native loop's
