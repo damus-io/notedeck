@@ -1012,6 +1012,7 @@ mod tests {
             author: [0u8; 32],
             title: format!("card {n}"),
             description: String::new(),
+            description_attachments: Vec::new(),
             labels: vec![],
             priority: headway::event::Priority::None,
             due: None,

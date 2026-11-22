@@ -806,6 +806,7 @@ impl BoardReducer {
         let description = cover
             .map(|c| c.body.clone())
             .unwrap_or_else(|| issue.body.clone());
+        let description_attachments = cover.map(|c| c.attachments.clone()).unwrap_or_default();
 
         // Labels resolve latest-authorised-wins: the newest authorised label
         // event is the card's complete set, overriding the issue's inline labels.
@@ -850,6 +851,7 @@ impl BoardReducer {
                 author: c.author,
                 parent: c.parent_id.map(NoteId::new),
                 body: c.body.clone(),
+                attachments: c.attachments.clone(),
                 created_at: c.created_at,
             })
             .collect();
@@ -1082,6 +1084,7 @@ impl BoardReducer {
             author: issue.author,
             title,
             description,
+            description_attachments,
             labels,
             priority,
             due,
@@ -1334,7 +1337,7 @@ mod tests {
         ));
         events.push(parse_owned(build_labels(&i1, &["bug".to_string()]), &owner));
         events.push(parse_owned(
-            build_cover_note(&i1, &owner.pubkey, "details"),
+            build_cover_note(&i1, &owner.pubkey, "details", &[]),
             &owner,
         ));
 
@@ -1397,7 +1400,7 @@ mod tests {
 
         // A comment counts as an update too.
         events.push(parse_owned(
-            build_comment(&i1, &owner.pubkey, None, "hi").created_at(3_000),
+            build_comment(&i1, &owner.pubkey, None, "hi", &[]).created_at(3_000),
             &owner,
         ));
         assert_eq!(reduce(&events)[0].columns[0].cards[0].updated_at, 3_000);
@@ -1460,7 +1463,7 @@ mod tests {
             ),
             parse_owned(build_labels(&card, &["ui"]).created_at(5_000), &owner),
             parse_owned(
-                build_cover_note(&card, &owner.pubkey, "details").created_at(6_000),
+                build_cover_note(&card, &owner.pubkey, "details", &[]).created_at(6_000),
                 &owner,
             ),
             parse_owned(
@@ -1666,7 +1669,7 @@ mod tests {
         let comment_id = |kp: &FullKeypair, b: NoteBuilder| {
             NoteId::new(*b.sign(&kp.secret_key.secret_bytes()).build().unwrap().id())
         };
-        let c1 = comment_id(&owner, build_comment(&i1, &owner.pubkey, None, "one"));
+        let c1 = comment_id(&owner, build_comment(&i1, &owner.pubkey, None, "one", &[]));
 
         let stamp = |ev: HeadwayEvent, at: u64| match ev {
             HeadwayEvent::Comment(mut c) => {
@@ -1681,16 +1684,22 @@ mod tests {
             parse_owned(build_issue(&addr, "Card", ""), &owner),
             parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
             stamp(
-                parse_owned(build_comment(&i1, &owner.pubkey, None, "one"), &owner),
+                parse_owned(build_comment(&i1, &owner.pubkey, None, "one", &[]), &owner),
                 10,
             ),
             stamp(
-                parse_owned(build_comment(&i1, &owner.pubkey, None, "two"), &owner),
+                parse_owned(build_comment(&i1, &owner.pubkey, None, "two", &[]), &owner),
                 20,
             ),
             stamp(
                 parse_owned(
-                    build_comment(&i1, &owner.pubkey, Some((&c1, &owner.pubkey)), "re: one"),
+                    build_comment(
+                        &i1,
+                        &owner.pubkey,
+                        Some((&c1, &owner.pubkey)),
+                        "re: one",
+                        &[],
+                    ),
                     &owner,
                 ),
                 30,
@@ -1980,7 +1989,7 @@ mod tests {
                 .created_at(4_000),
         );
         let (_, card_comment) =
-            sign(build_comment(&i1, &owner.pubkey, None, "on the card").created_at(1_500));
+            sign(build_comment(&i1, &owner.pubkey, None, "on the card", &[]).created_at(1_500));
 
         // The comments come first: nothing to attach to until the records land.
         let events = vec![
@@ -2095,7 +2104,7 @@ mod tests {
         };
 
         let i1 = note_id(&owner, build_issue(&addr, "Card", ""));
-        let comment = parse_owned(build_comment(&i1, &owner.pubkey, None, "dup"), &owner);
+        let comment = parse_owned(build_comment(&i1, &owner.pubkey, None, "dup", &[]), &owner);
 
         let events = vec![
             parse_owned(build_board("b1", "Board", "", &cols), &owner),

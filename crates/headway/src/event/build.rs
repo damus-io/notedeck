@@ -4,6 +4,7 @@
 use nostrdb::{NoteBuildOptions, NoteBuilder};
 use nostrdb_net::{NoteId, Pubkey};
 
+use super::attachment::{Attachment, write_attachments};
 use super::kinds::{
     KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
     KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_REVIEW_SOURCE, KIND_SEQUENCE,
@@ -276,9 +277,17 @@ pub fn build_sequence<'a>(container: &Container, issue: &NoteId, rank: &str) -> 
         .tag_str(rank)
 }
 
-/// Build a cover note (kind 1624) — the editable card description for `issue`.
-pub fn build_cover_note<'a>(issue: &NoteId, author: &Pubkey, body: &'a str) -> NoteBuilder<'a> {
-    base(KIND_COVER_NOTE, body)
+/// Build a cover note (kind 1624) — the editable card description for `issue`,
+/// with one `imeta` tag per encrypted [`Attachment`]. The newest cover note is
+/// the whole description, so an edit that keeps the attachments passes them
+/// again.
+pub fn build_cover_note<'a>(
+    issue: &NoteId,
+    author: &Pubkey,
+    body: &'a str,
+    attachments: &[Attachment],
+) -> NoteBuilder<'a> {
+    let b = base(KIND_COVER_NOTE, body)
         .start_tag()
         .tag_str("e")
         .tag_id(issue.bytes())
@@ -287,7 +296,8 @@ pub fn build_cover_note<'a>(issue: &NoteId, author: &Pubkey, body: &'a str) -> N
         .tag_id(author.bytes())
         .start_tag()
         .tag_str("k")
-        .tag_str(&KIND_ISSUE.to_string())
+        .tag_str(&KIND_ISSUE.to_string());
+    write_attachments(b, attachments)
 }
 
 /// Build a review record (kind 1626) on `issue`: an `e` tag naming the card,
@@ -349,11 +359,14 @@ pub fn build_review_source<'a>(
 /// `e`/`k`/`p`) is the issue itself for a top-level comment, or `reply_to`
 /// (another kind-1111 comment, with its author) for a threaded reply. This
 /// matches how gitworkshop/ngit comment on NIP-34 issues.
+///
+/// Each encrypted [`Attachment`] is one `imeta` tag after the thread tags.
 pub fn build_comment<'a>(
     issue: &NoteId,
     issue_author: &Pubkey,
     reply_to: Option<(&NoteId, &Pubkey)>,
     body: &'a str,
+    attachments: &[Attachment],
 ) -> NoteBuilder<'a> {
     // Root scope: the issue. The `E` event tag carries the issue author in its
     // 4th element (relay hint left empty in slot 3), per NIP-22.
@@ -376,7 +389,8 @@ pub fn build_comment<'a>(
         Some((cid, cauthor)) => (cid, cauthor, KIND_COMMENT),
         None => (issue, issue_author, KIND_ISSUE),
     };
-    b.start_tag()
+    let b = b
+        .start_tag()
         .tag_str("e")
         .tag_id(parent_id.bytes())
         .tag_str("")
@@ -386,7 +400,8 @@ pub fn build_comment<'a>(
         .tag_str(&parent_kind.to_string())
         .start_tag()
         .tag_str("p")
-        .tag_id(parent_author.bytes())
+        .tag_id(parent_author.bytes());
+    write_attachments(b, attachments)
 }
 
 /// Build an inline review comment (kind 1111) on a review `record` (kind 1626,

@@ -248,6 +248,7 @@ fn write_one(
             card,
             body: body.clone(),
             reply_to: None,
+            attachments: Vec::new(),
         });
         written.commented = true;
     }

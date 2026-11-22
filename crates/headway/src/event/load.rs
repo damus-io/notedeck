@@ -479,8 +479,8 @@ mod tests {
     use nostrdb::NoteBuilder;
 
     use crate::event::build::{
-        build_blockers, build_board, build_comment, build_issue, build_placement, build_related,
-        build_subject_edit,
+        build_blockers, build_board, build_comment, build_cover_note, build_issue, build_placement,
+        build_related, build_subject_edit,
     };
     use crate::event::model::{ColumnDef, board_address};
 
@@ -646,8 +646,26 @@ mod tests {
         // ...then comments on it, including a threaded reply. A reply's lowercase
         // `e` points at its parent comment (not the issue), so it's only reachable
         // via the `#E` root tag — the case comment_filter exists to cover.
+        // The top-level comment and the member's description of the card each
+        // carry an encrypted attachment, whose `imeta` tag rides inside the
+        // sealed rumor and must come back out of nostrdb's unwrap intact.
         let c1 = seal(
-            build_comment(&b, &member.pubkey, None, "member comment"),
+            build_comment(
+                &b,
+                &member.pubkey,
+                None,
+                "member comment",
+                &[crate::event::sample_attachment(5)],
+            ),
+            &member,
+        );
+        seal(
+            build_cover_note(
+                &b,
+                &member.pubkey,
+                "member description",
+                &[crate::event::sample_attachment(6)],
+            ),
             &member,
         );
         seal(
@@ -656,6 +674,7 @@ mod tests {
                 &member.pubkey,
                 Some((&c1, &member.pubkey)),
                 "member reply",
+                &[],
             ),
             &member,
         );
@@ -681,6 +700,7 @@ mod tests {
                 && view.columns[0].cards[0].title == "Owner card (member-edited)"
                 && view.columns[1].cards[0].title == "Member card (renamed)"
                 && view.columns[1].cards[0].comments.len() == 2
+                && view.columns[1].cards[0].description == "member description"
             {
                 break view;
             }
@@ -712,6 +732,14 @@ mod tests {
             .expect("threaded reply folded in");
         assert_eq!(root.parent, None);
         assert_eq!(reply.parent, Some(c1));
+
+        // Attachments survive sealing and unsealing on both kinds.
+        assert_eq!(root.attachments, vec![crate::event::sample_attachment(5)]);
+        assert!(reply.attachments.is_empty());
+        assert_eq!(
+            view.columns[1].cards[0].description_attachments,
+            vec![crate::event::sample_attachment(6)]
+        );
 
         // The single-author fold sees only the owner's card, still titled as the
         // owner left it: fold_board gathers only the owner's own events, so the
@@ -882,7 +910,7 @@ mod tests {
             &owner_secret,
         );
         plain(
-            build_comment(&owned, &owner.pubkey, None, "owner plaintext comment"),
+            build_comment(&owned, &owner.pubkey, None, "owner plaintext comment", &[]),
             &owner_secret,
         );
         plain(

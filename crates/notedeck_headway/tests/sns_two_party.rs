@@ -322,6 +322,7 @@ async fn owner_comment_on_card_converges_to_member_over_relay() {
             card,
             body: "owner-comment-sentinel".to_owned(),
             reply_to: None,
+            attachments: Vec::new(),
         },
     );
 
@@ -393,6 +394,7 @@ async fn member_comment_on_owners_card_converges_to_owner_over_relay() {
             card,
             body: "member-comment-sentinel".to_owned(),
             reply_to: None,
+            attachments: Vec::new(),
         },
     );
 

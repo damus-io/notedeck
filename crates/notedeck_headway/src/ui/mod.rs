@@ -1595,6 +1595,7 @@ pub(crate) mod tests {
             author: [0u8; 32],
             title: title.to_string(),
             description: description.to_string(),
+            description_attachments: Vec::new(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
             priority: headway::event::Priority::None,
             due: None,

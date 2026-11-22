@@ -201,6 +201,7 @@ mod tests {
             author: [0; 32],
             title: String::new(),
             description: String::new(),
+            description_attachments: Vec::new(),
             labels: Vec::new(),
             priority: headway::event::Priority::None,
             due: None,

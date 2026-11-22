@@ -183,6 +183,7 @@ pub fn comment_action(
                 card,
                 body,
                 reply_to: Some(id),
+                attachments: Vec::new(),
             });
         }
         None if !flags.any() => {
@@ -190,6 +191,7 @@ pub fn comment_action(
                 card,
                 body,
                 reply_to: None,
+                attachments: Vec::new(),
             });
         }
         None => {

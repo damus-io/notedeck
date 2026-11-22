@@ -21,6 +21,7 @@ fn card(n: u8, labels: &[&str], due: Option<&str>) -> CardView {
         author: [0; 32],
         title: format!("idea {n}"),
         description: String::new(),
+        description_attachments: Vec::new(),
         labels: labels.iter().map(|l| l.to_string()).collect(),
         priority: Priority::None,
         due: due.map(date),

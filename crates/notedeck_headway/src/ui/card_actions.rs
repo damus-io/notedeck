@@ -474,6 +474,7 @@ impl BoardUiState {
             card,
             body,
             reply_to: None,
+            attachments: Vec::new(),
         })
     }
 

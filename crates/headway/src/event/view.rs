@@ -3,6 +3,8 @@
 
 use nostrdb_net::NoteId;
 
+use super::attachment::Attachment;
+
 use super::model::{
     Date, Field, Priority, ReviewFields, ReviewLocation, ReviewSourceRole, column_is_terminal,
 };
@@ -17,6 +19,8 @@ pub struct CommentView {
     /// Stored for forward-compatibility — comments currently render flat.
     pub parent: Option<NoteId>,
     pub body: String,
+    /// Encrypted files posted with the comment, in tag order.
+    pub attachments: Vec<Attachment>,
     pub created_at: u64,
 }
 
@@ -206,6 +210,9 @@ pub struct CardView {
     pub author: [u8; 32],
     pub title: String,
     pub description: String,
+    /// Encrypted files on the winning cover note, in tag order; empty when the
+    /// description is still the issue's own body.
+    pub description_attachments: Vec<Attachment>,
     pub labels: Vec<String>,
     /// Resolved priority (latest-authorised-wins overlay), [`Priority::None`]
     /// when the card was never prioritised.

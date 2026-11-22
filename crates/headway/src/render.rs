@@ -876,6 +876,7 @@ mod tests {
             author: [7; 32],
             title: title.to_string(),
             description: String::new(),
+            description_attachments: Vec::new(),
             labels: vec![],
             priority: Priority::None,
             due: None,
@@ -1033,6 +1034,7 @@ mod tests {
             author: [7; 32],
             parent: None,
             body: "hello\nthere".to_string(),
+            attachments: Vec::new(),
             created_at: NOW,
         }];
         let view = board_of(vec![c], vec![]);

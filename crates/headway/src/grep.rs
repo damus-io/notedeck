@@ -320,6 +320,7 @@ mod tests {
             author: [0; 32],
             title: title.to_string(),
             description: description.to_string(),
+            description_attachments: Vec::new(),
             labels: Vec::new(),
             priority: Priority::None,
             due: None,
@@ -350,6 +351,7 @@ mod tests {
             author: [0; 32],
             parent: None,
             body: body.to_string(),
+            attachments: Vec::new(),
             created_at,
         }
     }

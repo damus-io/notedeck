@@ -5,6 +5,7 @@
 use nostrdb::Note;
 use nostrdb_net::NoteId;
 
+use super::attachment::{Attachment, note_attachments};
 use super::kinds::{
     KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
     KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_REVIEW_SOURCE, KIND_SEQUENCE,
@@ -95,6 +96,8 @@ pub struct CoverNote {
     pub author: [u8; 32],
     pub issue_id: [u8; 32],
     pub body: String,
+    /// The description's encrypted attachments, one per `imeta` tag.
+    pub attachments: Vec<Attachment>,
     pub created_at: u64,
 }
 
@@ -200,6 +203,8 @@ pub struct CommentEvent {
     /// `k` == 1111); `None` for a top-level comment, whose parent is the issue.
     pub parent_id: Option<[u8; 32]>,
     pub body: String,
+    /// The comment's encrypted attachments, one per `imeta` tag.
+    pub attachments: Vec<Attachment>,
     pub created_at: u64,
 }
 
@@ -550,6 +555,7 @@ fn parse_cover(note: &Note) -> Option<CoverNote> {
         author: *note.pubkey(),
         issue_id: issue_id?,
         body: note.content().to_owned(),
+        attachments: note_attachments(note),
         created_at: note.created_at(),
     })
 }
@@ -637,6 +643,7 @@ fn parse_comment(note: &Note) -> Option<HeadwayEvent> {
         issue_id: root,
         parent_id,
         body: note.content().to_owned(),
+        attachments: note_attachments(note),
         created_at: note.created_at(),
     }))
 }
@@ -1124,11 +1131,23 @@ pub(crate) mod tests {
         assert_eq!(l.labels, labels);
 
         let HeadwayEvent::Cover(c) =
-            roundtrip(build_cover_note(&issue, &kp.pubkey, "## hello"), &kp)
+            roundtrip(build_cover_note(&issue, &kp.pubkey, "## hello", &[]), &kp)
         else {
             panic!("cover");
         };
         assert_eq!(c.body, "## hello");
+        assert!(c.attachments.is_empty());
+
+        let shots = [
+            crate::event::sample_attachment(1),
+            crate::event::sample_attachment(2),
+        ];
+        let HeadwayEvent::Cover(c) =
+            roundtrip(build_cover_note(&issue, &kp.pubkey, "see", &shots), &kp)
+        else {
+            panic!("cover");
+        };
+        assert_eq!(c.attachments, shots);
         assert_eq!(c.issue_id, *issue.bytes());
     }
 
@@ -1138,11 +1157,13 @@ pub(crate) mod tests {
         let issue = note_id(&owner, build_issue("30619:x:b1", "s", "b"));
 
         // Top-level comment: parent is the issue, so no parent comment.
-        let HeadwayEvent::Comment(top) =
-            roundtrip(build_comment(&issue, &owner.pubkey, None, "first!"), &owner)
-        else {
+        let HeadwayEvent::Comment(top) = roundtrip(
+            build_comment(&issue, &owner.pubkey, None, "first!", &[]),
+            &owner,
+        ) else {
             panic!("comment");
         };
+        assert!(top.attachments.is_empty());
         assert_eq!(top.issue_id, *issue.bytes());
         assert_eq!(top.body, "first!");
         assert_eq!(top.parent_id, None);
@@ -1155,6 +1176,7 @@ pub(crate) mod tests {
                 &owner.pubkey,
                 Some((&parent, &owner.pubkey)),
                 "agreed",
+                &[crate::event::sample_attachment(4)],
             ),
             &owner,
         ) else {
@@ -1164,6 +1186,7 @@ pub(crate) mod tests {
         assert_eq!(reply.issue_id, *issue.bytes());
         // …but its parent is the comment it replies to.
         assert_eq!(reply.parent_id, Some(top.id));
+        assert_eq!(reply.attachments, vec![crate::event::sample_attachment(4)]);
     }
 
     /// An inline review comment carries gitworkshop's `f`/`c`/`line` tags, and

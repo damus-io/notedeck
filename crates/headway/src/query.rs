@@ -1630,6 +1630,7 @@ mod tests {
             author: [0; 32],
             title: title.to_string(),
             description: String::new(),
+            description_attachments: Vec::new(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
             priority: Priority::None,
             due: None,

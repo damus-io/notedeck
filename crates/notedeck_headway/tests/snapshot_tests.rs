@@ -1060,6 +1060,7 @@ fn snapshot_headway_detail_inline_ref() {
             store::BoardAction::EditDescription {
                 card: host,
                 description: description.clone(),
+                attachments: Vec::new(),
             },
             &mut store::NoPublish,
         );
@@ -1119,6 +1120,7 @@ fn detail_pane_live_updates_open_card() {
             store::BoardAction::EditDescription {
                 card,
                 description: new_desc.to_string(),
+                attachments: Vec::new(),
             },
         ] {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
@@ -2430,6 +2432,7 @@ fn inline_card_snapshot(name: &str, title: &str, label: &str) {
         author: [0u8; 32],
         title: title.to_string(),
         description: String::new(),
+        description_attachments: Vec::new(),
         labels: vec![label.to_string()],
         priority: headway::event::Priority::None,
         rank: String::new(),
@@ -7559,7 +7562,7 @@ fn snapshot_headway_detail_review_sidebar() {
         let oldest = c.reviews.last().expect("the seeded records").created_at;
         store::ingest_signed(
             app_ctx.ndb,
-            event::build_comment(&card, &Pubkey::new(c.author), None, SIDEBAR_THREAD)
+            event::build_comment(&card, &Pubkey::new(c.author), None, SIDEBAR_THREAD, &[])
                 .created_at(oldest),
             &store::Signer::new(&secret, None),
             &mut store::NoPublish,
@@ -7589,6 +7592,7 @@ fn g_and_gg_scroll_the_detail() {
             card,
             body: SIDEBAR_THREAD.to_string(),
             reply_to: None,
+            attachments: Vec::new(),
         },
     );
     wait_for_card_comments(&mut harness, card, 1);

@@ -18,8 +18,8 @@ use super::widgets::{
 };
 use super::{BoardUiState, EditMode, find_card, find_detail_card, notice_ui, seed_edit_mode};
 use crate::event::{
-    self, ActivityKind, ActivityView, BoardView, ColumnPos, ColumnView, CommentView, Priority,
-    ReviewView,
+    self, ActivityKind, ActivityView, Attachment, BoardView, ColumnPos, ColumnView, CommentView,
+    Priority, ReviewView,
 };
 use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::store::{self, BoardAction, NewCard};
@@ -126,6 +126,7 @@ pub(super) fn card_detail_pane_ui(
         current_col,
         title: &card.title,
         desc: &card.description,
+        desc_attachments: &card.description_attachments,
         labels: &card.labels,
         priority: card.priority,
         columns: &view.columns,
@@ -346,6 +347,9 @@ struct DetailCtx<'a> {
     /// is compared against.
     title: &'a str,
     desc: &'a str,
+    /// The description's encrypted attachments. A text edit republishes the
+    /// whole cover note, so it passes these again to keep them.
+    desc_attachments: &'a [Attachment],
     labels: &'a [String],
     /// The card's resolved priority, shown as an editable row in the sidebar.
     priority: Priority,
@@ -806,6 +810,7 @@ fn detail_description_section_ui(
                 *action = Some(BoardAction::EditDescription {
                     card: ctx.card_id,
                     description: state.detail_desc.clone(),
+                    attachments: ctx.desc_attachments.to_vec(),
                 });
             }
             if resp.double_clicked() {
@@ -839,6 +844,7 @@ fn detail_description_section_ui(
                     *action = Some(BoardAction::EditDescription {
                         card: ctx.card_id,
                         description: state.detail_desc.clone(),
+                        attachments: ctx.desc_attachments.to_vec(),
                     });
                 }
                 state.detail_desc_mode = EditMode::Rendered;
@@ -1921,6 +1927,7 @@ fn resolve_detail_outcome(
                     // Flat composer posts top-level comments; threaded replies
                     // aren't wired into the GUI yet (the model carries `parent`).
                     reply_to: None,
+                    attachments: Vec::new(),
                 });
             }
             state.comment_draft.clear();

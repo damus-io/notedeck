@@ -1633,9 +1633,16 @@ impl AppTool for SetDescription {
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
         let board = args.route.board([args.card.as_str()])?;
         mutate(cx, &board, |view| {
+            let card = resolve_card(view, &args.card)?;
+            // The new cover note is the whole description: keep the card's
+            // attachments, which this tool doesn't edit.
+            let attachments = render::find_card(view, &card)
+                .map(|found| found.card.description_attachments.clone())
+                .unwrap_or_default();
             Ok(BoardAction::EditDescription {
-                card: resolve_card(view, &args.card)?,
+                card,
                 description: args.description,
+                attachments,
             })
         })
     }

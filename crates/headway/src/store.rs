@@ -15,8 +15,8 @@ use nostrdb::{IngestMetadata, Ndb, NoteBuilder, Transaction};
 use nostrdb_net::{NoteId, Pubkey, private_note};
 
 use crate::event::{
-    self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
-    ReviewFields, ReviewSource, board_address, build_archive_placement, build_blockers,
+    self, Attachment, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field,
+    Priority, ReviewFields, ReviewSource, board_address, build_archive_placement, build_blockers,
     build_board, build_board_def, build_comment, build_cover_note, build_field, build_issue,
     build_labels, build_placement, build_related, build_relation, build_review,
     build_review_comment, build_review_source, build_sequence, build_subject_edit, rank_between,
@@ -42,8 +42,15 @@ pub enum BoardAction {
     AddCard(NewCard),
     /// Replace a card's title (subject edit).
     EditTitle { card: NoteId, title: String },
-    /// Replace a card's description (cover note).
-    EditDescription { card: NoteId, description: String },
+    /// Replace a card's description (cover note) and its encrypted
+    /// attachments. The new cover note is the whole description, so an edit
+    /// that keeps the card's attachments passes them again (see
+    /// [`CardView::description_attachments`](crate::event::CardView::description_attachments)).
+    EditDescription {
+        card: NoteId,
+        description: String,
+        attachments: Vec<Attachment>,
+    },
     /// Set a card's labels to exactly `labels`, replacing its set (a label
     /// event is the complete set; an empty one clears it).
     SetLabels { card: NoteId, labels: Vec<String> },
@@ -96,11 +103,13 @@ pub enum BoardAction {
     /// no-op when the edge isn't present.
     Unrelate { card: NoteId, other: NoteId },
     /// Post a NIP-22 comment on `card`. `reply_to`, when set, is another comment
-    /// on the same card that this one threads under.
+    /// on the same card that this one threads under. `attachments` are its
+    /// encrypted files, one `imeta` tag each.
     AddComment {
         card: NoteId,
         body: String,
         reply_to: Option<NoteId>,
+        attachments: Vec<Attachment>,
     },
     /// Record review metadata on `card` — the commit that finished it and where
     /// to find it (a kind-1626 review record). Append-only: each call adds a
@@ -1002,6 +1011,7 @@ pub fn seed_demo_board(
                 author,
                 "Decide how boards, columns and cards map to nostr events. \
              Likely an addressable (NIP-33) board event plus per-card events.",
+                &[],
             )
             .created_at(at - 3 * 86_400)
         );
@@ -1200,7 +1210,7 @@ fn add_card(
     if !new.description.is_empty() {
         ingest_signed(
             ndb,
-            build_cover_note(&id, author, &new.description),
+            build_cover_note(&id, author, &new.description, &[]),
             signer,
             publisher,
         );
@@ -1276,10 +1286,14 @@ fn apply_edit(
         BoardAction::EditTitle { card, title } => {
             ingest_signed(ndb, build_subject_edit(&card, &title), signer, publisher);
         }
-        BoardAction::EditDescription { card, description } => {
+        BoardAction::EditDescription {
+            card,
+            description,
+            attachments,
+        } => {
             ingest_signed(
                 ndb,
-                build_cover_note(&card, author, &description),
+                build_cover_note(&card, author, &description, &attachments),
                 signer,
                 publisher,
             );
@@ -1443,6 +1457,7 @@ fn apply_edit(
             card,
             body,
             reply_to,
+            attachments,
         } => {
             // The comment is rooted on the issue, so we need the issue author
             // (the card's author) for the NIP-22 root `P`. Unknown card -> no-op.
@@ -1471,7 +1486,8 @@ fn apply_edit(
             let latest = c.comments.iter().map(|c| c.created_at).max().unwrap_or(0);
             ingest_signed(
                 ndb,
-                build_comment(&card, &issue_author, reply, &body).created_at(next_after(latest)),
+                build_comment(&card, &issue_author, reply, &body, &attachments)
+                    .created_at(next_after(latest)),
                 signer,
                 publisher,
             );
@@ -3428,6 +3444,7 @@ mod tests {
                     card: NoteId::new([0u8; 32]),
                     body: "into the void".to_string(),
                     reply_to: None,
+                    attachments: Vec::new(),
                 }
             ),
             None
@@ -3518,6 +3535,7 @@ mod tests {
             BoardAction::EditDescription {
                 card,
                 description: "the details".to_string(),
+                attachments: vec![event::sample_attachment(1)],
             },
         );
         t.apply(
@@ -3541,6 +3559,10 @@ mod tests {
         let edited = view.columns[1].cards.iter().find(|c| c.id == card).unwrap();
         assert_eq!(edited.title, "Renamed");
         assert_eq!(edited.description, "the details");
+        assert_eq!(
+            edited.description_attachments,
+            vec![event::sample_attachment(1)]
+        );
         assert_eq!(edited.labels, vec!["bug".to_string(), "ux".to_string()]);
     }
 
@@ -3558,6 +3580,7 @@ mod tests {
                 card,
                 body: "first comment".to_string(),
                 reply_to: None,
+                attachments: vec![event::sample_attachment(2), event::sample_attachment(3)],
             },
         );
         let view = t
@@ -3583,6 +3606,7 @@ mod tests {
                 card,
                 body: "a reply".to_string(),
                 reply_to: Some(parent),
+                attachments: Vec::new(),
             },
         );
         let view = t
@@ -3602,8 +3626,13 @@ mod tests {
             .comments;
         assert_eq!(comments[0].body, "first comment");
         assert_eq!(comments[0].parent, None);
+        assert_eq!(
+            comments[0].attachments,
+            vec![event::sample_attachment(2), event::sample_attachment(3)]
+        );
         assert_eq!(comments[1].body, "a reply");
         assert_eq!(comments[1].parent, Some(parent));
+        assert!(comments[1].attachments.is_empty());
     }
 
     #[tokio::test]

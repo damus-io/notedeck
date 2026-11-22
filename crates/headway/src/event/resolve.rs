@@ -470,6 +470,7 @@ mod tests {
             author: [0; 32],
             title: String::new(),
             description: String::new(),
+            description_attachments: Vec::new(),
             labels: vec![],
             priority: Priority::None,
             due: None,

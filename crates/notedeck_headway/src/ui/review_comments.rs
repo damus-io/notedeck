@@ -669,6 +669,7 @@ impl BoardUiState {
             card,
             body: line.to_owned(),
             reply_to: None,
+            attachments: Vec::new(),
         })
     }
 }

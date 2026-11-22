@@ -273,6 +273,7 @@ mod tests {
             author: [0; 32],
             title: format!("card {n}"),
             description: String::new(),
+            description_attachments: Vec::new(),
             labels: vec![],
             priority: Priority::None,
             due: None,

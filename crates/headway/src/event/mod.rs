@@ -11,7 +11,7 @@
 //! | card              | `1621`  | NIP-34 issue, `a` → board                  |
 //! | title edit        | `1985`  | NIP-32 label, `L`/`l` namespace `#subject` |
 //! | labels            | `1985`  | NIP-32 label, `L`/`l` namespace `#t`       |
-//! | description edit  | `1624`  | gitworkshop cover note                     |
+//! | description edit  | `1624`  | gitworkshop cover note; `imeta` attachments |
 //! | placement         | `30620` | addressable; `col` + fractional `rank`     |
 //! | relation          | `30621` | addressable; `d` = child, `parent` tag     |
 //! | sequence          | `30622` | addressable; `d` = `<container>:<issue>`   |
@@ -36,6 +36,7 @@
 //! rendering (`json`), the reducer (`reduce`), ndb loading (`load`), board and
 //! card resolution (`resolve`), and fractional ranking (`rank`).
 
+mod attachment;
 mod build;
 mod json;
 mod kinds;
@@ -47,6 +48,9 @@ mod reduce;
 mod resolve;
 mod view;
 
+#[cfg(test)]
+pub(crate) use attachment::tests::sample as sample_attachment;
+pub use attachment::{ATTACHMENT_ALGORITHM, Attachment, AttachmentNonce, Dims, note_attachments};
 pub use build::{
     build_archive_placement, build_blockers, build_board, build_board_def, build_comment,
     build_cover_note, build_field, build_issue, build_labels, build_placement, build_related,
