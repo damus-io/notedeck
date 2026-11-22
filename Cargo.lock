@@ -7912,6 +7912,7 @@ dependencies = [
  "notedeck_chrome",
  "notedeck_testing",
  "notedeck_ui",
+ "poll-promise",
  "profiling",
  "renderbud",
  "resvg",

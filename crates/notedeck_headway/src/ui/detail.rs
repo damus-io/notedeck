@@ -10,6 +10,7 @@ use notedeck::tokens::{
     STROKE_THIN,
 };
 
+use super::attach::{self, AttachTarget};
 use super::card_actions::{DetailScroll, detail_scroll_ui};
 use super::review::{QueueScope, epic_review_count, review_section_ui, review_sidebar_ui};
 use super::widgets::{
@@ -100,6 +101,17 @@ pub(super) fn card_detail_pane_ui(
         state.new_subissue.clear();
         state.subissue_composer = false;
         state.comment_draft.clear();
+        state.attach.reseed();
+        // The image cache must know an encrypted URL's key before it first
+        // fetches it, or it caches the ciphertext's failure. Comments drawn
+        // through NoteView register their own; this covers the description's
+        // markdown and the fallback comment rows. Once per card, not per frame.
+        attach::register(
+            app_ctx.img_cache,
+            card.description_attachments
+                .iter()
+                .chain(card.comments.iter().flat_map(|c| c.attachments.iter())),
+        );
     }
 
     // Fold remote edits into the buffers live while the same card stays open.
@@ -115,6 +127,19 @@ pub(super) fn card_detail_pane_ui(
     if state.detail_desc_mode == EditMode::Rendered && card.description != state.detail_desc_seen {
         state.detail_desc = card.description.clone();
         state.detail_desc_seen = card.description.clone();
+        attach::register(app_ctx.img_cache, &card.description_attachments);
+    }
+
+    // Screenshots pasted into a field or dropped on the pane start uploading;
+    // ones already under way step on. Only on the pass that lands, so a slide
+    // drawing two details doesn't take one drop twice.
+    let lands = state.lands();
+    if lands {
+        let editing_desc = matches!(state.detail_desc_mode, EditMode::Editing { .. });
+        state
+            .attach
+            .intake(ui.ctx(), app_ctx, card_id, editing_desc);
+        state.attach.poll(ui.ctx());
     }
 
     let ctx = DetailCtx {
@@ -172,7 +197,6 @@ pub(super) fn card_detail_pane_ui(
     };
 
     let mut outcome = DetailOutcome::None;
-    let lands = state.lands();
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
@@ -242,6 +266,9 @@ pub(super) fn card_detail_pane_ui(
         });
 
     resolve_detail_outcome(ui.ctx(), state, action, view, &ctx, outcome);
+    if lands {
+        land_attachments(ui.ctx(), app_ctx, state, &ctx, action);
+    }
     state.latch_detail_focus(ui.ctx());
     // An Esc the detail keys left alone went to a popup, menu or drag, which
     // closed on it as it laid out above. It stops here, so it doesn't also
@@ -807,11 +834,7 @@ fn detail_description_section_ui(
             // The whole rendered block is a double-click target into the editor.
             let resp = scope.response.interact(egui::Sense::click());
             if toggled {
-                *action = Some(BoardAction::EditDescription {
-                    card: ctx.card_id,
-                    description: state.detail_desc.clone(),
-                    attachments: ctx.desc_attachments.to_vec(),
-                });
+                *action = Some(commit_description(ctx, state));
             }
             if resp.double_clicked() {
                 state.detail_desc_mode = EditMode::Editing { focus: true };
@@ -829,10 +852,14 @@ fn detail_description_section_ui(
         EditMode::Editing { focus } => {
             let desc_resp = ui.add(
                 egui::TextEdit::multiline(&mut state.detail_desc)
+                    .id(desc_field_id(&ctx.card_id))
                     .desired_rows(4)
                     .desired_width(f32::INFINITY)
                     .hint_text("Add more detail… (markdown supported)"),
             );
+            if files_hovering(ui.ctx()) {
+                drop_outline(ui, desc_resp.rect);
+            }
             if focus {
                 desc_resp.request_focus();
                 state.detail_desc_mode = EditMode::Editing { focus: false };
@@ -841,13 +868,152 @@ fn detail_description_section_ui(
             // empty description renders as the "Add description…" placeholder.
             if desc_resp.lost_focus() {
                 if state.detail_desc != ctx.desc {
-                    *action = Some(BoardAction::EditDescription {
-                        card: ctx.card_id,
-                        description: state.detail_desc.clone(),
-                        attachments: ctx.desc_attachments.to_vec(),
-                    });
+                    *action = Some(commit_description(ctx, state));
                 }
                 state.detail_desc_mode = EditMode::Rendered;
+            }
+        }
+    }
+    attach_status_ui(ui, theme, state, ctx.card_id, AttachTarget::Description);
+}
+
+/// The description edit to post: the buffer, the attachments the card
+/// already has, and the ones uploaded into this edit that the text still
+/// points at. A cover note is the whole description, so leaving the card's
+/// attachments out would drop its screenshots. Clears the draft's
+/// attachments, since they now ride in the edit.
+fn commit_description(ctx: &DetailCtx, state: &mut BoardUiState) -> BoardAction {
+    let mut attachments = ctx.desc_attachments.to_vec();
+    for added in attach::referenced(&state.attach.desc_draft, &state.detail_desc) {
+        if !attachments.iter().any(|a| a.url == added.url) {
+            attachments.push(added.clone());
+        }
+    }
+    state.attach.desc_draft.clear();
+    BoardAction::EditDescription {
+        card: ctx.card_id,
+        description: state.detail_desc.clone(),
+        attachments,
+    }
+}
+
+/// The id of `card`'s description editor, fixed for the reason
+/// [`comment_field_id`] is: an upload landing after a fold moved the layout
+/// still finds the editor's cursor.
+pub(super) fn desc_field_id(card: &NoteId) -> egui::Id {
+    egui::Id::unique(("headway-detail-description", card.bytes()))
+}
+
+/// Whether files are being dragged over the window, so the field a drop
+/// would land in shows an outline.
+fn files_hovering(ctx: &egui::Context) -> bool {
+    ctx.input(|i| !i.raw.hovered_files.is_empty())
+}
+
+/// Outline `rect`, the field a dragged file would drop into.
+fn drop_outline(ui: &egui::Ui, rect: egui::Rect) {
+    ui.painter().rect_stroke(
+        rect.expand(2.0),
+        egui::CornerRadius::same(RADIUS_MD as u8),
+        egui::Stroke::new(2.0, STATUS_DONE),
+        egui::StrokeKind::Outside,
+    );
+}
+
+/// Under a field: a chip with a spinner for each screenshot uploading into
+/// it, and the last upload's error with a ✕ to dismiss it.
+fn attach_status_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    state: &mut BoardUiState,
+    card: NoteId,
+    target: AttachTarget,
+) {
+    if state.attach.uploading(card, target) {
+        ui.add_space(SPACING_XS);
+        ui.horizontal_wrapped(|ui| {
+            for chip in state.attach.chips(card, target) {
+                egui::Frame::new()
+                    .fill(theme.surface_elevated)
+                    .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+                    .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 2))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = SPACING_XS;
+                            ui.add(egui::Spinner::new().size(12.0));
+                            ui.label(
+                                egui::RichText::new(chip)
+                                    .small()
+                                    .color(theme.text_secondary),
+                            );
+                        });
+                    });
+            }
+        });
+    }
+    let mut dismiss = false;
+    if let Some(message) = state.attach.error_for(card, target) {
+        ui.add_space(SPACING_XS);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_XS;
+            ui.label(
+                egui::RichText::new(message)
+                    .small()
+                    .color(theme.err_fg_color),
+            );
+            let x = egui::Button::new(egui::RichText::new("✕").small().color(theme.text_muted))
+                .frame(false);
+            dismiss = ui.add(x).on_hover_text("Dismiss").clicked();
+        });
+    }
+    if dismiss {
+        state.attach.error = None;
+    }
+}
+
+/// Put the screenshots that finished uploading this frame into their drafts:
+/// the reference text at the field's cursor, the attachment with the draft
+/// until it is committed. One for a description whose editor has closed is
+/// committed straight away, as its own edit, once this frame's edit slot is
+/// free.
+fn land_attachments(
+    egui_ctx: &egui::Context,
+    app_ctx: &mut notedeck::AppContext,
+    state: &mut BoardUiState,
+    ctx: &DetailCtx,
+    action: &mut Option<BoardAction>,
+) {
+    for landed in state.attach.take_landed(ctx.card_id) {
+        let editing = matches!(state.detail_desc_mode, EditMode::Editing { .. });
+        if landed.target == AttachTarget::Description && !editing && action.is_some() {
+            state.attach.defer(landed);
+            continue;
+        }
+        attach::register(app_ctx.img_cache, [&landed.attachment]);
+        let snippet = attach::reference(landed.target, &landed.attachment.url);
+        match landed.target {
+            AttachTarget::Comment => {
+                attach::insert_at_cursor(
+                    egui_ctx,
+                    comment_field_id(&ctx.card_id),
+                    &mut state.comment_draft,
+                    &snippet,
+                    false,
+                );
+                state.attach.comment_draft.push(landed.attachment);
+            }
+            AttachTarget::Description => {
+                attach::insert_at_cursor(
+                    egui_ctx,
+                    desc_field_id(&ctx.card_id),
+                    &mut state.detail_desc,
+                    &snippet,
+                    true,
+                );
+                state.attach.desc_draft.push(landed.attachment);
+                if !editing {
+                    *action = Some(commit_description(ctx, state));
+                }
             }
         }
     }
@@ -1712,7 +1878,10 @@ pub(super) fn comment_view_ui(
     // No actionbar/options menu: there's no relay publishing or note-nav wired up
     // here, so the reply/zap/repost affordances would be dead. A small framed pfp
     // keeps each comment compact in the thread.
+    // TrustMedia: a card's comments come from its board's members, so their
+    // screenshots draw sharp rather than blurred behind a click.
     let flags = notedeck_ui::NoteOptions::SelectableText
+        | notedeck_ui::NoteOptions::TrustMedia
         | notedeck_ui::NoteOptions::SmallPfp
         | notedeck_ui::NoteOptions::InlineReferences
         | notedeck_ui::NoteOptions::Framed;
@@ -1790,9 +1959,17 @@ fn detail_comment_composer_ui(
     outcome: &mut DetailOutcome,
 ) {
     let mut submit = false;
+    // A dragged file drops here unless the description editor is open.
+    let drop_here =
+        files_hovering(ui.ctx()) && !matches!(state.detail_desc_mode, EditMode::Editing { .. });
+    let stroke = if drop_here {
+        egui::Stroke::new(2.0, STATUS_DONE)
+    } else {
+        egui::Stroke::new(STROKE_THIN, theme.border_default)
+    };
     egui::Frame::new()
         .fill(theme.surface_secondary)
-        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .stroke(stroke)
         .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
         .inner_margin(egui::Margin::same(SPACING_SM as i8))
         .show(ui, |ui| {
@@ -1837,6 +2014,7 @@ fn detail_comment_composer_ui(
                 },
             );
         });
+    attach_status_ui(ui, theme, state, *card, AttachTarget::Comment);
     if submit {
         *outcome = DetailOutcome::AddComment;
     }
@@ -1921,16 +2099,22 @@ fn resolve_detail_outcome(
         DetailOutcome::AddComment => {
             let body = state.comment_draft.trim().to_string();
             if !body.is_empty() {
+                // The screenshots uploaded into the draft that it still
+                // points at; one whose URL was deleted is dropped with it.
+                let attachments = attach::referenced(&state.attach.comment_draft, &body)
+                    .cloned()
+                    .collect();
                 *action = Some(BoardAction::AddComment {
                     card: ctx.card_id,
                     body,
                     // Flat composer posts top-level comments; threaded replies
                     // aren't wired into the GUI yet (the model carries `parent`).
                     reply_to: None,
-                    attachments: Vec::new(),
+                    attachments,
                 });
             }
             state.comment_draft.clear();
+            state.attach.comment_draft.clear();
         }
         DetailOutcome::OpenCard(id) => {
             // Swap the detail to the other card; the edit buffers reseed next

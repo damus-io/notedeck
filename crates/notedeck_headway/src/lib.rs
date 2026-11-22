@@ -35,13 +35,13 @@ use cache::{BoardCache, BoardRef, Boards};
 use nav::{DepartedCards, NavReconcile, SeenCards, reconcile_nav};
 pub use nav::{HeadwayRoute, ReviewTarget};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
+pub use ui::{
+    BlobUploader, BoardUiState, ChipStatus, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui,
+    card_chip_ui, card_inline_ui, comment_field_id, graph_node_ui, issue_inline_ui,
+};
 use ui::{
     BoardEffect, BoardNav, CardBoardMove, CardBoardOp, ViewEdit, board_ui, card_title, empty_state,
     find_detail_card,
-};
-pub use ui::{
-    BoardUiState, ChipStatus, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui,
-    card_inline_ui, comment_field_id, graph_node_ui, issue_inline_ui,
 };
 
 use event::BoardView;
@@ -210,6 +210,13 @@ fn frame_kind(frame: &str) -> Option<u64> {
 impl Headway {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Upload pasted and dropped screenshots through `uploader` instead of
+    /// [`notedeck::media::blossom::upload`]: the seam a test stubs so it
+    /// makes no network call.
+    pub fn set_blob_uploader(&mut self, uploader: BlobUploader) {
+        self.state.set_blob_uploader(uploader);
     }
 
     /// Schedule a short burst of repaints so a just-ingested event (ingest is

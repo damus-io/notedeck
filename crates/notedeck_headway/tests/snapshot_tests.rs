@@ -9613,3 +9613,438 @@ fn ui_tools_drive_the_board_through_call_ui_tool() {
     wait_for_absent(&mut harness, "← Back");
     wait_for_label(&mut harness, "7 cards · 5 columns");
 }
+
+// --- Screenshots pasted and dropped into the detail ---------------------------
+
+/// The Blossom server the attachment tests' account lists in its kind 10063.
+/// Nothing is ever sent there: the tests' uploader is a stub, and the
+/// snapshot's screenshots are in the disk cache. `.invalid` never resolves,
+/// so a miss fails fast instead of reaching the network, and the URL has no
+/// port, which nostrdb's content parser would split off the link.
+const BLOSSOM_TEST_SERVER: &str = "https://blossom.invalid";
+
+/// The card the attachment tests open.
+const ATTACH_CARD: &str = "Define nostr event model for boards";
+
+/// A file dropped on the window in a test: its path and the bytes it reads as.
+#[derive(Debug)]
+struct TestDrop {
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+}
+
+impl egui::DroppedFile for TestDrop {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Ok(self.bytes.clone())
+    }
+}
+
+/// One upload the stub uploader took: the promise's sender, held so the test
+/// decides when (and whether) the server answers, and what it was sent.
+struct StubUpload {
+    sender: poll_promise::Sender<
+        Result<notedeck::media::blossom::BlobDescriptor, notedeck::media::blossom::BlossomError>,
+    >,
+    server: String,
+    sha256: String,
+    size: u64,
+}
+
+/// The uploads the stub took, oldest first.
+type StubUploads = std::rc::Rc<std::cell::RefCell<Vec<StubUpload>>>;
+
+/// Swap the harness Headway's uploader for a stub that answers nothing until
+/// the test sends it a descriptor ([`answer_upload`]).
+fn stub_uploader(harness: &mut Harness<'static, HeadwayTestState>) -> StubUploads {
+    let uploads = StubUploads::default();
+    let taken = uploads.clone();
+    harness
+        .state_mut()
+        .headway
+        .set_blob_uploader(Box::new(move |_seckey, server, blob| {
+            let (sender, promise) = poll_promise::Promise::new();
+            taken.borrow_mut().push(StubUpload {
+                sender,
+                server: server.to_owned(),
+                sha256: notedeck::media::blossom::sha256_hex(&blob.bytes),
+                size: blob.bytes.len() as u64,
+            });
+            promise
+        }));
+    uploads
+}
+
+/// Answer the oldest pending stub upload the way a Blossom server would:
+/// stored, at `<server>/<sha256>`. Returns that URL.
+fn answer_upload(uploads: &StubUploads) -> String {
+    let upload = uploads.borrow_mut().remove(0);
+    let url = format!("{}/{}", upload.server, upload.sha256);
+    upload
+        .sender
+        .send(Ok(notedeck::media::blossom::BlobDescriptor {
+            url: url.clone(),
+            sha256: upload.sha256,
+            size: upload.size,
+            mime_type: Some("application/octet-stream".to_owned()),
+        }));
+    url
+}
+
+/// Publish a kind-10063 Blossom server list for the harness account, naming
+/// [`BLOSSOM_TEST_SERVER`], and wait until nostrdb answers it.
+fn seed_blossom_list(harness: &mut Harness<'static, HeadwayTestState>) {
+    let state = harness.state_mut();
+    let pubkey = *state.account.pubkey.bytes();
+    let secret = state.account.secret_key.secret_bytes();
+    let ndb = state.notedeck.app_context().ndb.clone();
+    store::ingest_signed(
+        &ndb,
+        NoteBuilder::new()
+            .kind(notedeck::media::blossom::SERVER_LIST_KIND)
+            .content("")
+            .start_tag()
+            .tag_str("server")
+            .tag_str(BLOSSOM_TEST_SERVER),
+        &store::Signer::new(&secret, None),
+        &mut store::NoPublish,
+    );
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let txn = Transaction::new(&ndb).expect("txn");
+        if notedeck::media::blossom::server_list(&ndb, &txn, &pubkey).is_some() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the server list never landed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// A small PNG, `w` by `h`, as a screenshot file's bytes.
+fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+    let image = image::RgbaImage::from_fn(w, h, |x, y| {
+        image::Rgba([(x * 255 / w) as u8, 140, (y * 255 / h) as u8, 255])
+    });
+    let mut bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("png");
+    bytes
+}
+
+/// The comment composer's text, read off the accesskit tree.
+fn composer_text(harness: &Harness<'static, HeadwayTestState>) -> String {
+    harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .last()
+        .and_then(|node| node.accesskit_node().value())
+        .unwrap_or_default()
+}
+
+/// Pump frames until `stub` has taken `count` uploads: the drop's file has
+/// been read and sealed on the job pool.
+fn wait_for_uploads(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    stub: &StubUploads,
+    count: usize,
+) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    while stub.borrow().len() < count {
+        assert!(Instant::now() < deadline, "the upload never started");
+        harness.run_ok();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Behavioural (no lavapipe): a screenshot dropped on the detail, with the
+/// description shown rendered, goes to the comment composer. Its chip spins
+/// while the upload runs; once the server answers, the URL lands in the draft
+/// on its own line and the chip goes; posting the comment carries the
+/// encrypted attachment whose key opens what was uploaded.
+#[test]
+fn a_dropped_screenshot_uploads_into_the_comment() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    seed_blossom_list(&mut harness);
+    let stub = stub_uploader(&mut harness);
+    let card = harness_card_id(&mut harness, ATTACH_CARD);
+    harness.get_by_label(ATTACH_CARD).click();
+    wait_for_label(&mut harness, "← Back");
+
+    // Some text first, so the URL has to go on a line of its own.
+    harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .last()
+        .expect("the comment composer")
+        .click();
+    harness.run_steps(2);
+    harness.event(egui::Event::Text("Broken here:".to_owned()));
+    harness.run_steps(2);
+
+    let plaintext = png_bytes(24, 12);
+    harness
+        .input_mut()
+        .dropped_files
+        .push(std::sync::Arc::new(TestDrop {
+            path: "/tmp/broken-layout.png".into(),
+            bytes: plaintext.clone(),
+        }));
+    wait_for_label(&mut harness, "Uploading broken-layout.png…");
+    wait_for_uploads(&mut harness, &stub, 1);
+    assert!(
+        harness
+            .query_by_label("Uploading broken-layout.png…")
+            .is_some(),
+        "the chip stays while the server hasn't answered"
+    );
+
+    let url = answer_upload(&stub);
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_label("Uploading broken-layout.png…")
+            .is_none(),
+        "the chip goes once the upload lands"
+    );
+    assert_eq!(composer_text(&harness), format!("Broken here:\n{url}"));
+
+    harness.get_by_label("↑").click();
+    wait_for_card_comments(&mut harness, card, 1);
+
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let ndb = state.notedeck.app_context().ndb.clone();
+    let txn = Transaction::new(&ndb).expect("txn");
+    let boards = headway::event::fold_board(&ndb, &txn, &author)
+        .expect("folded")
+        .finalize();
+    let view = headway::event::find_board(&boards, &author, store::BOARD_ID).expect("board");
+    let comment = &view.card(card).expect("the card").comments[0];
+    assert_eq!(comment.body, format!("Broken here:\n{url}"));
+    let [attachment] = comment.attachments.as_slice() else {
+        panic!("one attachment: {:?}", comment.attachments);
+    };
+    assert_eq!(attachment.url, url);
+    assert_eq!(attachment.mime, "image/png");
+    assert_eq!(
+        attachment.dims,
+        Some(headway::event::Dims {
+            width: 24,
+            height: 12
+        })
+    );
+    // The key opens what went to the server: the ciphertext's hash is the
+    // one the URL names, and the plaintext's is the dropped file's.
+    assert_eq!(hex::encode(attachment.x), url.rsplit('/').next().unwrap());
+    assert_eq!(
+        attachment.ox.map(hex::encode),
+        Some(notedeck::media::blossom::sha256_hex(&plaintext))
+    );
+}
+
+/// Behavioural (no lavapipe): pasting a screenshot into the focused comment
+/// composer, on an account with no kind-10063 server list, uploads nothing
+/// and says what's missing under the composer.
+#[test]
+fn a_pasted_screenshot_without_a_server_list_says_so() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    let stub = stub_uploader(&mut harness);
+    harness.get_by_label(ATTACH_CARD).click();
+    wait_for_label(&mut harness, "← Back");
+    harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .last()
+        .expect("the comment composer")
+        .click();
+    harness.run_steps(2);
+
+    let image = egui::ColorImage::new([4, 4], vec![egui::Color32::RED; 16]);
+    harness.event(egui::Event::PasteImage(std::sync::Arc::new(image)));
+    wait_for_label(
+        &mut harness,
+        "Add a Blossom server (kind 10063) to attach images",
+    );
+    assert!(stub.borrow().is_empty(), "nothing was uploaded");
+    assert!(
+        harness.query_by_label_contains("Uploading").is_none(),
+        "no chip for an upload that never started"
+    );
+}
+
+/// Behavioural (no lavapipe): with the description editor open, a dropped
+/// screenshot goes to the description as a markdown image on a paragraph of
+/// its own, and leaving the editor commits it with the attachment beside the
+/// card's text.
+#[test]
+fn a_dropped_screenshot_uploads_into_the_open_description() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    seed_blossom_list(&mut harness);
+    let stub = stub_uploader(&mut harness);
+    let card = harness_card_id(&mut harness, ATTACH_CARD);
+    harness.get_by_label(ATTACH_CARD).click();
+    wait_for_label(&mut harness, "← Back");
+    harness.get_by_label("✎").click();
+    harness.run_steps(3);
+
+    harness
+        .input_mut()
+        .dropped_files
+        .push(std::sync::Arc::new(TestDrop {
+            path: "/tmp/shot.png".into(),
+            bytes: png_bytes(8, 8),
+        }));
+    wait_for_uploads(&mut harness, &stub, 1);
+    let url = answer_upload(&stub);
+    harness.run_steps(3);
+    let editor = harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .next()
+        .and_then(|node| node.accesskit_node().value())
+        .expect("the description editor");
+    assert!(
+        editor.ends_with(&format!("\n\n![image]({url})")),
+        "the image is a paragraph of its own: {editor:?}"
+    );
+
+    press_board_keys(&mut harness, &[egui::Key::Escape]);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let ndb = state.notedeck.app_context().ndb.clone();
+        let txn = Transaction::new(&ndb).expect("txn");
+        let boards = headway::event::fold_board(&ndb, &txn, &author)
+            .expect("folded")
+            .finalize();
+        let view = headway::event::find_board(&boards, &author, store::BOARD_ID).expect("board");
+        let c = view.card(card).expect("the card");
+        if c.description.contains(&url) {
+            let urls: Vec<&str> = c
+                .description_attachments
+                .iter()
+                .map(|a| a.url.as_str())
+                .collect();
+            assert_eq!(urls, [url.as_str()]);
+            break;
+        }
+        assert!(Instant::now() < deadline, "the description never committed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Seed the [`ATTACH_CARD`]'s description and one comment with a screenshot
+/// each, as the detail's paste would have written them: an encrypted imeta
+/// attachment, and a markdown image (description) or bare URL (comment)
+/// pointing at it. The plaintexts go straight into the host's disk cache
+/// under their URLs, so nothing is fetched.
+fn seed_attachment_card(harness: &mut Harness<'static, HeadwayTestState>) -> NoteId {
+    let card = harness_card_id(harness, ATTACH_CARD);
+    let state = harness.state_mut();
+    state.tick_host = true;
+    let author = state.account.pubkey;
+    let secret = state.account.secret_key.secret_bytes();
+    let app_ctx = state.notedeck.app_context();
+    let ndb = app_ctx.ndb.clone();
+
+    let screenshot = |size: [usize; 2], tint: u8| {
+        let [w, h] = size;
+        let pixels = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                egui::Color32::from_rgb((x * 255 / w) as u8, tint, (y * 255 / h) as u8)
+            })
+            .collect();
+        let image = egui::ColorImage::new(size, pixels);
+        let blob =
+            notedeck::media::encrypted::encrypt(&png_bytes(w as u32, h as u32)).expect("encrypt");
+        let url = format!("{BLOSSOM_TEST_SERVER}/{}", hex::encode(blob.x));
+        notedeck::MediaCache::write(&app_ctx.img_cache.static_imgs.cache_dir, &url, image)
+            .expect("the screenshot goes in the disk cache");
+        headway::event::Attachment {
+            url,
+            mime: "image/png".to_owned(),
+            dims: Some(headway::event::Dims {
+                width: w as u32,
+                height: h as u32,
+            }),
+            x: blob.x,
+            ox: Some(blob.ox),
+            key: blob.key,
+            nonce: match blob.nonce {
+                notedeck::media::encrypted::BlobNonce::Gcm96(n) => {
+                    headway::event::AttachmentNonce::Gcm96(n)
+                }
+                notedeck::media::encrypted::BlobNonce::Gcm128(n) => {
+                    headway::event::AttachmentNonce::Gcm128(n)
+                }
+            },
+        }
+    };
+    let desc_shot = screenshot([240, 90], 140);
+    let comment_shot = screenshot([200, 80], 60);
+    drop(app_ctx);
+
+    let description = format!(
+        "The column header overlaps the first card:\n\n![image]({})\n\nSeen on a narrow pane.",
+        desc_shot.url
+    );
+    apply_demo_action(
+        harness,
+        store::BoardAction::EditDescription {
+            card,
+            description,
+            attachments: vec![desc_shot],
+        },
+    );
+    let txn = Transaction::new(&ndb).expect("txn");
+    let boards = headway::event::fold_board(&ndb, &txn, &author)
+        .expect("folded")
+        .finalize();
+    let issue_author = headway::event::find_board(&boards, &author, store::BOARD_ID)
+        .and_then(|view| view.card(card))
+        .expect("the card")
+        .author;
+    // One read transaction per thread: the waits below open their own.
+    drop(txn);
+    let body = format!("Still there after the fix:\n{}", comment_shot.url);
+    store::ingest_signed(
+        &ndb,
+        event::build_comment(
+            &card,
+            &Pubkey::new(issue_author),
+            None,
+            &body,
+            &[comment_shot],
+        )
+        // On the frozen clock, so the note renderer's relative time holds.
+        .created_at(SEED_AT),
+        &store::Signer::new(&secret, None),
+        &mut store::NoPublish,
+    );
+    wait_for_card_comments(harness, card, 1);
+    card
+}
+
+/// Snapshot: a card whose description and comment each carry an encrypted
+/// screenshot, drawn inline: the description's as a markdown image between its
+/// paragraphs, the comment's as the note renderer's media, sharp (trusted)
+/// rather than blurred.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_detail_attachment() {
+    // Tall enough for the comment's screenshot under the activity rows.
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1200.0));
+    seed_attachment_card(&mut harness);
+    harness.get_by_label(ATTACH_CARD).click();
+    wait_for_label(&mut harness, "Seen on a narrow pane.");
+    wait_for_image(&mut harness, "image");
+    wait_for_images(&mut harness, 2);
+    harness.run_steps(3);
+    harness.snapshot("headway_detail_attachment");
+}

@@ -20,6 +20,8 @@ resvg = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
 profiling = { workspace = true }
+poll-promise = { workspace = true }
+tokio = { workspace = true }
 renderbud = { workspace = true }
 tracing = { workspace = true }
 

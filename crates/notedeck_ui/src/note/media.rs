@@ -508,6 +508,9 @@ fn render_success_media(
 
     // `Button::new`, not `Button::image`: that one caps the image at the font's height.
     let img_resp = ui.add(Button::new(scaled.get_image()).frame(false));
+    // An image button has no text, so name it for accesskit, as the markdown
+    // renderer's lone image is.
+    img_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "image"));
 
     copy_link(i18n, url, &img_resp);
 

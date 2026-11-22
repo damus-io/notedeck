@@ -28,6 +28,7 @@ use crate::store::BoardAction;
 use crate::ui_tools::{self, CurrentRef, HeadwayUiTool, KeyView};
 
 mod archived;
+mod attach;
 mod board_picker;
 mod card_actions;
 mod detail;
@@ -42,6 +43,7 @@ mod review_comments;
 mod review_sources;
 mod widgets;
 
+pub use attach::BlobUploader;
 pub use detail::comment_field_id;
 pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
 pub use header::SyncStatus;
@@ -172,6 +174,9 @@ pub struct BoardUiState {
     subissue_composer: bool,
     /// Buffer backing the "write a comment" composer in the detail pane.
     comment_draft: String,
+    /// Screenshots pasted or dropped into the detail: the uploads under way
+    /// and the attachments each draft carries until it is committed.
+    attach: attach::AttachState,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
     /// The `gb` board picker ([`board_picker::board_picker_ui`]).
@@ -356,6 +361,12 @@ impl Settled {
 }
 
 impl BoardUiState {
+    /// Upload the detail's screenshots through `uploader`
+    /// ([`attach::BlobUploader`]).
+    pub fn set_blob_uploader(&mut self, uploader: attach::BlobUploader) {
+        self.attach.set_uploader(uploader);
+    }
+
     /// Take what this frame asked of the app, in the order it was asked, so
     /// each fires once.
     pub fn take_effects(&mut self) -> Vec<BoardEffect> {
