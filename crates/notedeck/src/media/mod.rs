@@ -1,6 +1,7 @@
 pub mod action;
 pub mod blur;
 pub mod budget;
+pub mod encrypted;
 pub mod gif;
 pub mod images;
 pub mod imeta;
