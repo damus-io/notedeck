@@ -41,6 +41,26 @@ pub struct Arg<'a> {
     /// Whether a path left out is the caller's working directory
     /// (`x-nd-default-cwd`).
     pub default_cwd: bool,
+    /// The tool its value goes through before the call (`x-nd-via`).
+    pub via: Option<Via<'a>>,
+}
+
+/// A tool an argument's value goes through before the call (`x-nd-via`):
+/// `tool` is called with `{arg: <the value>}`, and the object it answers
+/// replaces the argument (see [`take_via`] and [`merge_via`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Via<'a> {
+    pub tool: &'a str,
+    pub arg: &'a str,
+}
+
+/// A call to make before the tool's own, for an argument with `x-nd-via`.
+#[derive(Debug, PartialEq)]
+pub struct ViaCall {
+    /// The tool to call first.
+    pub tool: String,
+    /// Its arguments: `{arg: <the value>}`.
+    pub args: Value,
 }
 
 /// An argument a command line resolves on the caller's side, because the
@@ -131,12 +151,62 @@ pub fn args(schema: &Value) -> Vec<Arg<'_>> {
             },
             from_file: prop["x-nd-from-file"].as_str(),
             default_cwd: prop["x-nd-default-cwd"].as_bool().unwrap_or(false),
+            via: match (
+                prop["x-nd-via"]["tool"].as_str(),
+                prop["x-nd-via"]["arg"].as_str(),
+            ) {
+                (Some(tool), Some(arg)) => Some(Via { tool, arg }),
+                _ => None,
+            },
         })
         .collect();
     // Stable, so names `x-nd-order` leaves out keep their map order after
     // the ones it lists.
     args.sort_by_key(|arg| rank(arg.name));
     args
+}
+
+/// Take every argument `schema` marks `x-nd-via` out of `args`, and return
+/// the call each needs first, in argument order. An argument that isn't set
+/// needs none.
+pub fn take_via(schema: &Value, args: &mut Value) -> Vec<ViaCall> {
+    let Some(object) = args.as_object_mut() else {
+        return Vec::new();
+    };
+    self::args(schema)
+        .iter()
+        .filter_map(|arg| {
+            let via = arg.via?;
+            let value = object.remove(arg.name)?;
+            let mut via_args = Map::new();
+            via_args.insert(via.arg.to_owned(), value);
+            Some(ViaCall {
+                tool: via.tool.to_owned(),
+                args: Value::Object(via_args),
+            })
+        })
+        .collect()
+}
+
+/// Put each field of `answer`, what a [`ViaCall`]'s tool answered, into
+/// `args`. The answer must be an object, and a field already set is an
+/// error rather than silently replaced.
+pub fn merge_via(tool: &str, args: &mut Value, answer: Value) -> Result<(), String> {
+    let Value::Object(answer) = answer else {
+        return Err(format!(
+            "{tool} answered {answer}, not an object of arguments"
+        ));
+    };
+    let Some(object) = args.as_object_mut() else {
+        return Err("the call's arguments are not an object".to_owned());
+    };
+    for (key, value) in answer {
+        if object.contains_key(&key) {
+            return Err(format!("'{key}' is given twice: by {tool} and on the line"));
+        }
+        object.insert(key, value);
+    }
+    Ok(())
 }
 
 /// The argument list as `nd tools <name>` prints it, and as an argument error
@@ -508,5 +578,44 @@ mod tests {
         assert_eq!(build("t", &schema, None, &[]).unwrap(), json!({}));
         let err = build("t", &schema, None, &["x=1".to_owned()]).unwrap_err();
         assert!(err.ends_with("(takes no arguments)\n"), "{err}");
+    }
+
+    /// An `x-nd-via` argument comes out of the call as the call to make
+    /// first, with its value under the via tool's argument; one left unset
+    /// makes no call. The via tool's answer then goes in as arguments, and
+    /// one already on the line is refused rather than replaced.
+    #[test]
+    fn via_arguments_become_a_call_first_and_its_answer_merges_in() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "body": {"type": "string", "description": "Text"},
+                "attach": {
+                    "type": "array", "description": "Files", "x-nd-kind": "paths",
+                    "x-nd-via": {"tool": "demo_upload", "arg": "paths"}
+                },
+                "attachments": {"type": "array", "description": "Uploaded"}
+            }
+        });
+        let mut args = json!({"body": "hi", "attach": ["/a.png", "/b.png"]});
+        let calls = take_via(&schema, &mut args);
+        assert_eq!(
+            calls,
+            [ViaCall {
+                tool: "demo_upload".to_owned(),
+                args: json!({"paths": ["/a.png", "/b.png"]}),
+            }]
+        );
+        assert_eq!(args, json!({"body": "hi"}));
+
+        merge_via("demo_upload", &mut args, json!({"attachments": ["x"]})).unwrap();
+        assert_eq!(args, json!({"body": "hi", "attachments": ["x"]}));
+
+        let err = merge_via("demo_upload", &mut args, json!({"body": "no"})).unwrap_err();
+        assert!(err.contains("'body' is given twice"), "{err}");
+        assert!(merge_via("demo_upload", &mut args, json!([1])).is_err());
+
+        let mut unset = json!({"body": "hi"});
+        assert!(take_via(&schema, &mut unset).is_empty());
     }
 }

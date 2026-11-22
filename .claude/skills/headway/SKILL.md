@@ -167,6 +167,8 @@ Every command below is `nd headway <command>`. Card commands also take
 | `list [query...] [--group …] [--sort …] [--view <v>] [--json]` | List cards across boards by a filter query, grouped and sorted; `--save-view`/`--delete-view`/`--views` manage saved views (`nd headway list --help`) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--body-file <path\|->` reads the text; `--reply-to` threads under another comment or a review comment |
 | `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
+| `comment <card> --attach <image> <text...>` / `desc <card> --attach <image> <text...>` | Attach screenshots: each file is encrypted, uploaded to the account's kind-10063 Blossom server, and shown inline (a comment gets its URL on a line, a description a markdown image); repeat `--attach` per file. Fails with no Blossom list |
+| `attach <image...>` | Just upload: prints each attachment's URL; `--json` gives the `attachments` a comment or desc takes |
 | `review <card> [--explainer <url>] [--explainer-source <f>] [--code-source <f>] [--deploy <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION` |
 | `diff <card> [--record <sha>] [--note explain\|code]` | Print the commit the card's newest review record names (`git show`-style), fetching it from the recording host if this one lacks it; falls back to the card's `Headway:` trailer. `--note` prints the commit's explain git note instead |
 | `delete <card>` | Remove a card (reversible tombstone) |

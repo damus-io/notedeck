@@ -92,25 +92,47 @@ impl Attachment {
 
     /// Append this attachment to `builder` as one `imeta` tag.
     pub fn write_tag<'b>(&self, builder: NoteBuilder<'b>) -> NoteBuilder<'b> {
-        let mut builder = builder
-            .start_tag()
-            .tag_str("imeta")
-            .tag_str(&format!("url {}", self.url))
-            .tag_str(&format!("m {}", self.mime));
+        self.entries()
+            .iter()
+            .fold(builder.start_tag().tag_str("imeta"), |b, e| b.tag_str(e))
+    }
+
+    /// The `imeta` tag's entries after its name, `name value` each, in the
+    /// order [`write_tag`](Self::write_tag) writes them.
+    pub fn entries(&self) -> Vec<String> {
+        let mut entries = vec![format!("url {}", self.url), format!("m {}", self.mime)];
         if let Some(dims) = self.dims {
-            builder = builder.tag_str(&format!("dim {}x{}", dims.width, dims.height));
+            entries.push(format!("dim {}x{}", dims.width, dims.height));
         }
-        builder = builder.tag_str(&format!("x {}", hex::encode(self.x)));
+        entries.push(format!("x {}", hex::encode(self.x)));
         if let Some(ox) = self.ox {
-            builder = builder.tag_str(&format!("ox {}", hex::encode(ox)));
+            entries.push(format!("ox {}", hex::encode(ox)));
         }
-        builder
-            .tag_str(&format!("encryption-algorithm {ATTACHMENT_ALGORITHM}"))
-            .tag_str(&format!("decryption-key {}", hex::encode(self.key)))
-            .tag_str(&format!(
-                "decryption-nonce {}",
-                hex::encode(self.nonce.as_bytes())
-            ))
+        entries.push(format!("encryption-algorithm {ATTACHMENT_ALGORITHM}"));
+        entries.push(format!("decryption-key {}", hex::encode(self.key)));
+        entries.push(format!(
+            "decryption-nonce {}",
+            hex::encode(self.nonce.as_bytes())
+        ));
+        entries
+    }
+
+    /// The attachment as text: its `imeta` entries, one per line. This is
+    /// what `nd headway attach` answers and what the comment and description
+    /// tools take back, so an attachment crosses from the upload to the
+    /// event in the shape the event stores it.
+    pub fn imeta_text(&self) -> String {
+        self.entries().join("\n")
+    }
+
+    /// Read [`imeta_text`](Self::imeta_text) back, by the rules of
+    /// [`from_tag`](Self::from_tag).
+    pub fn from_imeta_text(text: &str) -> Option<Self> {
+        let mut fields = ImetaFields::default();
+        for (name, value) in text.lines().filter_map(|l| l.trim().split_once(' ')) {
+            fields.set(name, value);
+        }
+        fields.into_attachment()
     }
 
     /// Read an attachment from one tag.
@@ -252,6 +274,22 @@ pub(crate) mod tests {
             .build()
             .expect("note");
         note_attachments(&note)
+    }
+
+    /// The text form carries everything the tag does, in either nonce length
+    /// and without the optional entries, and junk reads as nothing.
+    #[test]
+    fn imeta_text_round_trips() {
+        let a = sample(1);
+        let text = a.imeta_text();
+        assert!(text.starts_with("url https://blossom.example/"), "{text}");
+        assert_eq!(Attachment::from_imeta_text(&text), Some(a));
+        let mut b = sample(2);
+        b.dims = None;
+        b.ox = None;
+        b.nonce = AttachmentNonce::Gcm96([9; 12]);
+        assert_eq!(Attachment::from_imeta_text(&b.imeta_text()), Some(b));
+        assert_eq!(Attachment::from_imeta_text("url https://x"), None);
     }
 
     #[test]

@@ -151,6 +151,21 @@ pub struct ArgCli {
     /// Whether a [`Path`](ToolArgType::Path) argument left out is the
     /// caller's working directory (see [`default_cwd`](ToolArg::default_cwd)).
     pub default_cwd: bool,
+    /// Another tool a command line calls with this argument's value first,
+    /// merging its answer into the call (see [`via`](ToolArg::via)).
+    pub via: Option<Via>,
+}
+
+/// A tool a command line runs an argument through before the call (see
+/// [`ToolArg::via`]): `tool` is called with `{arg: <the value>}`, and each
+/// field of the object it answers becomes an argument of the original call
+/// in place of this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Via {
+    /// The tool called first.
+    pub tool: &'static str,
+    /// The argument of `tool` the value is passed as.
+    pub arg: &'static str,
 }
 
 /// One argument in a [`ToolSpec`]: its name, JSON type, docs, and whether it is
@@ -258,6 +273,18 @@ impl ToolArg {
     /// [`env`](Self::env) fallback.
     pub fn default_cwd(mut self) -> Self {
         self.cli.default_cwd = true;
+        self
+    }
+
+    /// Have a command line run this argument through tool `tool` first: it
+    /// calls `tool` with `{arg: <the value>}`, drops this argument, and adds
+    /// each field of the object `tool` answers to the call. For work the
+    /// tool itself can't do on the render loop, such as uploading files: a
+    /// slow tool uploads them and answers what the call takes instead. A
+    /// caller that isn't a command line (a model) sees the argument's
+    /// description, which should say to call `tool` itself.
+    pub fn via(mut self, tool: &'static str, arg: &'static str) -> Self {
+        self.cli.via = Some(Via { tool, arg });
         self
     }
 
@@ -752,8 +779,9 @@ impl ToolSpec {
     ///   `x-nd-short` (one letter), `x-nd-long` (the flag's name),
     ///   `x-nd-env` (the variable to fall back to), `x-nd-kind` (`"path"`
     ///   or `"list"`, resolved by the client), `x-nd-from-file` (the flag
-    ///   that reads the value from a file or stdin) and `x-nd-default-cwd`
-    ///   (a path left out is the caller's cwd).
+    ///   that reads the value from a file or stdin), `x-nd-default-cwd`
+    ///   (a path left out is the caller's cwd) and `x-nd-via` (`{tool, arg}`:
+    ///   the tool the value goes through first, see [`ToolArg::via`]).
     pub fn json_schema(&self) -> Value {
         let required_args: Vec<Value> = self
             .arguments
@@ -889,6 +917,12 @@ fn insert_cli_keys(props: &mut serde_json::Map<String, Value>, arg: &ToolArg, sl
     if cli.default_cwd {
         props.insert("x-nd-default-cwd".to_string(), Value::Bool(true));
     }
+    if let Some(via) = cli.via {
+        props.insert(
+            "x-nd-via".to_string(),
+            serde_json::json!({ "tool": via.tool, "arg": via.arg }),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1016,6 +1050,7 @@ mod tests {
                 ToolArg::new("repo_dir", ToolArgType::Path, "The checkout.").default_cwd(),
                 ToolArg::new("labels", ToolArgType::List, "Labels.").short('l'),
                 ToolArg::new("desc", ToolArgType::String, "The text.").from_file("desc-file"),
+                ToolArg::new("attach", ToolArgType::Paths, "Files.").via("demo_upload", "paths"),
             ],
         )
         .command(&["demo", "review"]);
@@ -1030,6 +1065,11 @@ mod tests {
         assert_eq!(props["desc"]["type"], json!("string"));
         assert_eq!(props["desc"]["x-nd-from-file"], json!("desc-file"));
         assert!(props["desc"].get("x-nd-kind").is_none());
+        assert_eq!(props["attach"]["x-nd-kind"], json!("paths"));
+        assert_eq!(
+            props["attach"]["x-nd-via"],
+            json!({"tool": "demo_upload", "arg": "paths"})
+        );
 
         // Without a command line a model still gets a valid array schema.
         let bare = ToolSpec::new(

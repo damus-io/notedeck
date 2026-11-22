@@ -987,9 +987,10 @@ mod tests {
                             "sources": {"type": "array", "items": {"type": "string"}, "description": "Files.", "x-nd-long": "source", "x-nd-kind": "paths"},
                             "session": {"type": "string", "description": "Who.", "x-nd-env": "AGENTIUM_SESSION"},
                             "env": {"type": "array", "items": {"type": "string"}, "description": "Vars.", "x-nd-kind": "strings"},
+                            "attach": {"type": "array", "items": {"type": "string"}, "description": "Images.", "x-nd-kind": "paths", "x-nd-via": {"tool": "headway_attach", "arg": "paths"}},
                         },
                         "required": ["card"],
-                        "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "sources", "session", "env"],
+                        "x-nd-order": ["card", "body", "labels", "desc", "repo_dir", "file", "sources", "session", "env", "attach"],
                     }),
                 )
             },
@@ -1484,6 +1485,43 @@ mod tests {
 
         let err = args_in(&["headway", "edit", "c", "--source", "gone.md"], &root, "").unwrap_err();
         assert!(err.starts_with("sources: 'gone.md': "), "{err}");
+    }
+
+    /// `--attach` reads as a paths flag beside a comment's bare words, each
+    /// path made absolute, and comes off the call as the upload to run
+    /// first, under the via tool's own argument name.
+    #[test]
+    fn attach_parses_as_paths_and_runs_through_its_via_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("shot.png"), "png").unwrap();
+        std::fs::write(root.join("two.png"), "png").unwrap();
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+
+        let mut args = args_in(
+            &[
+                "headway", "edit", "c", "--attach", "shot.png", "it", "breaks", "--attach",
+                "two.png",
+            ],
+            &root,
+            "",
+        )
+        .unwrap();
+        let paths = json!([path(&root.join("shot.png")), path(&root.join("two.png"))]);
+        assert_eq!(args["attach"], paths);
+        assert_eq!(args["body"], json!("it breaks"));
+
+        let tools = fixture();
+        let edit = tools.iter().find(|t| t.name == "headway_edit").unwrap();
+        let calls = crate::schema::take_via(&edit.input_schema, &mut args);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool, "headway_attach");
+        assert_eq!(calls[0].args, json!({ "paths": paths }));
+        assert!(args.get("attach").is_none(), "{args}");
+
+        let err =
+            args_in(&["headway", "edit", "c", "--attach", "gone.png"], &root, "").unwrap_err();
+        assert!(err.starts_with("attach: 'gone.png': "), "{err}");
     }
 
     /// A flag typed before the verb, as the old CLIs took their globals,

@@ -84,16 +84,16 @@ struct Plain {
 
 /// An image after [`seal`]: the encrypted blob and what its imeta says about
 /// the plaintext.
-struct Sealed {
-    blob: EncryptedBlob,
-    mime: String,
-    dims: Option<Dims>,
+pub(crate) struct Sealed {
+    pub blob: EncryptedBlob,
+    pub mime: String,
+    pub dims: Option<Dims>,
 }
 
 /// Where the account uploads to, and the key that signs the upload.
-struct BlossomTarget {
-    seckey: [u8; 32],
-    server: String,
+pub(crate) struct BlossomTarget {
+    pub seckey: [u8; 32],
+    pub server: String,
 }
 
 /// How far an upload has got.
@@ -258,12 +258,7 @@ impl AttachState {
                     .and_then(|n| n.to_str())
                     .unwrap_or("file")
                     .to_owned();
-                let mime =
-                    notedeck::platform::file::SelectedMedia::from_path(file.path().to_path_buf())
-                        .ok()
-                        .map(|m| m.media_type.to_mime().to_owned())
-                        .filter(|m| m.starts_with("image/"));
-                let Some(mime) = mime else {
+                let Ok(mime) = image_mime(file.path()) else {
                     self.error = Some(AttachError {
                         card,
                         target: drop_target,
@@ -294,7 +289,7 @@ impl AttachState {
             name,
             source,
         } = image;
-        let blossom = match blossom_target(app_ctx) {
+        let blossom = match blossom_target(app_ctx.ndb, app_ctx.accounts) {
             Ok(blossom) => blossom,
             Err(message) => {
                 self.error = Some(AttachError {
@@ -403,16 +398,19 @@ fn step(stage: Stage, blossom: &BlossomTarget, uploader: &BlobUploader) -> Step 
     }
 }
 
-/// The account's upload key and the first server on its Blossom list, or what
-/// to tell the user when it has neither.
-fn blossom_target(app_ctx: &mut notedeck::AppContext) -> Result<BlossomTarget, &'static str> {
-    let Some(filled) = app_ctx.accounts.selected_filled() else {
+/// The selected account's upload key and the first server on its Blossom
+/// list, or what to tell the user when it has neither.
+pub(crate) fn blossom_target(
+    ndb: &nostrdb::Ndb,
+    accounts: &notedeck::Accounts,
+) -> Result<BlossomTarget, &'static str> {
+    let Some(filled) = accounts.selected_filled() else {
         return Err(NO_SIGNER);
     };
     let seckey = filled.secret_key.secret_bytes();
     let pubkey = *filled.pubkey.bytes();
-    let txn = nostrdb::Transaction::new(app_ctx.ndb).map_err(|_| NO_SERVER)?;
-    let server = blossom::server_list(app_ctx.ndb, &txn, &pubkey)
+    let txn = nostrdb::Transaction::new(ndb).map_err(|_| NO_SERVER)?;
+    let server = blossom::server_list(ndb, &txn, &pubkey)
         .and_then(|list| list.first().map(str::to_owned))
         .ok_or(NO_SERVER)?;
     Ok(BlossomTarget { seckey, server })
@@ -456,18 +454,42 @@ fn plaintext(source: ImageSource) -> Result<Plain, String> {
         }
         ImageSource::Dropped { file, mime } => {
             let bytes = file.bytes()?;
-            let dims = image::ImageReader::new(std::io::Cursor::new(&bytes))
-                .with_guessed_format()
-                .ok()
-                .and_then(|r| r.into_dimensions().ok())
-                .map(|(width, height)| Dims { width, height });
+            let dims = dims_of(&bytes);
             Ok(Plain { bytes, mime, dims })
         }
     }
 }
 
+/// The pixel size of the image `bytes` hold, read from its header.
+fn dims_of(bytes: &[u8]) -> Option<Dims> {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok())
+        .map(|(width, height)| Dims { width, height })
+}
+
+/// The MIME type of the image at `path`, by its extension, or why it can't
+/// be attached.
+pub(crate) fn image_mime(path: &std::path::Path) -> Result<String, String> {
+    notedeck::platform::file::SelectedMedia::from_path(path.to_path_buf())
+        .ok()
+        .map(|m| m.media_type.to_mime().to_owned())
+        .filter(|m| m.starts_with("image/"))
+        .ok_or_else(|| format!("{} is not an image", path.display()))
+}
+
+/// Read the image at `path`, whose type is `mime`, and encrypt it, as a
+/// dropped file is sealed. Blocks on the read, so run it off the render loop.
+pub(crate) fn seal_path(path: &std::path::Path, mime: String) -> Result<Sealed, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let dims = dims_of(&bytes);
+    let blob = encrypted::encrypt(&bytes).map_err(|e| e.to_string())?;
+    Ok(Sealed { blob, mime, dims })
+}
+
 /// The attachment for `sealed`, now that the server stored it at `url`.
-fn attachment(sealed: Sealed, url: String) -> Attachment {
+pub(crate) fn attachment(sealed: Sealed, url: String) -> Attachment {
     let blob = sealed.blob;
     Attachment {
         url,

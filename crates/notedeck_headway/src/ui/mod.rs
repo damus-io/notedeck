@@ -28,7 +28,7 @@ use crate::store::BoardAction;
 use crate::ui_tools::{self, CurrentRef, HeadwayUiTool, KeyView};
 
 mod archived;
-mod attach;
+pub(crate) mod attach;
 mod board_picker;
 mod card_actions;
 mod detail;

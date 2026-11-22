@@ -318,19 +318,50 @@ fn app(reach: &Reach, words: &[String], help: bool) -> Result<(), Failure> {
         } => stream::follow(reach, tool, args, mode, output),
         commands::Action::Call {
             tool,
-            args,
+            mut args,
             output,
             ns,
             signer,
             streams: None,
-        } => send_call(
-            reach,
-            tool,
-            args,
-            signer,
-            Print::Command { output, ns: &ns },
-        ),
+        } => {
+            run_via(reach, &tools, &tool, &mut args)?;
+            send_call(
+                reach,
+                tool,
+                args,
+                signer,
+                Print::Command { output, ns: &ns },
+            )
+        }
     }
+}
+
+/// Run each argument of `tool` marked `x-nd-via` through its tool first,
+/// and put what that answers into `args` in its place (see
+/// [`schema::take_via`]): `--attach <paths>` uploads the files, and the
+/// comment carries the attachments the upload answered.
+fn run_via(reach: &Reach, tools: &[ToolInfo], tool: &str, args: &mut Value) -> Result<(), Failure> {
+    let Some(info) = tools.iter().find(|t| t.name == tool) else {
+        return Ok(());
+    };
+    for call in schema::take_via(&info.input_schema, args) {
+        let request = Request::CallTool {
+            name: call.tool.clone(),
+            args: call.args,
+            signer: None,
+        };
+        let Reply::Result { result, notice, .. } = answer(reach, request)? else {
+            return Err(Failure::new(format!(
+                "notedeck answered {} with something other than a result",
+                call.tool
+            )));
+        };
+        if let Some(notice) = &notice {
+            output::print_notice(notice);
+        }
+        schema::merge_via(&call.tool, args, result)?;
+    }
+    Ok(())
 }
 
 /// `nd tools`.
@@ -376,8 +407,9 @@ fn call(
             "the running notedeck has no tool '{name}' (see `nd tools`)"
         )));
     };
-    let args = schema::build(name, &tool.input_schema, base, pairs)?;
+    let mut args = schema::build(name, &tool.input_schema, base, pairs)?;
     let signer = caller::signer_for(tool, &caller::Process)?;
+    run_via(reach, &tools, name, &mut args)?;
     send_call(reach, name.to_owned(), args, signer, Print::Value)
 }
 

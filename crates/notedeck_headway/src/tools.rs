@@ -22,7 +22,9 @@ use notedeck::{
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::cursor::{self, MoveTarget, Side, Vertical};
+use crate::ui::attach::{AttachTarget, referenced};
 
+mod attach;
 mod board;
 mod review;
 use crate::teams;
@@ -40,6 +42,7 @@ pub fn tools() -> Vec<RegisteredTool> {
         RegisteredTool::new(Grep),
         RegisteredTool::new(List),
         RegisteredTool::slow(review::Diff),
+        RegisteredTool::slow(attach::Attach::default()),
         // Write.
         RegisteredTool::new(AddCard),
         RegisteredTool::new(MoveCard),
@@ -1603,6 +1606,12 @@ struct SetDescription;
 struct SetDescriptionArgs {
     card: String,
     description: String,
+    /// Files for a command line to upload first (see [`attach_arg`]).
+    #[serde(default)]
+    attach: Vec<String>,
+    /// Uploaded images to add, as [`attach::Attach`] answers them.
+    #[serde(default)]
+    attachments: Vec<String>,
     #[serde(flatten)]
     route: Route,
 }
@@ -1621,6 +1630,8 @@ impl AppTool for SetDescription {
                     .required(true)
                     .rest()
                     .from_file("desc-file"),
+                attach_arg(),
+                attachments_arg("Uploaded images, as `headway_attach` answers them: each appended to the description as a markdown image, its key on the event."),
                 card_board_arg(),
                 default_board_arg(),
             ],
@@ -1631,17 +1642,27 @@ impl AppTool for SetDescription {
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        if !args.attach.is_empty() {
+            return Err(attach::ATTACH_NEEDS_UPLOAD.to_owned());
+        }
+        let added = attach::parse_attachments(&args.attachments)?;
+        let description =
+            attach::with_references(args.description, &added, AttachTarget::Description);
         let board = args.route.board([args.card.as_str()])?;
         mutate(cx, &board, |view| {
             let card = resolve_card(view, &args.card)?;
             // The new cover note is the whole description: keep the card's
-            // attachments, which this tool doesn't edit.
-            let attachments = render::find_card(view, &card)
-                .map(|found| found.card.description_attachments.clone())
+            // attachments its text still points at, and add the new ones.
+            let kept = render::find_card(view, &card)
+                .map(|found| found.card.description_attachments.as_slice())
                 .unwrap_or_default();
+            let attachments = referenced(kept, &description)
+                .cloned()
+                .chain(added)
+                .collect();
             Ok(BoardAction::EditDescription {
                 card,
-                description: args.description,
+                description,
                 attachments,
             })
         })
@@ -2265,6 +2286,12 @@ struct CommentCardArgs {
     /// The review record whose commit starts with this, rather than the newest.
     #[serde(default)]
     record: Option<String>,
+    /// Files for a command line to upload first (see [`attach_arg`]).
+    #[serde(default)]
+    attach: Vec<String>,
+    /// Uploaded images to carry, as [`attach::Attach`] answers them.
+    #[serde(default)]
+    attachments: Vec<String>,
     #[serde(flatten)]
     route: Route,
 }
@@ -2308,6 +2335,8 @@ impl AppTool for CommentCard {
                     ToolArgType::String,
                     "The review record whose commit starts with this. Defaults to the newest.",
                 ),
+                attach_arg(),
+                attachments_arg("Uploaded images, as `headway_attach` answers them: each appended to the comment as its URL on a line of its own, its key on the event. Card comments only, not inline review comments."),
                 card_board_arg(),
                 default_board_arg(),
             ],
@@ -2326,14 +2355,31 @@ impl AppTool for CommentCard {
             old: args.old,
             record: args.record,
         };
+        if !args.attach.is_empty() {
+            return Err(attach::ATTACH_NEEDS_UPLOAD.to_owned());
+        }
+        let added = attach::parse_attachments(&args.attachments)?;
+        let body = attach::with_references(args.body, &added, AttachTarget::Comment);
         mutate(cx, &board, |view| {
-            edit::comment_action(
+            let mut action = edit::comment_action(
                 view,
                 resolve_card(view, &args.card)?,
-                args.body,
+                body,
                 args.reply_to.as_deref(),
                 &flags,
-            )
+            )?;
+            if added.is_empty() {
+                return Ok(action);
+            }
+            match &mut action {
+                BoardAction::AddComment { attachments, .. } => *attachments = added,
+                _ => {
+                    return Err(
+                        "attachments go on card comments, not inline review comments".to_owned(),
+                    );
+                }
+            }
+            Ok(action)
         })
     }
 
@@ -2664,6 +2710,24 @@ fn card_board_arg() -> ToolArg {
     )
 }
 
+/// The `attach` argument of the tools that can carry images: files a command
+/// line uploads with [`attach::Attach`] first, passing what it answers as
+/// `attachments` (see [`ToolArg::via`]). The tool itself refuses it.
+fn attach_arg() -> ToolArg {
+    ToolArg::new(
+        "attach",
+        ToolArgType::Paths,
+        "Image files to attach. A command line (`nd … --attach <path>`) uploads them first; any other caller calls `headway_attach` with them and passes its answer as `attachments`.",
+    )
+    .via("headway_attach", "paths")
+}
+
+/// The `attachments` argument: uploaded images, as `headway_attach` answers
+/// them, and where they go in the text (`placed`).
+fn attachments_arg(placed: &'static str) -> ToolArg {
+    ToolArg::new("attachments", ToolArgType::Strings, placed)
+}
+
 /// The caller's board, used when nothing else names one (see
 /// [`Route::board`]): a command line fills it from `$HEADWAY_BOARD`.
 fn default_board_arg() -> ToolArg {
@@ -2706,6 +2770,7 @@ fn due_arg(description: &'static str) -> ToolArg {
 #[cfg(test)]
 mod tests {
     mod agent_toolset;
+    mod attach;
     mod board;
     mod edits;
     mod live;
