@@ -7539,6 +7539,7 @@ dependencies = [
  "agentium-core",
  "android-activity",
  "base32",
+ "base64 0.22.1",
  "bech32",
  "bincode",
  "bitflags 2.13.2",

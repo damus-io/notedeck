@@ -1,4 +1,5 @@
 pub mod action;
+pub mod blossom;
 pub mod blur;
 pub mod budget;
 pub mod encrypted;

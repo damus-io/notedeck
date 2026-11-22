@@ -33,6 +33,7 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 hex = { workspace = true }
 aes-gcm = { workspace = true }
+base64 = { workspace = true }
 thiserror = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }
