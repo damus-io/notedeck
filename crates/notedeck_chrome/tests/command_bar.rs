@@ -982,6 +982,7 @@ fn rich_pfp_loaded(harness: &mut egui_kittest::Harness<'static, RichState>) -> b
         &ctx,
         RICH_PFP_URL,
         notedeck::media::images::ImageType::Profile(128),
+        &app_ctx.img_cache.encrypted,
     );
     matches!(state, notedeck::TextureState::Loaded(_))
 }

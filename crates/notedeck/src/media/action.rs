@@ -104,12 +104,13 @@ impl MediaAction {
             }
 
             MediaAction::FetchImage { url, cache_type } => match cache_type {
-                MediaCacheType::Image => {
-                    images
-                        .textures
-                        .static_image
-                        .request(jobs, ctx, &url, ImageType::Content(None))
-                }
+                MediaCacheType::Image => images.textures.static_image.request(
+                    jobs,
+                    ctx,
+                    &url,
+                    ImageType::Content(None),
+                    &images.encrypted,
+                ),
                 MediaCacheType::Gif => {
                     images
                         .textures

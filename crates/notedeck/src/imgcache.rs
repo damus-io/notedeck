@@ -1,5 +1,6 @@
 use crate::jobs::MediaJobSender;
 use crate::media::budget::{self, EvictCandidate};
+use crate::media::encrypted::EncryptedMedia;
 use crate::media::gif::AnimatedImgTexCache;
 use crate::media::images::ImageType;
 use crate::media::static_imgs::StaticImgTexCache;
@@ -437,6 +438,9 @@ pub struct Images {
     pub urls: UrlMimes,
     /// cached imeta data
     pub metadata: HashMap<String, ImageMetadata>,
+    /// Keys for encrypted blob URLs, from encrypted `imeta` tags. A URL
+    /// registered here is decrypted when fetched and never MIME-probed.
+    pub encrypted: EncryptedMedia,
     pub gif_states: GifStateMap,
 }
 
@@ -450,6 +454,7 @@ impl Images {
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
             gif_states: Default::default(),
             metadata: Default::default(),
+            encrypted: Default::default(),
             textures: TexturesCache::new(path.clone()),
         }
     }
@@ -460,15 +465,16 @@ impl Images {
     }
 
     pub fn get_renderable_media(&mut self, url: &str) -> Option<RenderableMedia> {
-        Self::find_renderable_media(&mut self.urls, &self.metadata, url)
+        Self::find_renderable_media(&mut self.urls, &self.metadata, &self.encrypted, url)
     }
 
     pub fn find_renderable_media(
         urls: &mut UrlMimes,
         imeta: &HashMap<String, ImageMetadata>,
+        encrypted: &EncryptedMedia,
         url: &str,
     ) -> Option<RenderableMedia> {
-        let media_type = crate::urls::supported_mime_hosted_at_url(urls, url)?;
+        let media_type = media_type_at_url(urls, encrypted, url)?;
 
         let obfuscation_type = match imeta.get(url) {
             Some(blur) => ObfuscationType::Blurhash(blur.clone()),
@@ -490,12 +496,13 @@ impl Images {
         img_type: ImageType,
         animation_mode: AnimationMode,
     ) -> Option<&'a TextureHandle> {
-        let cache_type = crate::urls::supported_mime_hosted_at_url(&mut self.urls, url)?;
+        let cache_type = media_type_at_url(&mut self.urls, &self.encrypted, url)?;
 
         let mut loader = NoLoadingLatestTex::new(
             &self.textures.static_image,
             &self.textures.animated,
             &mut self.gif_states,
+            &self.encrypted,
         );
         loader.latest(jobs, ui.ctx(), url, cache_type, img_type, animation_mode)
     }
@@ -541,6 +548,7 @@ impl Images {
                 &self.textures.static_image,
                 &self.textures.animated,
                 &mut self.gif_states,
+                &self.encrypted,
             ),
             &self.textures.blurred,
         )
@@ -555,6 +563,7 @@ impl Images {
             &self.textures.static_image,
             &self.textures.animated,
             &mut self.gif_states,
+            &self.encrypted,
         )
     }
 
@@ -563,6 +572,21 @@ impl Images {
             MediaCacheType::Image => self.textures.static_image.contains(url),
             MediaCacheType::Gif => self.textures.animated.contains(url),
         }
+    }
+}
+
+/// The cache that draws `url`. A registered encrypted URL answers from its
+/// `imeta` `m`, so it is never MIME-probed: a probe would fetch the
+/// ciphertext's `application/octet-stream`. Any other URL goes through
+/// [`crate::urls::supported_mime_hosted_at_url`].
+fn media_type_at_url(
+    urls: &mut UrlMimes,
+    encrypted: &EncryptedMedia,
+    url: &str,
+) -> Option<MediaCacheType> {
+    match encrypted.get(url) {
+        Some(imeta) => imeta.cache_type(),
+        None => crate::urls::supported_mime_hosted_at_url(urls, url),
     }
 }
 
@@ -578,4 +602,44 @@ pub struct GifState {
 pub struct LatestTexture {
     pub texture: TextureHandle,
     pub request_next_repaint: Option<SystemTime>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::encrypted::{encrypt, EncryptedImeta};
+
+    /// A registered Blossom URL has no extension, and a probe of it would
+    /// answer with the ciphertext's octet-stream type. It is an image from
+    /// its first frame, with no probe in flight: an unregistered
+    /// extensionless URL returns `None` until a probe completes.
+    #[test]
+    fn a_registered_extensionless_url_is_an_image() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut images = Images::new(tmp.path().to_path_buf());
+
+        let blob = encrypt(b"pixels").expect("encrypt");
+        let url = format!("https://blossom.example/{}", hex::encode(blob.x));
+        images
+            .encrypted
+            .register(&EncryptedImeta::new(url.as_str(), "image/png", None, &blob));
+
+        let media = images.get_renderable_media(&url).expect("renderable");
+        assert_eq!(media.url, url);
+        assert_eq!(media.media_type, MediaCacheType::Image);
+    }
+
+    #[test]
+    fn a_registered_non_image_is_not_renderable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut images = Images::new(tmp.path().to_path_buf());
+
+        let blob = encrypt(b"frames").expect("encrypt");
+        let url = format!("https://blossom.example/{}", hex::encode(blob.x));
+        images
+            .encrypted
+            .register(&EncryptedImeta::new(url.as_str(), "video/mp4", None, &blob));
+
+        assert!(images.get_renderable_media(&url).is_none());
+    }
 }

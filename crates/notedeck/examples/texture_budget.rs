@@ -144,6 +144,7 @@ impl eframe::App for Harness {
                         ctx,
                         &url,
                         ImageType::Content(None),
+                        &self.images.encrypted,
                     );
                     let size = egui::vec2(48.0, 48.0);
                     if let TextureState::Loaded(tex) = state {

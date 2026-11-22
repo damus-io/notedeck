@@ -249,10 +249,13 @@ fn process_local_media_action(
     match action {
         MediaUIAction::DoneLoading => img_cache.textures.blurred.finished_transitioning(url),
         MediaUIAction::Unblur => match media_type {
-            MediaCacheType::Image => img_cache
-                .textures
-                .static_image
-                .request(jobs, ctx, url, image_type),
+            MediaCacheType::Image => img_cache.textures.static_image.request(
+                jobs,
+                ctx,
+                url,
+                image_type,
+                &img_cache.encrypted,
+            ),
             MediaCacheType::Gif => img_cache
                 .textures
                 .animated

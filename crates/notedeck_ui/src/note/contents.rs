@@ -310,6 +310,7 @@ fn render_undecorated_note_contents<'a>(
 
                         if !note_context.img_cache.metadata.contains_key(url) {
                             update_imeta_blurhashes(note, &mut note_context.img_cache.metadata);
+                            note_context.img_cache.encrypted.register_note(note);
                         }
 
                         let Some(media) = note_context.img_cache.get_renderable_media(url) else {

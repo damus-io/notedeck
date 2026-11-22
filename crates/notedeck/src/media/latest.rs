@@ -5,6 +5,7 @@ use egui::TextureHandle;
 use crate::jobs::MediaJobSender;
 use crate::{
     media::{
+        encrypted::EncryptedMedia,
         gif::{process_gif_frame, AnimatedImgTexCache},
         static_imgs::StaticImgTexCache,
         AnimationMode, BlurCache,
@@ -32,6 +33,8 @@ pub struct NoLoadingLatestTex<'a> {
     static_cache: &'a StaticImgTexCache,
     animated_cache: &'a AnimatedImgTexCache,
     gif_state: &'a mut GifStateMap,
+    /// Keys for encrypted blob URLs, handed to a static image fetch.
+    encrypted: &'a EncryptedMedia,
 }
 
 impl<'a> NoLoadingLatestTex<'a> {
@@ -39,11 +42,13 @@ impl<'a> NoLoadingLatestTex<'a> {
         static_cache: &'a StaticImgTexCache,
         animated_cache: &'a AnimatedImgTexCache,
         gif_state: &'a mut GifStateMap,
+        encrypted: &'a EncryptedMedia,
     ) -> Self {
         Self {
             static_cache,
             animated_cache,
             gif_state,
+            encrypted,
         }
     }
 
@@ -76,7 +81,10 @@ impl<'a> NoLoadingLatestTex<'a> {
     ) -> LatestImageTex<'a> {
         match cache_type {
             MediaCacheType::Image => {
-                match self.static_cache.get_or_request(jobs, ctx, url, imgtype) {
+                match self
+                    .static_cache
+                    .get_or_request(jobs, ctx, url, imgtype, self.encrypted)
+                {
                     TextureState::Pending => LatestImageTex::Pending,
                     TextureState::Error(error) => LatestImageTex::Error(error),
                     TextureState::Loaded(t) => LatestImageTex::Loaded(t),

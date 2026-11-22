@@ -13,6 +13,7 @@ use crate::{
 };
 use crate::{
     media::{
+        encrypted::{decrypt, EncryptedImeta, EncryptedMedia},
         images::{
             buffer_to_color_image, normalize_image_type_for_request, parse_img_response,
             process_image, should_persist_full_content, TextureRequestKey,
@@ -67,16 +68,23 @@ impl StaticImgTexCache {
         ctx: &egui::Context,
         url: &str,
         imgtype: ImageType,
+        encrypted: &EncryptedMedia,
     ) {
-        let _ = self.get_or_request(jobs, ctx, url, imgtype);
+        let _ = self.get_or_request(jobs, ctx, url, imgtype, encrypted);
     }
 
+    /// The texture for `url`, or a fetch job for it when there is none yet.
+    ///
+    /// When `url` is registered in `encrypted`, the job is handed its key
+    /// and decrypts what it downloads. The lookup happens only when a job
+    /// is created, not on every frame.
     pub fn get_or_request(
         &self,
         jobs: &MediaJobSender,
         ctx: &egui::Context,
         url: &str,
         imgtype: ImageType,
+        encrypted: &EncryptedMedia,
     ) -> &TextureState<TextureHandle> {
         let imgtype = normalize_image_type_for_request(imgtype);
         let request_variant = TextureRequestKey::variant_for_image_type(imgtype);
@@ -107,6 +115,7 @@ impl StaticImgTexCache {
                 tracing::error!("{e}");
             }
         } else {
+            let secret = encrypted.get(url).cloned();
             let url = url.to_owned();
             let ctx = ctx.clone();
             let request_key = request_key.clone();
@@ -121,6 +130,7 @@ impl StaticImgTexCache {
                     ctx,
                     self.static_img_cache_path.clone(),
                     imgtype,
+                    secret,
                 )))),
             )) {
                 tracing::error!("{e}");
@@ -156,6 +166,26 @@ fn parse_display_and_disk_images(
         display: display_img,
         disk: disk_img,
     })
+}
+
+/// Builds display and disk output for an image fetched from the network.
+///
+/// With a `secret`, `bytes` are the ciphertext of an encrypted blob: they
+/// are decrypted and parsed as the secret's `m`, whatever content type the
+/// server sent. A blob that fails to decrypt is an error, never drawn.
+fn parse_fetched_image(
+    content_type: Option<&str>,
+    bytes: &[u8],
+    secret: Option<&EncryptedImeta<'_>>,
+    imgtype: ImageType,
+) -> Result<DisplayAndDiskImages, crate::Error> {
+    let Some(secret) = secret else {
+        return parse_display_and_disk_images(content_type, bytes, imgtype);
+    };
+
+    let plaintext = decrypt(bytes, &secret.key, &secret.nonce)
+        .map_err(|e| crate::Error::Generic(format!("decrypting {}: {e}", secret.url)))?;
+    parse_display_and_disk_images(Some(&secret.mime), &plaintext, imgtype)
 }
 
 /// Loads a cached static image, resizing only when the stored image exceeds the requested [`ImageType`].
@@ -199,6 +229,7 @@ async fn fetch_static_img_from_net(
     ctx: egui::Context,
     path: PathBuf,
     imgtype: ImageType,
+    secret: Option<EncryptedImeta<'static>>,
 ) -> JobOutput<MediaJobResult> {
     tracing::trace!("fetch static img from net: starting job. sending http request for {url}");
     let res = match http_req(&url).await {
@@ -215,7 +246,12 @@ async fn fetch_static_img_from_net(
         let DisplayAndDiskImages {
             display: display_img,
             disk: disk_img,
-        } = match parse_display_and_disk_images(res.content_type.as_deref(), &res.bytes, imgtype) {
+        } = match parse_fetched_image(
+            res.content_type.as_deref(),
+            &res.bytes,
+            secret.as_ref(),
+            imgtype,
+        ) {
             Ok(imgs) => imgs,
             Err(e) => {
                 return JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(Err(
@@ -248,5 +284,83 @@ fn needs_resize(img_type: ImageType, width: u32, height: u32) -> bool {
         ImageType::Profile(size) => width > size || height > size,
         ImageType::Content(Some(dimensions)) => width > dimensions.x || height > dimensions.y,
         ImageType::Content(None) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::encrypted::encrypt;
+
+    /// A `width` x `height` PNG, standing in for a pasted screenshot.
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([200, 40, 90, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode png");
+        bytes.into_inner()
+    }
+
+    /// The encrypted fixture: a 5x3 PNG as a Blossom server would serve it,
+    /// and the imeta that opens it.
+    struct EncryptedPng {
+        ciphertext: Vec<u8>,
+        imeta: EncryptedImeta<'static>,
+    }
+
+    fn encrypted_png() -> EncryptedPng {
+        let blob = encrypt(&png(5, 3)).expect("encrypt");
+        let url = format!("https://blossom.example/{}", hex::encode(blob.x));
+        let imeta = EncryptedImeta::new(url, "image/png", None, &blob);
+        EncryptedPng {
+            ciphertext: blob.ciphertext,
+            imeta,
+        }
+    }
+
+    #[test]
+    fn an_encrypted_png_decrypts_and_decodes_to_its_size() {
+        let EncryptedPng { ciphertext, imeta } = encrypted_png();
+
+        // The server calls it octet-stream; the imeta's `m` wins.
+        let imgs = parse_fetched_image(
+            Some("application/octet-stream"),
+            &ciphertext,
+            Some(&imeta),
+            ImageType::Content(None),
+        )
+        .expect("decrypt and parse");
+
+        assert_eq!(imgs.display.size, [5, 3]);
+        assert_eq!(imgs.disk.size, [5, 3]);
+    }
+
+    #[test]
+    fn a_wrong_key_is_an_error_not_an_image() {
+        let EncryptedPng {
+            ciphertext,
+            mut imeta,
+        } = encrypted_png();
+        imeta.key[0] ^= 1;
+
+        let res = parse_fetched_image(
+            Some("image/png"),
+            &ciphertext,
+            Some(&imeta),
+            ImageType::Content(None),
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn an_unregistered_ciphertext_does_not_parse() {
+        let EncryptedPng { ciphertext, .. } = encrypted_png();
+        let res = parse_fetched_image(
+            Some("image/png"),
+            &ciphertext,
+            None,
+            ImageType::Content(None),
+        );
+        assert!(res.is_err());
     }
 }

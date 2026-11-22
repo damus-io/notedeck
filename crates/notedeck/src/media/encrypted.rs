@@ -23,6 +23,7 @@
 //! screenshot is larger than that.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use aes_gcm::aead::consts::{U12, U16};
 use aes_gcm::aead::rand_core::RngCore;
@@ -33,6 +34,7 @@ use nostrdb::{Note, NoteBuilder, Tag};
 use sha2::{Digest, Sha256};
 
 use crate::media::PixelDimensions;
+use crate::MediaCacheType;
 
 /// The `encryption-algorithm` value for this scheme.
 pub const ALGORITHM: &str = "aes-gcm";
@@ -199,6 +201,15 @@ impl<'a> EncryptedImeta<'a> {
         }
     }
 
+    /// The cache that draws this attachment: the static image cache when
+    /// its `m` is an image, nothing otherwise. A GIF draws its first frame,
+    /// since only static images are decrypted.
+    pub fn cache_type(&self) -> Option<MediaCacheType> {
+        self.mime
+            .starts_with("image/")
+            .then_some(MediaCacheType::Image)
+    }
+
     /// The same attachment with its strings copied out, so it no longer
     /// borrows from a transaction.
     pub fn into_owned(self) -> EncryptedImeta<'static> {
@@ -320,6 +331,49 @@ pub fn encrypted_imetas<'a>(note: &Note<'a>) -> impl Iterator<Item = EncryptedIm
     note.tags()
         .into_iter()
         .filter_map(|tag| EncryptedImeta::from_tag(&tag))
+}
+
+/// The encrypted attachments the image cache can open, by ciphertext URL.
+///
+/// [`crate::Images`] keeps one. A URL registered here is fetched as
+/// ciphertext, decrypted off the UI thread with its key, and parsed as its
+/// `m` type; it is drawn as an image without a MIME probe, since a Blossom
+/// URL often has no extension and its server reports the ciphertext as
+/// `application/octet-stream`.
+///
+/// Register a URL before its image is first requested. A fetch already
+/// made without the key has cached its error and is not retried.
+#[derive(Default)]
+pub struct EncryptedMedia {
+    by_url: HashMap<String, EncryptedImeta<'static>>,
+}
+
+impl EncryptedMedia {
+    /// Remember how to open `imeta.url`.
+    ///
+    /// Registering the same attachment again copies nothing, so a view may
+    /// call this every frame. A URL registered with a different key or type
+    /// is replaced.
+    pub fn register(&mut self, imeta: &EncryptedImeta<'_>) {
+        if self.by_url.get(imeta.url.as_ref()) == Some(imeta) {
+            return;
+        }
+        let owned = imeta.clone().into_owned();
+        self.by_url.insert(owned.url.to_string(), owned);
+    }
+
+    /// Register every encrypted attachment on `note`, as
+    /// [`crate::update_imeta_blurhashes`] does for blurhashes.
+    pub fn register_note(&mut self, note: &Note<'_>) {
+        for imeta in encrypted_imetas(note) {
+            self.register(&imeta);
+        }
+    }
+
+    /// The attachment registered at `url`, if any.
+    pub fn get(&self, url: &str) -> Option<&EncryptedImeta<'static>> {
+        self.by_url.get(url)
+    }
 }
 
 /// Parse a `WxH` dimension, as in `dim 640x480`.
@@ -518,5 +572,41 @@ mod tests {
         let mut not_imeta = complete;
         not_imeta[0] = "image";
         assert_eq!(parse_entries(&not_imeta), None);
+    }
+
+    #[test]
+    fn encrypted_media_registers_from_a_note_and_replaces_a_changed_key() {
+        let blob = encrypt(PLAIN).expect("encrypt");
+        let url = format!("https://blossom.example/{}", hex::encode(blob.x));
+        let imeta = EncryptedImeta::new(url.as_str(), "image/png", None, &blob);
+        let note = imeta
+            .write_tag(NoteBuilder::new().kind(1111).content("see attached"))
+            .sign(&[3u8; 32])
+            .build()
+            .expect("note");
+
+        let mut media = EncryptedMedia::default();
+        assert!(media.get(&url).is_none());
+        media.register_note(&note);
+        assert_eq!(media.get(&url), Some(&imeta.clone().into_owned()));
+
+        // Registering it again changes nothing; a new key replaces the old.
+        media.register(&imeta);
+        let mut rekeyed = imeta.clone();
+        rekeyed.key[0] ^= 1;
+        media.register(&rekeyed);
+        assert_eq!(media.get(&url).map(|m| m.key), Some(rekeyed.key));
+    }
+
+    #[test]
+    fn only_an_image_type_is_drawn() {
+        let blob = encrypt(PLAIN).expect("encrypt");
+        let image = EncryptedImeta::new("https://b.example/x", "image/png", None, &blob);
+        let gif = EncryptedImeta::new("https://b.example/y", "image/gif", None, &blob);
+        let video = EncryptedImeta::new("https://b.example/z", "video/mp4", None, &blob);
+        assert_eq!(image.cache_type(), Some(MediaCacheType::Image));
+        // Only static images are decrypted, so a GIF draws its first frame.
+        assert_eq!(gif.cache_type(), Some(MediaCacheType::Image));
+        assert_eq!(video.cache_type(), None);
     }
 }
