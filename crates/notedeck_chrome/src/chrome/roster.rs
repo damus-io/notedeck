@@ -11,6 +11,12 @@ use oot_bitset::{bitset_clear, bitset_get, bitset_set};
 #[cfg(feature = "dave")]
 use notedeck_dave::Dave;
 
+/// The key that closes the active app's tab: Ctrl+W, or Cmd+W on macOS
+/// (egui's `COMMAND` is Cmd there). Bound in the chrome's keybindings and
+/// named in the tooltip on each tab's x.
+pub(super) const CLOSE_TAB_SHORTCUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::W);
+
 impl Chrome {
     /// Append `app` to the roster, returning its slot.
     pub fn add_app(&mut self, app: NotedeckApp) -> notedeck::AppId {
@@ -155,31 +161,51 @@ impl Chrome {
         }
     }
 
-    /// Close the active app's tab, drop its nav stack (see
-    /// [`drop_app_nav`](Chrome::drop_app_nav)), and switch to the nearest
-    /// opened app. No-op if it's the only opened app — at least one app must
-    /// stay open. Used by Ctrl+W.
+    /// Close the active app's tab; see [`close_app`](Chrome::close_app).
+    /// Used by Ctrl+W (Cmd+W on macOS).
     ///
     /// Returns the dropped entries for
     /// [`cleanup_entries`](Chrome::cleanup_entries).
     #[must_use = "a dropped entry that skips its app's cleanup_nav leaks what its route opened"]
     pub(super) fn close_active_app(&mut self) -> Vec<TakenEntry> {
+        let Some(last) = self.apps.len().checked_sub(1) else {
+            return Vec::new();
+        };
+        self.close_app(self.active.clamp(0, last as i32) as usize)
+    }
+
+    /// Close the tab of the opened app in slot `idx` and drop its nav stack
+    /// (see [`drop_app_nav`](Chrome::drop_app_nav)). When `idx` was the
+    /// active app, switch to the nearest opened app after it, wrapping;
+    /// closing any other tab leaves the active app alone. No-op if `idx`
+    /// isn't opened or is the only opened app — at least one app must stay
+    /// open. Used by Ctrl+W (through
+    /// [`close_active_app`](Chrome::close_active_app)) and by the x on each
+    /// tab in the header strip.
+    ///
+    /// Returns the dropped entries for
+    /// [`cleanup_entries`](Chrome::cleanup_entries).
+    #[must_use = "a dropped entry that skips its app's cleanup_nav leaks what its route opened"]
+    pub(super) fn close_app(&mut self, idx: usize) -> Vec<TakenEntry> {
         let n = self.apps.len();
-        if n == 0 {
+        if idx >= n || !self.is_opened(idx) {
             return Vec::new();
         }
         // at least one app must remain open
         if self.opened_count() <= 1 {
             return Vec::new();
         }
-        let active = self.active.clamp(0, n as i32 - 1) as usize;
-        self.clear_opened(active);
-        let dropped = self.drop_app_nav(active);
-        // switch to the nearest opened app after `active`, wrapping
+        let was_active = self.active == idx as i32;
+        self.clear_opened(idx);
+        let dropped = self.drop_app_nav(idx);
+        if !was_active {
+            return dropped;
+        }
+        // switch to the nearest opened app after `idx`, wrapping
         for offset in 1..=n {
-            let idx = (active + offset) % n;
-            if self.is_opened(idx) {
-                self.set_active(idx as i32);
+            let next = (idx + offset) % n;
+            if self.is_opened(next) {
+                self.set_active(next as i32);
                 break;
             }
         }
@@ -271,5 +297,78 @@ mod tab_cycle_tests {
     fn lone_flag_cycles_to_itself_and_empty_finds_nothing() {
         assert_eq!(bitset_find(&bitset(&[2]), 2, FORWARD), Some(2));
         assert_eq!(bitset_find(&bitset(&[]), 0, FORWARD), None);
+    }
+}
+
+#[cfg(test)]
+mod close_tab_tests {
+    use super::super::nav::Blank;
+    use super::Chrome;
+    use crate::app::NotedeckApp;
+
+    /// A bare chrome over three stand-in apps, each opened, on slot `active`.
+    fn three_open_on(active: usize) -> Chrome {
+        let apps = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| NotedeckApp::Other(name.into(), Box::new(Blank)))
+            .collect();
+        let mut chrome = Chrome::without_context(apps);
+        for slot in 0..3 {
+            chrome.set_active(slot);
+        }
+        chrome.set_active(active as i32);
+        chrome
+    }
+
+    #[test]
+    fn closing_an_inactive_tab_keeps_the_active_app() {
+        let mut chrome = three_open_on(0);
+        let _dropped = chrome.close_app(2);
+        assert!(
+            !chrome.is_opened(2),
+            "the closed tab's app is no longer opened"
+        );
+        assert_eq!(chrome.active, 0, "the active app didn't change");
+        assert!(chrome.is_opened(0) && chrome.is_opened(1));
+    }
+
+    #[test]
+    fn closing_the_active_tab_moves_to_the_next_opened() {
+        let mut chrome = three_open_on(1);
+        let _dropped = chrome.close_app(1);
+        assert!(!chrome.is_opened(1));
+        assert_eq!(chrome.active, 2, "the next opened app after it");
+
+        // and wraps around the end of the roster
+        let _dropped = chrome.close_app(2);
+        assert_eq!(chrome.active, 0);
+    }
+
+    #[test]
+    fn closing_the_last_open_tab_is_a_no_op() {
+        let mut chrome = three_open_on(0);
+        let _dropped = chrome.close_app(1);
+        let _dropped = chrome.close_app(2);
+        let _dropped = chrome.close_app(0);
+        assert!(chrome.is_opened(0), "at least one app stays open");
+        assert_eq!(chrome.active, 0);
+    }
+
+    #[test]
+    fn closing_an_unopened_or_missing_slot_is_a_no_op() {
+        let mut chrome = three_open_on(0);
+        let _dropped = chrome.close_app(1);
+        let _dropped = chrome.close_app(1);
+        let _dropped = chrome.close_app(9);
+        assert!(chrome.is_opened(0) && chrome.is_opened(2));
+        assert_eq!(chrome.active, 0);
+    }
+
+    #[test]
+    fn close_active_app_closes_the_active_slot() {
+        let mut chrome = three_open_on(2);
+        let _dropped = chrome.close_active_app();
+        assert!(!chrome.is_opened(2));
+        assert_eq!(chrome.active, 0, "Ctrl+W wraps to the first opened app");
     }
 }

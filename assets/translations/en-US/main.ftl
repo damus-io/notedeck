@@ -208,6 +208,9 @@ Click_to_edit_0414 = Click to edit
 # Button to go to the ClnDash app
 ClnDash_2988 = ClnDash
 
+# Tooltip on the x of a tab in the app tab strip; shortcut is the key that closes the active tab, such as Ctrl+W
+Close_tab___shortcut_09e7 = Close tab ({$shortcut})
+
 # Button to go to the Columns app
 Columns_7215 = Columns
 

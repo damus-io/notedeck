@@ -599,3 +599,149 @@ fn snapshot_colour_emoji_note_body() {
     .to_image();
     egui_kittest::image_snapshot(&cropped, "colour_emoji_note_body");
 }
+
+/// A chrome the test keeps hold of, driven through the host's own frame
+/// ([`notedeck_chrome::testing::chrome_frame`]), so a test can read the
+/// chrome's state between frames.
+struct TabStripState {
+    notedeck: Notedeck,
+    chrome: notedeck_chrome::Chrome,
+    _tmpdir: tempfile::TempDir,
+    fonts_installed: bool,
+}
+
+/// An app that draws nothing but a line, standing in for a real app's tab.
+struct StandInApp;
+
+impl App for StandInApp {
+    fn render(
+        &mut self,
+        _ctx: &mut notedeck::AppContext,
+        ui: &mut egui::Ui,
+    ) -> notedeck::AppResponse {
+        ui.label("stand-in app");
+        notedeck::AppResponse::none()
+    }
+}
+
+/// The stand-in tabs' names, in slot order.
+const TABS: [&str; 3] = ["Alpha", "Beta", "Gamma"];
+
+/// The inactive tab the tests hover and close.
+const HOVERED: usize = 1;
+
+/// The active tab.
+const ACTIVE: usize = 2;
+
+/// A chrome with [`TABS`] open on [`ACTIVE`], past the welcome screen so the
+/// desktop tab strip shows.
+fn three_tab_state() -> TabStripState {
+    let ctx = egui::Context::default();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    {
+        let app_ctx = notedeck.app_context();
+        app_ctx.settings.complete_welcome();
+        app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+    }
+    let apps =
+        TABS.map(|name| notedeck_chrome::NotedeckApp::Other(name.into(), Box::new(StandInApp)));
+    let mut chrome = notedeck_chrome::Chrome::new_headless_with_apps(&mut notedeck, apps);
+    for slot in 0..TABS.len() {
+        chrome.set_active(slot as i32);
+    }
+    chrome.set_active(ACTIVE as i32);
+    TabStripState {
+        notedeck,
+        chrome,
+        _tmpdir: tmpdir,
+        fonts_installed: false,
+    }
+}
+
+/// One chrome frame of a [`TabStripState`]; the first only installs fonts
+/// and pins animations off, since fonts apply on the pass after they're set.
+fn tab_strip_frame(ui: &mut egui::Ui, state: &mut TabStripState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        if !state.fonts_installed {
+            let ctx = ui.ctx().clone();
+            state.notedeck.setup(&ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            state.fonts_installed = true;
+            return;
+        }
+        notedeck_chrome::testing::chrome_frame(&mut state.notedeck, &mut state.chrome, ui);
+    });
+}
+
+/// Where the tab strip's label `name` is drawn. The strip runs along the top
+/// of the window, which tells its label apart from any other of that name.
+fn tab_label_rect(harness: &Harness<'_, TabStripState>, name: &str) -> egui::Rect {
+    harness
+        .query_all_by_label(name)
+        .map(|node| node.rect())
+        .find(|rect| rect.center().y < 40.0)
+        .unwrap_or_else(|| panic!("no tab labelled {name} in the tab strip"))
+}
+
+/// The x of the tab whose label is at `label`: the first x to its right.
+fn tab_close_rect(harness: &Harness<'_, TabStripState>, label: egui::Rect) -> egui::Rect {
+    harness
+        .query_all_by_label("Close tab")
+        .map(|node| node.rect())
+        .filter(|rect| rect.center().x > label.center().x)
+        .min_by(|a, b| a.center().x.total_cmp(&b.center().x))
+        .expect("the hovered tab shows an x")
+}
+
+/// Hover the inactive [`HOVERED`] tab so its x shows, and leave the pointer
+/// there. Returns where its label is.
+fn hover_inactive_tab(harness: &mut Harness<'_, TabStripState>) -> egui::Rect {
+    let _ = harness.run_ok();
+    let label = tab_label_rect(harness, TABS[HOVERED]);
+    harness.hover_at(label.center());
+    let _ = harness.run_ok();
+    label
+}
+
+/// Clicking the x on an inactive tab closes that tab and leaves the active
+/// app alone: the x takes the click, and the tab under it doesn't also get
+/// selected.
+#[tokio::test]
+async fn clicking_a_tabs_x_closes_it_without_selecting_it() {
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(800.0, 600.0))
+        .build_ui_state(tab_strip_frame, three_tab_state());
+
+    let label = hover_inactive_tab(&mut harness);
+    let x = tab_close_rect(&harness, label);
+    harness.hover_at(x.center());
+    let _ = harness.run_ok();
+    harness
+        .query_all_by_label("Close tab")
+        .find(|node| node.rect() == x)
+        .expect("the x stays while the pointer is on it")
+        .click();
+    let _ = harness.run_ok();
+
+    let chrome = &harness.state().chrome;
+    assert!(!chrome.is_opened(HOVERED), "the hovered tab closed");
+    assert_eq!(chrome.active_app(), ACTIVE, "the active app didn't change");
+    assert!(chrome.is_opened(0) && chrome.is_opened(ACTIVE));
+}
+
+/// The tab strip with the pointer on the inactive [`HOVERED`] tab: its x
+/// shows on hover, beside the [`ACTIVE`] tab's own x.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+#[tokio::test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+async fn snapshot_tab_strip_close_on_hover() {
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(800.0, 600.0))
+        .renderer(notedeck::software_renderer())
+        .build_ui_state(tab_strip_frame, three_tab_state());
+
+    hover_inactive_tab(&mut harness);
+    harness.snapshot("tab_strip_close_on_hover");
+}

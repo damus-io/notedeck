@@ -2,6 +2,7 @@
 //! browser-style history controls for the active app (history dropdown, back / forward
 //! chevrons) followed by one tab per opened app.
 
+use super::roster::CLOSE_TAB_SHORTCUT;
 use super::sidebar::app_label;
 #[cfg(feature = "dave")]
 use super::sidebar::dave_button;
@@ -11,6 +12,7 @@ use egui::{vec2, Color32, Label, Layout, Rect, RichText, Sense};
 use notedeck::{tr, App, AppContext, Localization, NotedeckOptions, TabNotifications};
 use notedeck_ui::app_images;
 use notedeck_ui::header::{paint_chevron, ChevronDir};
+use notedeck_ui::widgets::x_button;
 use oot_bitset::bitset_get;
 
 /// Render a small (`size` square) app icon for the chrome tab strip.
@@ -106,15 +108,28 @@ fn tab_strip_fade(ui: &egui::Ui) {
 }
 
 /// A single tab in the chrome app tab strip: the app it represents, whether
-/// it's the active tab, and any notification badge it wants to show.
+/// it's the active tab, whether it can be closed, and any notification badge
+/// it wants to show.
 struct ChromeTab<'a> {
     app: &'a mut NotedeckApp,
     selected: bool,
+    /// Whether to offer the x: false when this is the only open tab, which
+    /// can't be closed.
+    closable: bool,
     notifications: TabNotifications,
 }
 
 impl ChromeTab<'_> {
-    fn show(&mut self, loc: &mut Localization, ui: &mut egui::Ui) {
+    /// Draw the tab into `ui`, which spans the whole tab. Returns whether
+    /// its x was clicked this frame.
+    fn show(&mut self, loc: &mut Localization, ui: &mut egui::Ui) -> bool {
+        // The whole tab, read before the content takes its share of it.
+        // Hover is checked against it rather than the tab's response, which
+        // stops reporting a hover once the pointer is over the x on top of
+        // it and would make the x vanish under the pointer.
+        let tab_rect = ui.max_rect();
+        let show_x = self.closable && (self.selected || ui.rect_contains_pointer(tab_rect));
+
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             tab_app_icon(ui, self.app, 18.0);
@@ -128,8 +143,41 @@ impl ChromeTab<'_> {
             ui.add(Label::new(txt).selectable(false));
 
             tab_notification_badge(ui, self.notifications);
-        });
+
+            show_x && tab_close_button(loc, ui, tab_rect.center().y)
+        })
+        .inner
     }
+}
+
+/// The side of the square the tab's x sits in.
+const TAB_CLOSE_SIZE: f32 = 14.0;
+
+/// The x drawn next in the tab's row, after its label and badge, centred on
+/// `center_y`; it closes the tab the way [`CLOSE_TAB_SHORTCUT`] closes the
+/// active one. It sits beside its own label rather than at the tab's right
+/// edge: the row is left-aligned, so the edge is beside the *next* tab's
+/// icon. Allocated after the tab's own click area, so a click on it goes to
+/// the x and not to the tab. Returns whether it was clicked.
+fn tab_close_button(loc: &mut Localization, ui: &mut egui::Ui, center_y: f32) -> bool {
+    let min = egui::pos2(ui.cursor().min.x, center_y - TAB_CLOSE_SIZE / 2.0);
+    let rect = Rect::from_min_size(min, egui::Vec2::splat(TAB_CLOSE_SIZE));
+    let response = ui.add(x_button(rect));
+    // Named for screen readers (and tests) like `notedeck_ui::icons`' own
+    // buttons; the closure only runs while AccessKit is on.
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Close tab"));
+    response
+        // Built only while hovered: the label allocates.
+        .on_hover_ui(|ui| {
+            let shortcut = ui.ctx().format_shortcut(&CLOSE_TAB_SHORTCUT);
+            ui.label(tr!(
+                loc,
+                "Close tab ({shortcut})",
+                "Tooltip on the x of a tab in the app tab strip; shortcut is the key that closes the active tab, such as Ctrl+W",
+                shortcut = shortcut.as_str()
+            ));
+        })
+        .clicked()
 }
 
 /// Render a small pill badge with the notification count, if any.
@@ -410,27 +458,41 @@ pub(super) fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mu
                 .layout(Layout::centered_and_justified(egui::Direction::TopDown))
                 .show(ui, |ui, state| {
                     let Some(app_idx) = nth_opened(opened, n_apps, state.index() as usize) else {
-                        return;
+                        return false;
                     };
 
                     let notifications = apps[app_idx].tab_notifications(ctx);
                     ChromeTab {
                         app: &mut apps[app_idx],
                         selected: state.is_selected(),
+                        closable: n_tabs > 1,
                         notifications,
                     }
-                    .show(ctx.i18n, ui);
+                    .show(ctx.i18n, ui)
                 })
         })
         .inner;
 
     tab_strip_fade(ui);
 
+    // A click on a tab's x closes it. It is handled before, and instead of,
+    // the switch below: the x sits on top of its tab, and closing a tab must
+    // never also select it.
+    let tabs = tab_res.inner();
+    if let Some(closed_tab) = tabs.iter().position(|r| r.inner) {
+        let Some(app_idx) = nth_opened(&chrome.opened, chrome.apps.len(), closed_tab) else {
+            return;
+        };
+        let dropped = chrome.close_app(app_idx);
+        chrome.cleanup_entries(ctx, dropped);
+        return;
+    }
+
     // Switch on an actual click this frame rather than on the strip's current
     // selection. Reading the selection back would make the tab strip fight
     // every app switch that originates elsewhere (Ctrl+Tab, the sidebar, a
     // note action opening Headway) instead of merely reflecting it.
-    let Some(clicked_tab) = tab_res.inner().iter().position(|r| r.response.clicked()) else {
+    let Some(clicked_tab) = tabs.iter().position(|r| r.response.clicked()) else {
         return;
     };
 

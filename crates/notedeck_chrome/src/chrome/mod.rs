@@ -505,7 +505,7 @@ impl Chrome {
         }
 
         // Ctrl+W (Cmd+W on macOS) closes the active app's tab.
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+        if ctx.input_mut(|i| i.consume_shortcut(&roster::CLOSE_TAB_SHORTCUT)) {
             let dropped = self.close_active_app();
             self.cleanup_entries(app_ctx, dropped);
         }
