@@ -46,6 +46,7 @@ mod parse;
 mod rank;
 mod reduce;
 mod resolve;
+mod shared;
 mod view;
 
 #[cfg(test)]
@@ -89,6 +90,7 @@ pub use resolve::{
     ColumnPos, LocatedCard, ResolvedCard, all_cards, card_in_board, card_with_column_in_board,
     find_board, locate_card_in_boards, pick_board, resolve_card, resolve_card_by_wordid,
 };
+pub use shared::{Applied, SharedFold};
 pub use view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
     EdgeRef, ReviewCommentView, ReviewSourceView, ReviewView, SubissueView, subissues_all_done,

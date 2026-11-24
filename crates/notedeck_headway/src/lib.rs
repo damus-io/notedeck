@@ -854,9 +854,8 @@ impl App for Headway {
             fan_out_unseen_notes(&mut api, ctx.ndb, &txn, &poll.fresh, &private_relays);
         }
 
-        // Advance joined shared boards (multi-writer fold, driven by each channel's
-        // kind-1081 envelope stream) and wake on a fresh sealed edit so the open
-        // board re-folds. The sealed envelopes are *not* fanned out here anymore:
+        // Advance joined shared boards (multi-writer fold, fed each board's new
+        // notes as deltas) and wake when one changed so the open board redraws. The sealed envelopes are *not* fanned out here anymore:
         // the notedeck host now owns the SNS 1081 outbound leg (it fans every
         // roster channel's locally-authored envelopes — see
         // `notedeck::HostPrivateSync`), so publishing them here too would just
@@ -869,7 +868,7 @@ impl App for Headway {
                 .board_cache
                 .borrow_mut()
                 .poll_shared(ctx.ndb, &txn, &self.teams);
-            if !shared.fresh.is_empty() || shared.subscribed {
+            if shared.changed || shared.subscribed {
                 self.wake();
             }
         }

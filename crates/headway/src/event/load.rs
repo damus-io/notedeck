@@ -15,6 +15,7 @@ use super::model::BoardCoord;
 use super::parse::{BlockerSet, RelatedSet, parse, parse_blockers, parse_related};
 use super::reduce::BoardReducer;
 use super::resolve::pick_board;
+use super::shared::SharedFold;
 use super::view::BoardView;
 
 /// `author`'s board-preference slot: the one kind-30623 note, `d` =
@@ -285,6 +286,10 @@ pub fn comment_filter(card_ids: &[[u8; 32]]) -> Filter {
 /// Returns `None` if `board_addr` isn't a well-formed board coordinate or the
 /// index walk fails. A board with no cards yields an empty (phase-A-only) reducer
 /// rather than `None`.
+///
+/// The walk is [`SharedFold::seed`]'s; a caller that keeps the board around
+/// holds the [`SharedFold`] instead and folds later notes into it with
+/// [`SharedFold::apply`] rather than walking the history again.
 #[profiling::function]
 pub fn fold_shared_board(
     ndb: &Ndb,
@@ -292,70 +297,7 @@ pub fn fold_shared_board(
     board_addr: &str,
     team_pubkeys: &[Pubkey],
 ) -> Option<BoardReducer> {
-    let phase_a = board_scoped_filters(board_addr)?;
-    let owner = BoardCoord::parse(board_addr)?.owner;
-    let teams: Vec<[u8; 32]> = team_pubkeys.iter().map(|k| *k.bytes()).collect();
-    let team = teams.as_slice();
-    let mut card_ids: Vec<[u8; 32]> = Vec::new();
-    let acc = ndb
-        .fold(
-            txn,
-            &phase_a,
-            BoardReducer::team_authored(),
-            |mut acc, note| {
-                if !shared_fold_admits(&note, &owner, team) {
-                    return acc;
-                }
-                if note.kind() == KIND_ISSUE {
-                    card_ids.push(*note.id());
-                }
-                if let Some(event) = parse(&note) {
-                    acc.ingest(event);
-                }
-                acc
-            },
-        )
-        .ok()?;
-
-    // No cards means no card-anchored overlays to gather; the `#e`/`#E` filters
-    // would be empty, so skip phase B and return the board as-is.
-    if card_ids.is_empty() {
-        return Some(acc);
-    }
-
-    let phase_b = [card_meta_filter(&card_ids), comment_filter(&card_ids)];
-    let mut record_ids: Vec<[u8; 32]> = Vec::new();
-    let acc = ndb
-        .fold(txn, &phase_b, acc, |mut acc, note| {
-            if !shared_fold_admits(&note, &owner, team) {
-                return acc;
-            }
-            if note.kind() == KIND_REVIEW {
-                record_ids.push(*note.id());
-            }
-            if let Some(event) = parse(&note) {
-                acc.ingest(event);
-            }
-            acc
-        })
-        .ok()?;
-
-    // Phase C: inline review comments root on a review record, not the card,
-    // so the card ids above can't reach them; the records phase B found can.
-    if record_ids.is_empty() {
-        return Some(acc);
-    }
-    let phase_c = [comment_filter(&record_ids)];
-    ndb.fold(txn, &phase_c, acc, |mut acc, note| {
-        if !shared_fold_admits(&note, &owner, team) {
-            return acc;
-        }
-        if let Some(event) = parse(&note) {
-            acc.ingest(event);
-        }
-        acc
-    })
-    .ok()
+    SharedFold::seed(ndb, txn, board_addr, team_pubkeys).map(SharedFold::into_reducer)
 }
 
 /// Whether [`fold_shared_board`] may ingest `note` for the board owned by

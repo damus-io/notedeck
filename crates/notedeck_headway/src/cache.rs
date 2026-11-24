@@ -71,9 +71,9 @@ pub(crate) struct BoardCache {
     authors: notedeck::RealtimeCache<HeadwayReducer>,
     /// Joined shared boards, keyed by board coordinate (`30619:owner:slug`). Unlike
     /// [`authors`](Self::authors) these are multi-writer, folded by *coordinate*
-    /// via [`event::fold_shared_board`] so every member's events are gathered, and
-    /// re-folded whenever a new kind-1081 envelope for the channel arrives (every
-    /// shared edit is one, so the envelope stream is the universal change signal).
+    /// through an [`event::SharedFold`] so every member's events are gathered:
+    /// seeded once by walking the board's history, then fed what its
+    /// subscription reports as deltas.
     shared: HashMap<String, SharedBoard>,
     /// The last revision handed to a shared board's fold (see
     /// [`SharedBoard::revision`]): one counter for every shared board, as
@@ -137,40 +137,91 @@ impl LocatedIssue {
     }
 }
 
-/// One joined shared board within [`BoardCache`]: the multi-writer reducer folded
-/// by board coordinate, plus a subscription to the channel's kind-1081 envelopes
-/// that signals when to re-fold.
+/// One joined shared board within [`BoardCache`]: the multi-writer fold by board
+/// coordinate, plus the subscription that feeds it deltas.
 #[derive(Default)]
 struct SharedBoard {
-    reducer: Option<BoardReducer>,
-    /// Memoized finalize of `reducer` — the shared-board analogue of the memo the
+    /// The board's fold, `None` until seeded (and again whenever it has to be
+    /// re-seeded: its channels changed, or its subscription was just opened).
+    fold: Option<event::SharedFold>,
+    /// Memoized finalize of `fold` — the shared-board analogue of the memo the
     /// generic [`RealtimeCache`](notedeck::RealtimeCache) keeps for the per-author
     /// leg, rebuilt lazily after a re-fold. Shared so [`BoardRef`] can hand it
     /// out without copying.
     finalized: Option<Rc<[BoardView]>>,
-    /// Which fold `reducer` is at: moved by [`refold`](Self::refold) on
-    /// every re-fold, the shared-board twin of
+    /// Which fold `fold` is at: moved by [`changed`](Self::changed) on every
+    /// seed and every delta that folded something, the shared-board twin of
     /// [`RealtimeCache::revision`](notedeck::RealtimeCache::revision).
     revision: u64,
-    /// Subscription to `{kinds:[1081], authors:[team_pubkey]}` — every edit to the
-    /// board is published as one such envelope, so a poll reporting new notes means
-    /// the board changed (a member's edit unwrapped) and we re-fold.
+    /// Subscription over [`event::SharedFold::subscription_filters`]: the
+    /// channels' envelopes and every note the board could come to hold, which
+    /// [`event::SharedFold::apply`] sorts into this board's or not.
     sub: Option<Subscription>,
+    /// The channels [`sub`](Self::sub) was opened over. When the roster's
+    /// channels for the board stop matching, the subscription is replaced.
+    sub_channels: Vec<Pubkey>,
+    /// Keys the subscription reported that the last pass's snapshot couldn't
+    /// read yet, retried on the next pass (see [`event::Applied::deferred`]).
+    pending: Vec<NoteKey>,
+    /// How many times this board's fold was seeded by walking its history
+    /// here, the cost the delta path exists to avoid. Reseeds inside
+    /// [`event::SharedFold::apply`] aren't counted.
+    seeds: u32,
 }
 
 impl SharedBoard {
-    /// Re-fold the board by coordinate: replace the reducer, drop the memo and
-    /// move [`revision`](Self::revision) to `next`, the cache's next unused
-    /// shared revision.
-    fn refold(
+    /// The fold, (re)seeded by walking the board's history when it has none or
+    /// it admits a different set of channels. A seed moves the revision.
+    fn seeded(
         &mut self,
         ndb: &Ndb,
         txn: &Transaction,
         board_addr: &str,
         channels: &[Pubkey],
         next: &mut u64,
-    ) {
-        self.reducer = event::fold_shared_board(ndb, txn, board_addr, channels);
+    ) -> Option<&mut event::SharedFold> {
+        if !self.fold.as_ref().is_some_and(|f| f.sealed_under(channels)) {
+            self.fold = event::SharedFold::seed(ndb, txn, board_addr, channels);
+            self.seeds += 1;
+            self.changed(next);
+        }
+        self.fold.as_mut()
+    }
+
+    /// Fold what the subscription reported (`polled`), plus whatever an earlier
+    /// pass deferred, into the board, seeding it first if need be. Keys `txn`
+    /// can't read yet wait in [`pending`](Self::pending). Returns whether the
+    /// board changed.
+    fn advance(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        board_addr: &str,
+        channels: &[Pubkey],
+        polled: Vec<NoteKey>,
+        next: &mut u64,
+    ) -> bool {
+        let before = self.revision;
+        let mut keys = std::mem::take(&mut self.pending);
+        keys.extend(polled);
+        let Some(fold) = self.seeded(ndb, txn, board_addr, channels, next) else {
+            self.pending = keys;
+            return self.revision != before;
+        };
+        if keys.is_empty() {
+            return self.revision != before;
+        }
+        let applied = fold.apply(ndb, txn, &keys);
+        if applied.changed() {
+            self.changed(next);
+        }
+        self.pending = applied.deferred;
+        self.revision != before
+    }
+
+    /// The fold changed: drop the memo and move [`revision`](Self::revision)
+    /// to `next`, the cache's next unused shared revision.
+    fn changed(&mut self, next: &mut u64) {
         self.finalized = None;
         *next += 1;
         self.revision = *next;
@@ -277,10 +328,8 @@ impl Deref for BoardRef {
 /// What one [`BoardCache::poll_shared`] pass found.
 #[derive(Default)]
 pub(crate) struct SharedPoll {
-    /// Freshly-arrived envelope keys. The envelope, not the unwrapped rumor, is
-    /// the sync unit (the rumor is skipped by
-    /// [`notedeck::fan_out_unseen_notes`]'s `is_rumor` guard).
-    pub(crate) fresh: Vec<NoteKey>,
+    /// Some board's fold changed, so whatever draws it should redraw.
+    pub(crate) changed: bool,
     /// A channel subscribed on this pass and so deliberately didn't fold yet (see
     /// [`BoardCache::poll_shared`]). The caller has to schedule another frame, or
     /// the fold waits for whatever repaints next.
@@ -367,12 +416,13 @@ impl BoardCache {
         self.authors.revision(ndb, txn, author)
     }
 
-    /// Advance every joined shared board: ensure a kind-1081 envelope subscription
-    /// per channel and re-fold (by coordinate, gathering all members) any whose
-    /// subscription reports new envelopes or that hasn't folded yet.
+    /// Advance every joined shared board: ensure its subscription (see
+    /// [`event::SharedFold::subscription_filters`]) and fold what it reports
+    /// into the board as deltas, seeding the fold first if it has none.
     ///
-    /// Re-fold is full each time rather than incremental: shared boards are few and
-    /// only re-fold when a member actually edits (every edit is one 1081 envelope).
+    /// Only a seed walks the board's history: on first touch, when the
+    /// board's channels change, and when an envelope arrives whose rumor never
+    /// did (see [`event::SharedFold::apply`]). An edit is one note folded in.
     pub(crate) fn poll_shared(
         &mut self,
         ndb: &Ndb,
@@ -396,41 +446,47 @@ impl BoardCache {
                 continue;
             }
             let entry = self.shared.entry(team.board_addr.clone()).or_default();
+            if entry.sub.is_some() && entry.sub_channels != channels {
+                // A channel joined or left: what the subscription watches and
+                // what the fold admits are both out of date.
+                if let Some(old) = entry.sub.take() {
+                    let _ = ndb.clone().unsubscribe(old);
+                }
+                entry.pending.clear();
+            }
             if entry.sub.is_none() {
-                entry.sub = ndb.subscribe(&[teams::envelope_filter(&channels)]).ok();
+                entry.sub = event::SharedFold::subscription_filters(&team.board_addr, &channels)
+                    .and_then(|filters| ndb.subscribe(&filters).ok());
                 if entry.sub.is_some() {
-                    // Don't fold on the pass that subscribes — `txn` was opened
-                    // before this subscription existed, and an envelope that
-                    // committed in between is in neither: too new for the snapshot,
-                    // too old for a subscription that only reports later ingests.
-                    // Since this leg only re-folds when the subscription reports
-                    // something, a board whose *only* envelope landed in that
-                    // window would never fold at all. Same hazard, and the same
-                    // shape of fix, as the author leg's seed
+                    // Don't fold on the pass that subscribes, and drop any fold
+                    // seeded before it (a render's lazy `shared_board`): `txn`
+                    // and that seed's snapshot were both taken before this
+                    // subscription existed, and a note that committed in
+                    // between is in neither — too new for the snapshot, too old
+                    // for a subscription that only reports later ingests — so
+                    // the fold would be one note short for good. Same hazard,
+                    // and the same shape of fix, as the author leg's seed
                     // (`notedeck::RealtimeCache::advance`).
                     //
-                    // Leaving `reducer` unset defers the fold to the next toucher —
-                    // the next pass here, or `shared_board` during this frame's
-                    // render — each of which opens its own transaction after this
-                    // one is dropped, so its snapshot postdates the subscribe.
+                    // The next toucher (the next pass here, or `shared_board`
+                    // during this frame's render) seeds with a transaction
+                    // opened after this one is dropped, so its snapshot
+                    // postdates the subscribe.
+                    entry.fold = None;
+                    entry.sub_channels = channels;
                     poll.subscribed = true;
                     continue;
                 }
             }
-            let polled = match entry.sub {
-                Some(sub) => ndb.poll_for_notes(sub, 64),
-                None => Vec::new(),
-            };
-            if !polled.is_empty() || entry.reducer.is_none() {
-                entry.refold(
-                    ndb,
-                    txn,
-                    &team.board_addr,
-                    &channels,
-                    &mut self.shared_revisions,
-                );
-            }
-            poll.fresh.extend(polled);
+            let polled = entry.sub.map(|sub| drain(ndb, sub)).unwrap_or_default();
+            poll.changed |= entry.advance(
+                ndb,
+                txn,
+                &team.board_addr,
+                &channels,
+                polled,
+                &mut self.shared_revisions,
+            );
         }
         poll
     }
@@ -660,6 +716,19 @@ impl BoardCache {
     }
 }
 
+/// Everything `sub` has waiting, however much that is.
+fn drain(ndb: &Ndb, sub: Subscription) -> Vec<NoteKey> {
+    const BATCH: u32 = 256;
+    let mut keys = ndb.poll_for_notes(sub, BATCH);
+    let mut last = keys.len();
+    while last == BATCH as usize {
+        let more = ndb.poll_for_notes(sub, BATCH);
+        last = more.len();
+        keys.extend(more);
+    }
+    keys
+}
+
 /// Fold (memoized) the shared board at `board_addr` over `channels`, seeding
 /// it on first touch: [`BoardCache::shared_board`]'s body, over the two fields
 /// it touches so a caller can pass channels borrowed from another field (the
@@ -677,11 +746,9 @@ fn fold_shared(
         shared.insert(board_addr.to_owned(), SharedBoard::default());
     }
     let entry = shared.get_mut(board_addr)?;
-    if entry.reducer.is_none() {
-        entry.refold(ndb, txn, board_addr, channels, revisions);
-    }
+    entry.seeded(ndb, txn, board_addr, channels, revisions)?;
     if entry.finalized.is_none() {
-        entry.finalized = Some(entry.reducer.as_ref()?.finalize().into());
+        entry.finalized = Some(entry.fold.as_ref()?.reducer().finalize().into());
     }
     // fold_shared_board folds a single coordinate, so its finalize yields the
     // one board (empty until the board definition has arrived).
@@ -1310,6 +1377,14 @@ pub(crate) mod tests {
             let txn = Transaction::new(&t.ndb).unwrap();
             t.cache.poll_shared(&t.ndb, &txn, &teams);
         }
+        // Seed the fold now, after the subscribe, so the card below can only
+        // reach it as a delta.
+        {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            t.cache.poll_shared(&t.ndb, &txn, &teams);
+        }
+        let seeds = t.cache.shared[&team.board_addr].seeds;
+        assert_eq!(seeds, 1, "one seed after the subscribe");
 
         // Add a card over the SNS channel — wrapped into a 1081 envelope, ingested
         // (and unwrapped) locally.
@@ -1329,7 +1404,7 @@ pub(crate) mod tests {
             &mut store::NoPublish,
         );
 
-        // Re-fold the shared board (multi-writer) until the sealed card surfaces.
+        // Advance the shared board (multi-writer) until the sealed card surfaces.
         let card = loop {
             let found = {
                 let txn = Transaction::new(&t.ndb).unwrap();
@@ -1355,6 +1430,10 @@ pub(crate) mod tests {
             await_ingest(&mut author_stream).await;
         };
 
+        assert_eq!(
+            t.cache.shared[&team.board_addr].seeds, seeds,
+            "the edit folds in as a delta, not a walk of the board's history"
+        );
         let txn = Transaction::new(&t.ndb).unwrap();
         assert!(
             t.ndb.get_note_by_id(&txn, card.bytes()).unwrap().is_rumor(),
