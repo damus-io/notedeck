@@ -583,13 +583,12 @@ argument. Dave sessions usually have `HEADWAY_COMMENT_NSEC_FILE` already set
 through `session_env` in `dave_settings.json`, so a plain `nd headway comment`
 signs as the agent.
 
-The comment is sealed into the board's channel with the account's access, so
-the comment key needs no membership and holds no board key. It only works on
-**sealed** boards: a plaintext board shows just its owner's own events, so the
-comment is refused rather than published where nobody would see it. On a
-plaintext board, unset the variable for that one command
-(`env -u HEADWAY_COMMENT_NSEC -u HEADWAY_COMMENT_NSEC_FILE nd headway comment …`)
-to comment as the account.
+On a sealed board the comment is sealed into the board's channel with the
+account's access, so the comment key needs no membership and holds no board
+key. A **plaintext** board is public, like an open repo: it shows a comment
+from any key, attributed to its signer, so the agent's comment is published
+plaintext and shows there too. A key that isn't the owner's can only comment;
+its edits, moves and cards never fold into the board.
 
 ## Typical workflow
 

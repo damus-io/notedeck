@@ -71,8 +71,8 @@ pub(crate) use load::shared_fold_admits;
 pub use load::{
     board_definition_filter, board_pref_slot, board_scoped_filters, card_meta_filter,
     comment_filter, current_blockers, current_related, fold_board, fold_shared_board,
-    headway_filter, load_board, load_board_pref, load_shared_board, plaintext_board_slugs,
-    reduce_delta,
+    headway_filter, load_board, load_board_pref, load_shared_board, owner_comments_filter,
+    plaintext_board_slugs, reduce_delta,
 };
 pub use model::{
     BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, LineRange, LineSide,

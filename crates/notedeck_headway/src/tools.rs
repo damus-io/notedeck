@@ -1162,9 +1162,8 @@ fn resolve_shared(
 /// Resolves `board_id` (own or joined-shared, see [`resolve_target`]) so `build`
 /// can resolve card/column refs against the live view, then signs, ingests, and
 /// publishes the action — sealing into the board's SNS channel when it's shared.
-/// A comment is signed by the context's comment key when it carries one, and
-/// refused on a plaintext board, where it would never show (see
-/// [`store::signing_key`]). Errors when the account is watch-only or the
+/// A comment is signed by the context's comment key when it carries one, on
+/// a sealed or a plaintext board alike (see [`store::signing_key`]). Errors when the account is watch-only or the
 /// context has no publisher (a read-only context), so a change is never
 /// silently dropped.
 ///
@@ -1197,13 +1196,7 @@ fn mutate(
     // `nd`) is signed by that key, as the CLI signs it; it reaches only a tool
     // that accepts one.
     let comment_secret = cx.comment_signer.map(|key| key.secret_key.secret_bytes());
-    let signing_key = store::signing_key(
-        &action,
-        &secret,
-        comment_secret.as_ref(),
-        channel.as_ref(),
-        board_id,
-    )?;
+    let signing_key = store::signing_key(&action, &secret, comment_secret.as_ref());
 
     let ndb = cx.ndb;
     let mut publisher = publisher(cx)?;
@@ -3508,12 +3501,12 @@ mod tests {
         }
     }
 
-    /// The caller's comment key signs a comment on a sealed board, as the
-    /// CLI's `HEADWAY_COMMENT_NSEC` does; on a plaintext board, where a
-    /// comment by another key would never show, the call is refused and a
-    /// comment without one is the account's own.
+    /// The caller's comment key signs a comment, as the CLI's
+    /// `HEADWAY_COMMENT_NSEC` does, on a sealed board and on a plaintext one
+    /// alike, and the comment shows on each attributed to the comment key: a
+    /// plaintext board takes comments from anyone.
     #[tokio::test]
-    async fn a_comment_signer_signs_on_sealed_boards_and_is_refused_on_plaintext() {
+    async fn a_comment_signer_signs_on_sealed_and_plaintext_boards() {
         const SEALED: &str = "sealed";
         let dir = TempDir::new().expect("tmp dir");
         let account = FullKeypair::generate();
@@ -3584,13 +3577,12 @@ mod tests {
             json!({ "card": sealed_ref, "body": "from the agent" }),
         )
         .expect("a sealed board takes the agent's comment");
-        let err = call_registered(
+        call_registered(
             &mut cx,
             "headway_comment_card",
-            json!({ "card": plain_ref, "body": "never shown" }),
+            json!({ "card": plain_ref, "body": "on the open board" }),
         )
-        .unwrap_err();
-        assert!(err.contains("plaintext board"), "{err}");
+        .expect("a plaintext board takes the agent's comment too");
 
         let view = settled_view(
             &ndb,
@@ -3647,5 +3639,26 @@ mod tests {
             sealed["columns"][0]["cards"][0]["comments"][0]["author"],
             agent.pubkey.hex()
         );
+
+        // The plaintext board shows its comment too, attributed to the agent,
+        // though the account signed nothing of it.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let shown = loop {
+            let shown = call_registered(&mut cx, "headway_show_card", json!({ "card": plain_ref }))
+                .expect("shows the plaintext card");
+            if shown[0]["comments"]
+                .as_array()
+                .is_some_and(|c| !c.is_empty())
+            {
+                break shown;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the agent's plaintext comment never showed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(shown[0]["comments"][0]["body"], "on the open board");
+        assert_eq!(shown[0]["comments"][0]["author"], agent.pubkey.hex());
     }
 }

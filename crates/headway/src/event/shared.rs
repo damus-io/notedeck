@@ -598,6 +598,144 @@ mod tests {
         assert_eq!(titles(&full(&b).unwrap()), ["Moved"], "and by a seed");
     }
 
+    /// A plaintext board is public: a stranger's comment on a card, and on a
+    /// review record of it, shows attributed to the stranger, by a seed and
+    /// as a delta. Anything else the stranger signs stays out, though it is
+    /// newer than the owner's: a rename, a move to another column, and a
+    /// placement of the owner's card on the board under the stranger's name.
+    #[test]
+    fn a_plaintext_board_shows_a_strangers_comment_and_nothing_else() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let plain = |who: &FullKeypair, b: NoteBuilder| {
+            store::ingest_signed(
+                &ndb,
+                b,
+                &Signer::new(&who.secret_key.secret_bytes(), None),
+                &mut NoPublish,
+            )
+            .expect("plaintext ingest")
+        };
+        let addr = board_address(&owner.pubkey, "open");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+        let sub = ndb
+            .subscribe(&SharedFold::subscription_filters(&addr, &[]).unwrap())
+            .unwrap();
+
+        plain(
+            &owner,
+            build_board("open", "Open", "", &cols).created_at(1_000),
+        );
+        let card = plain(&owner, build_issue(&addr, "Owned", "").created_at(1_001));
+        plain(
+            &owner,
+            build_placement("open", &addr, &card, "todo", "m").created_at(1_002),
+        );
+        let fields = ReviewFields {
+            commit: Some("abc123".into()),
+            ..Default::default()
+        };
+        let record = plain(&owner, build_review(&card, &fields).created_at(1_003));
+
+        // Seeded before the stranger writes, so their notes arrive as deltas.
+        let mut fold = {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let txn = Transaction::new(&ndb).unwrap();
+                if let Some(fold) = SharedFold::seed(&ndb, &txn, &addr, &[])
+                    && fold.reducer().finalize().first().is_some_and(|v| {
+                        v.columns[0]
+                            .cards
+                            .first()
+                            .is_some_and(|c| !c.reviews.is_empty())
+                    })
+                {
+                    break fold;
+                }
+                assert!(Instant::now() < deadline, "the owner's board never landed");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let _ = ndb.poll_for_notes(sub, 1024);
+
+        plain(
+            &stranger,
+            build_subject_edit(&card, "Hijacked").created_at(2_000),
+        );
+        plain(
+            &stranger,
+            build_placement("open", &addr, &card, "done", "a").created_at(2_001),
+        );
+        let comment = plain(
+            &stranger,
+            build_comment(&card, &owner.pubkey, None, "drive-by", &[]).created_at(2_002),
+        );
+        let review_comment = plain(
+            &stranger,
+            build_review_comment(&record, &owner.pubkey, None, None, "nit").created_at(2_003),
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut pending: Vec<NoteKey> = Vec::new();
+        loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            pending.extend(ndb.poll_for_notes(sub, 1024));
+            pending = fold.apply(&ndb, &txn, &pending).deferred;
+            let v = view(&fold);
+            let shown = v.columns[0]
+                .cards
+                .first()
+                .is_some_and(|c| c.comments.len() == 1 && c.reviews[0].comments.len() == 1);
+            if shown {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the stranger's comments never folded in"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let seeded = {
+            let txn = Transaction::new(&ndb).unwrap();
+            fold_shared_board(&ndb, &txn, &addr, &[])
+                .expect("seed")
+                .finalize()
+                .into_iter()
+                .next()
+                .expect("a board")
+        };
+        for (how, v) in [("as a delta", view(&fold)), ("by a seed", seeded)] {
+            assert_eq!(card_count(&v), 1, "{how}");
+            assert!(
+                v.columns[1].cards.is_empty(),
+                "{how}: the stranger's move stays out"
+            );
+            let shown = &v.columns[0].cards[0];
+            assert_eq!(
+                shown.title, "Owned",
+                "{how}: the stranger's rename stays out"
+            );
+            assert_eq!(shown.comments.len(), 1, "{how}");
+            assert_eq!(shown.comments[0].id, comment, "{how}");
+            assert_eq!(shown.comments[0].body, "drive-by", "{how}");
+            assert_eq!(
+                shown.comments[0].author,
+                *stranger.pubkey.bytes(),
+                "{how}: attributed to its signer"
+            );
+            let inline = &shown.reviews[0].comments;
+            assert_eq!(inline.len(), 1, "{how}");
+            assert_eq!(inline[0].id, review_comment, "{how}");
+            assert_eq!(inline[0].author, *stranger.pubkey.bytes(), "{how}");
+        }
+    }
+
     /// How many cards `view` shows across its columns.
     fn card_count(view: &BoardView) -> usize {
         view.columns.iter().map(|c| c.cards.len()).sum()

@@ -750,7 +750,12 @@ impl App for Headway {
         // are now pulled centrally by the notedeck host's private `Session` (see
         // `notedeck::HostPrivateSync`), which registers the roots and auto-unwraps
         // the envelopes off-foreground — so headway no longer declares them here.
-        let inbound = vec![event::headway_filter(&author)];
+        // A plaintext board takes comments from anyone, so the comments rooted
+        // on our cards and review records come in too, whoever signed them.
+        let inbound = vec![
+            event::headway_filter(&author),
+            event::owner_comments_filter(&author),
+        ];
         let private_relays = self.private_sync.update(ctx, inbound);
 
         // Flush any self-share gift-wraps captured when a board was created this

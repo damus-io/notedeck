@@ -117,6 +117,26 @@ pub fn headway_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
+/// A filter for every comment (kind 1111) rooted on a card or review record
+/// `owner` wrote, whoever signed it: the root `P` tag is the owner and the root
+/// `K` is a card or a review record ([`build_comment`](super::build_comment),
+/// [`build_review_comment`](super::build_review_comment)).
+///
+/// [`headway_filter`] syncs only the owner's own events, but a plaintext board
+/// takes comments from anyone ([`shared_fold_admits`]), so the relay sync asks
+/// for these too. `P` is an id tag, matched with an id element like
+/// [`comment_filter`]'s `E`. It leads because nostrdb plans a query on the
+/// first tag field, and the owner is the narrower of the two.
+pub fn owner_comments_filter(owner: &Pubkey) -> Filter {
+    let mut b = Filter::new().kinds([KIND_COMMENT as u64]);
+    b.start_tag_field('P').unwrap();
+    b.add_id_element(owner.bytes()).unwrap();
+    b.end_field();
+    let issue = KIND_ISSUE.to_string();
+    let review = KIND_REVIEW.to_string();
+    b.tags([issue.as_str(), review.as_str()], 'K').build()
+}
+
 /// Fold all of `author`'s headway events out of `ndb` into a fresh reducer: the
 /// single-writer *author fold*.
 ///
@@ -330,13 +350,24 @@ pub fn fold_shared_board(
 /// plaintext by construction, so there the owner's signed definition is admitted
 /// too, and the board folds from its owner's plaintext alone: what the retired
 /// author fold showed for it, read by coordinate.
+///
+/// A plaintext board is public, like an open repo, so it also takes a
+/// **comment** (kind 1111) from any signer, attributed to whoever signed it:
+/// that is how an agent's comment key, or anyone else, comments on it. A
+/// comment can only be a comment. The reducer folds it into a card's or review
+/// record's thread and nowhere else, so a stranger still can't add, move, edit
+/// or retitle anything. A sealed board takes comments only through its channel.
 pub(crate) fn shared_fold_admits(note: &Note, owner: &[u8; 32], team_pubkeys: &[[u8; 32]]) -> bool {
     if team_sealed(note, team_pubkeys) {
         return true;
     }
-    !note.is_rumor()
-        && note.pubkey() == owner
-        && (note.kind() != KIND_BOARD || team_pubkeys.is_empty())
+    if note.is_rumor() {
+        return false;
+    }
+    if team_pubkeys.is_empty() && note.kind() == KIND_COMMENT {
+        return true;
+    }
+    note.pubkey() == owner && (note.kind() != KIND_BOARD || team_pubkeys.is_empty())
 }
 
 /// A filter for every board definition (kind 30619) `owner` signed, every
@@ -478,7 +509,7 @@ mod tests {
 
     use crate::event::build::{
         build_blockers, build_board, build_comment, build_cover_note, build_issue, build_placement,
-        build_related, build_subject_edit,
+        build_related, build_review_comment, build_subject_edit,
     };
     use crate::event::model::{ColumnDef, board_address};
 
@@ -927,6 +958,18 @@ mod tests {
             build_subject_edit(&sealed, "Hijacked").created_at(now + 20),
             &stranger_secret,
         );
+        // A plaintext board takes anyone's comment; a sealed one takes comments
+        // only through its channel, so the stranger's plaintext one stays out.
+        let drive_by = plain(
+            build_comment(
+                &owned,
+                &owner.pubkey,
+                None,
+                "stranger plaintext comment",
+                &[],
+            ),
+            &stranger_secret,
+        );
 
         let team_pubkey = &channel.keys.team_keypair.pubkey;
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -934,7 +977,8 @@ mod tests {
             let txn = Transaction::new(&ndb).unwrap();
             // Wait until the stranger's notes are queryable too, so the absence
             // asserted below is the gate's doing rather than ingest lag.
-            let stranger_landed = ndb.get_note_by_id(&txn, forged.bytes()).is_ok();
+            let stranger_landed = ndb.get_note_by_id(&txn, forged.bytes()).is_ok()
+                && ndb.get_note_by_id(&txn, drive_by.bytes()).is_ok();
             if stranger_landed
                 && let Some(view) =
                     load_shared_board(&ndb, &txn, &addr, std::slice::from_ref(team_pubkey))
@@ -966,6 +1010,72 @@ mod tests {
             view.columns[1].cards[0].comments[0].body,
             "owner plaintext comment"
         );
+    }
+
+    /// [`owner_comments_filter`] finds every comment rooted on the owner's
+    /// cards and review records, whoever signed it, and no comment rooted on
+    /// another author's card.
+    #[test]
+    fn owner_comments_filter_finds_anyones_comment_on_the_owners_cards() {
+        use crate::store::{self, NoPublish};
+        use nostrdb::{Ndb, Transaction};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "open");
+        let plain = |b: NoteBuilder, who: &FullKeypair| -> NoteId {
+            store::ingest(&ndb, b, &who.secret_key.secret_bytes(), &mut NoPublish)
+                .expect("plaintext ingest")
+        };
+
+        let card = NoteId::new([7; 32]);
+        let record = NoteId::new([8; 32]);
+        let elsewhere = NoteId::new([9; 32]);
+        let wanted = [
+            plain(
+                build_comment(&card, &owner.pubkey, None, "on the card", &[]),
+                &stranger,
+            ),
+            plain(
+                build_review_comment(&record, &owner.pubkey, None, None, "on the record"),
+                &stranger,
+            ),
+        ];
+        let unrelated = plain(
+            build_comment(
+                &elsewhere,
+                &stranger.pubkey,
+                None,
+                "someone else's card",
+                &[],
+            ),
+            &owner,
+        );
+        // Not a comment at all, though it carries the owner's coordinate.
+        plain(build_issue(&addr, "a card", ""), &owner);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            if ndb.get_note_by_id(&txn, unrelated.bytes()).is_ok() {
+                let found: Vec<NoteId> = ndb
+                    .query(&txn, &[owner_comments_filter(&owner.pubkey)], 100)
+                    .unwrap()
+                    .iter()
+                    .map(|r| NoteId::new(*r.note.id()))
+                    .collect();
+                if found.len() == wanted.len() {
+                    assert!(wanted.iter().all(|id| found.contains(id)), "{found:?}");
+                    break;
+                }
+                assert!(found.len() < wanted.len(), "too many: {found:?}");
+            }
+            assert!(Instant::now() < deadline, "the comments never landed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
