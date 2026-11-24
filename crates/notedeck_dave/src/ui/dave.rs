@@ -784,18 +784,23 @@ impl<'a> DaveUi<'a> {
                         ui.add_space(bottom_margin as f32);
                         DaveResponse::default()
                     } else {
-                        egui::Frame::new()
-                            .outer_margin(egui::Margin {
-                                left: margin,
-                                right: margin,
-                                top: 0,
-                                bottom: bottom_margin,
-                            })
+                        let outer_margin = egui::Margin {
+                            left: margin,
+                            right: margin,
+                            top: 0,
+                            bottom: bottom_margin,
+                        };
+                        let composer = egui::Frame::new()
+                            .outer_margin(outer_margin)
                             .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
                             .fill(input_fill(ui.visuals(), self.normal_mode.is_some()))
                             .corner_radius(notedeck::tokens::RADIUS_LG)
-                            .show(ui, |ui| self.inputbox(app_ctx, ui))
-                            .inner
+                            .show(ui, |ui| self.inputbox(app_ctx, ui));
+                        // The response covers the outer margin too; the
+                        // drop outline goes around the filled box alone.
+                        let filled = composer.response.rect - outer_margin;
+                        self.file_drop_ui(app_ctx.i18n, filled, ui);
+                        composer.inner
                     };
 
                     {
@@ -2643,6 +2648,38 @@ impl<'a> DaveUi<'a> {
         super::slash_popup::slash_popup_ui(popup, self.input, current_model, input.rect, i18n, ui)
     }
 
+    /// Files dragged onto the window: stage a drop's paths as chips and
+    /// focus the composer, and outline the composer (`rect`) as the drop
+    /// target while files hover over the window.
+    ///
+    /// egui hands dropped files to the whole frame, not to a widget. Only the
+    /// session view's composer reads them, and the view draws one session's
+    /// composer per frame, so the active session is the one a drop lands in.
+    /// A remote session is handed no chips (`pending_paths` is `None`): its
+    /// outline says why, and a drop does nothing. Neither does a drop on a
+    /// subagent's session, whose composer is blocked.
+    fn file_drop_ui(&mut self, i18n: &mut Localization, rect: egui::Rect, ui: &mut egui::Ui) {
+        if self.composer_block.is_some() {
+            return;
+        }
+        if ui.input(|i| !i.raw.hovered_files.is_empty()) {
+            drop_target_ui(i18n, rect, self.pending_paths.is_some(), ui);
+        }
+        let Some(paths) = self.pending_paths.as_deref_mut() else {
+            return;
+        };
+        let mut added = false;
+        ui.input(|i| {
+            for file in &i.raw.dropped_files {
+                added |= crate::session::stage_path(paths, file.path().to_path_buf());
+            }
+        });
+        if added {
+            let id = input_id(self.session_id);
+            ui.memory_mut(|m| m.request_focus(id));
+        }
+    }
+
     /// A composer that can't send now, saying why on hover (see
     /// [`crate::session::composer_block`]). Stop still works while the
     /// subagent runs.
@@ -3343,6 +3380,64 @@ fn image_thumbnail_strip(pending: &mut Vec<ImageAttachment>, ui: &mut egui::Ui) 
     if let Some(idx) = remove_idx {
         pending.remove(idx);
     }
+}
+
+/// Outline the composer (`rect`) while files are dragged over the window,
+/// with a hint in a pill sitting on the outline's top edge, like a legend:
+/// "Drop to attach" when a drop would stage chips (`accepts`), or why it
+/// won't in a remote session. Both paint on a foreground layer, since the
+/// status bar above the composer draws after it, and the pill is filled so
+/// it reads over that bar.
+fn drop_target_ui(i18n: &mut Localization, rect: egui::Rect, accepts: bool, ui: &egui::Ui) {
+    use notedeck::tokens::{RADIUS_LG, SPACING_LG, SPACING_SM, SPACING_XS};
+
+    let visuals = ui.visuals();
+    let color = if accepts {
+        visuals.selection.stroke.color
+    } else {
+        visuals.weak_text_color()
+    };
+    let painter = ui
+        .ctx()
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique("dave_drop_target"),
+        ))
+        .with_clip_rect(ui.clip_rect());
+    let outline = rect.expand(2.0);
+    painter.rect_stroke(
+        outline,
+        RADIUS_LG,
+        egui::Stroke::new(2.0, color),
+        egui::StrokeKind::Outside,
+    );
+    let hint = if accepts {
+        tr!(
+            i18n,
+            "Drop to attach",
+            "Hint above Dave's composer while files are dragged over the window"
+        )
+    } else {
+        tr!(
+            i18n,
+            "Attachments work in local sessions only",
+            "Hint above Dave's composer while files are dragged over a remote session, where a drop does nothing"
+        )
+    };
+    let galley = painter.layout_no_wrap(hint, egui::FontId::proportional(12.0), color);
+    let pill = egui::Rect::from_min_size(
+        egui::pos2(outline.left() + SPACING_LG, outline.top()),
+        galley.size() + egui::vec2(2.0 * SPACING_SM, 2.0 * SPACING_XS),
+    )
+    .translate(egui::vec2(0.0, -galley.size().y / 2.0 - SPACING_XS));
+    painter.rect(
+        pill,
+        pill.height() / 2.0,
+        visuals.panel_fill,
+        egui::Stroke::new(1.0, color),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(pill.min + egui::vec2(SPACING_SM, SPACING_XS), galley, color);
 }
 
 /// The height of one path chip, and so of the strip that holds them.

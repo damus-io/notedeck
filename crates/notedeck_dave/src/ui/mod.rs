@@ -4592,6 +4592,125 @@ mod tests {
         );
     }
 
+    /// A file dropped on the window: only its path, since a drop on Dave
+    /// stages the path and never reads the file.
+    #[derive(Debug)]
+    struct DroppedPath(PathBuf);
+
+    impl egui::DroppedFile for DroppedPath {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Err("a dropped path is never read".to_owned())
+        }
+    }
+
+    /// Drop `paths` on the window for the harness's next frame, and run it.
+    fn drop_files(harness: &mut Harness<'static, SessionViewState>, paths: &[&str]) {
+        for path in paths {
+            harness
+                .input_mut()
+                .dropped_files
+                .push(std::sync::Arc::new(DroppedPath(PathBuf::from(path))));
+        }
+        harness.run_ok();
+    }
+
+    /// A drop on a local session stages each file's path as one chip,
+    /// deduped against what is already staged, and focuses the composer.
+    #[test]
+    fn dropping_files_stages_path_chips() {
+        let mut harness = session_view_harness(egui::vec2(1000.0, 600.0));
+        harness.run_ok();
+
+        drop_files(&mut harness, &["/var/log/notedeck.log"]);
+        // The same file again, with one more: only the new one is added.
+        drop_files(
+            &mut harness,
+            &["/var/log/notedeck.log", "/home/me/crash shot.png"],
+        );
+
+        let session_id = harness.state().session_manager.active_id().unwrap();
+        let session = harness.state().session_manager.get_active().unwrap();
+        assert_eq!(
+            session.pending_paths,
+            [
+                PathBuf::from("/var/log/notedeck.log"),
+                PathBuf::from("/home/me/crash shot.png"),
+            ]
+        );
+        assert_eq!(count_labels(&harness, "notedeck.log"), 1, "one chip a file");
+        assert_eq!(count_labels(&harness, "crash shot.png"), 1);
+        let focused = harness.ctx.memory(|m| m.focused());
+        assert_eq!(
+            focused,
+            Some(crate::ui::dave::input_id(session_id)),
+            "the drop focuses the composer"
+        );
+    }
+
+    /// A remote session's agent can't read this machine's disk, so a drop
+    /// on one stages nothing.
+    #[test]
+    fn dropping_files_on_a_remote_session_stages_nothing() {
+        let mut harness = session_view_harness(egui::vec2(1000.0, 600.0));
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .source = crate::session::SessionSource::Remote;
+        harness.run_ok();
+
+        drop_files(&mut harness, &["/var/log/notedeck.log"]);
+
+        let session = harness.state().session_manager.get_active().unwrap();
+        assert!(session.pending_paths.is_empty());
+        assert_eq!(count_labels(&harness, "notedeck.log"), 0);
+    }
+
+    /// Files dragged over the window, local then remote: the composer is
+    /// outlined with "Drop to attach" over a local session, and with why a
+    /// drop won't attach over a remote one.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_composer_file_hover() {
+        let mut state = session_view_state();
+        seed_composer(
+            &mut state,
+            &ComposerScene {
+                working: false,
+                draft: "",
+                mode: PermissionMode::Default,
+                paths: &["/var/log/notedeck.log"],
+            },
+        );
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1000.0, 340.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        // Hovered files stay in the input from frame to frame, as they do
+        // while a drag sits over the window.
+        harness.input_mut().hovered_files.push(egui::HoveredFile {
+            path: Some(PathBuf::from("/home/me/crash shot.png")),
+            mime: String::new(),
+        });
+        harness.run_ok();
+        harness.snapshot("composer_file_hover");
+
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .source = crate::session::SessionSource::Remote;
+        harness.run_ok();
+        harness.snapshot("composer_file_hover_remote");
+    }
+
     /// Unix seconds for 2026-10-`day` `h`:`m`:`sec` UTC, the zone these tests
     /// pin the chat to.
     fn chat_time(day: u32, h: u32, m: u32, sec: u32) -> u64 {

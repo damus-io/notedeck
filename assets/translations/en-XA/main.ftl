@@ -136,6 +136,9 @@ Asked_4b58 = {"["}Àskéd{"]"}
 # Dave chat: the time after a full date in a turn header, as in 'Mon, Oct 6 at 4:12 PM'
 at__time_3940 = {"["}àt {$time}{"]"}
 
+# Hint above Dave's composer while files are dragged over a remote session, where a drop does nothing
+Attachments_work_in_local_sessions_only_544d = {"["}Àttàçhméñts wórk íñ lóçàl séssíóñs óñly{"]"}
+
 # Dave session inspector permissions row: prompts accepted without asking
 Auto-accepted_b9fd = {"["}Àútó-àççéptéd{"]"}
 
@@ -429,6 +432,9 @@ Done_50dd = {"["}Dóñé{"]"}
 
 # Dave session inspector subagents: a subagent that finished
 done_af9c = {"["}dóñé{"]"}
+
+# Hint above Dave's composer while files are dragged over the window
+Drop_to_attach_dda1 = {"["}Dróp tó àttàçh{"]"}
 
 # Dave session inspector background: when a wake-up is due
 due__time_a95d = {"["}dúé {$time}{"]"}

@@ -136,6 +136,9 @@ Asked_4b58 = Asked
 # Dave chat: the time after a full date in a turn header, as in 'Mon, Oct 6 at 4:12 PM'
 at__time_3940 = at {$time}
 
+# Hint above Dave's composer while files are dragged over a remote session, where a drop does nothing
+Attachments_work_in_local_sessions_only_544d = Attachments work in local sessions only
+
 # Dave session inspector permissions row: prompts accepted without asking
 Auto-accepted_b9fd = Auto-accepted
 
@@ -429,6 +432,9 @@ Done_50dd = Done
 
 # Dave session inspector subagents: a subagent that finished
 done_af9c = done
+
+# Hint above Dave's composer while files are dragged over the window
+Drop_to_attach_dda1 = Drop to attach
 
 # Dave session inspector background: when a wake-up is due
 due__time_a95d = due {$time}

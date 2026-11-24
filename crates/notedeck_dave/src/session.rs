@@ -27,7 +27,7 @@ pub type SessionId = u32;
 mod attachments;
 mod lineage;
 mod subagent;
-pub use attachments::{compose_message, ATTACHED_FILES_HEADER};
+pub use attachments::{compose_message, stage_path, ATTACHED_FILES_HEADER};
 pub use lineage::{Edge, EdgeKind, Nesting, Place};
 pub use subagent::{composer_block, parent_instruction, SubagentMessage, SubagentOf};
 

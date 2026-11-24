@@ -39,23 +39,35 @@ pub fn compose_message(text: String, paths: &[PathBuf]) -> String {
     message
 }
 
+/// Stage `path` onto a local session's `staged` chips. Returns whether it
+/// was added: a relative path is refused (the agent's cwd is not the one the
+/// path was taken in), and a path already staged isn't added twice.
+///
+/// [`ChatSession::attach_path`] is this plus the remote check. The composer
+/// calls it directly on the chips it was handed, which it is handed only for
+/// a local session (`ui/mod.rs`).
+pub fn stage_path(staged: &mut Vec<PathBuf>, path: PathBuf) -> bool {
+    if !path.is_absolute() || is_staged(staged, &path) {
+        return false;
+    }
+    staged.push(path);
+    true
+}
+
+/// Whether `path` is already among the `staged` chips.
+fn is_staged(staged: &[PathBuf], path: &Path) -> bool {
+    staged.iter().any(|p| p == path)
+}
+
 impl ChatSession {
     /// Stage `path` as a chip for the next message. Returns whether it was
     /// added: a remote session stages nothing (its agent can't read this
-    /// machine's disk), a relative path is refused (the agent's cwd is not
-    /// the one the path was taken in), and a path already staged isn't
-    /// added twice.
+    /// machine's disk), and otherwise [`stage_path`]'s rules apply.
     pub fn attach_path(&mut self, path: PathBuf) -> bool {
-        if self.is_remote() || !path.is_absolute() || self.has_attached(&path) {
+        if self.is_remote() {
             return false;
         }
-        self.pending_paths.push(path);
-        true
-    }
-
-    /// Whether `path` is already staged.
-    fn has_attached(&self, path: &Path) -> bool {
-        self.pending_paths.iter().any(|p| p == path)
+        stage_path(&mut self.pending_paths, path)
     }
 
     /// Take the draft to send: the typed text with the staged paths
