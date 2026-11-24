@@ -496,8 +496,8 @@ fn scene_layout_toggle(ui: &mut egui::Ui, mode: &mut crate::scene_layout::SceneL
         .on_hover_text("Lay the map out as nested circles");
 }
 
-/// The scene's toolbar: a new agent, back to the list view, and the map's
-/// layout switch.
+/// The scene's toolbar: the same "+ New" session button as the list's header,
+/// back to the list view, and the map's layout switch.
 fn scene_toolbar_ui(
     ui: &mut egui::Ui,
     ctrl_held: bool,
@@ -505,15 +505,8 @@ fn scene_toolbar_ui(
     view_action: &mut SceneViewAction,
 ) {
     ui.horizontal(|ui| {
-        if ui
-            .button("+ New Agent")
-            .on_hover_text("Hold Ctrl to see keybindings")
-            .clicked()
-        {
+        if session_list::new_session_button(ui, ctrl_held).clicked() {
             *view_action = SceneViewAction::SpawnAgent;
-        }
-        if ctrl_held {
-            keybind_hint(ui, "N");
         }
         ui.separator();
         if ui

@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use egui::{Align, Color32, Layout, Pos2, Sense};
 use nostrdb::Transaction;
 use notedeck::NoteContext;
-use notedeck_ui::app_images;
 
 use crate::agent_status::{paint_status_bar, stale_color, AgentStatus, STATUS_BAR_WIDTH};
 use crate::card_titles::CardLookup;
@@ -143,7 +142,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         let mut action: Option<SessionListAction> = None;
 
         ui.vertical(|ui| {
-            // Header with New Agent button
+            // Header with the new-session button
             action = self.header_ui(ui);
 
             ui.add_space(8.0);
@@ -162,6 +161,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         action
     }
 
+    /// The "Sessions" title and, at its right, the [`new_session_button`]
+    /// that starts a session the way Ctrl+T does.
     fn header_ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
 
@@ -170,16 +171,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             ui.label(egui::RichText::new("Sessions").size(18.0).strong());
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let icon = app_images::new_message_image()
-                    .max_height(20.0)
-                    .sense(Sense::click());
-
-                if ui
-                    .add(icon)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("New Chat")
-                    .clicked()
-                {
+                if new_session_button(ui, self.ctrl_held).clicked() {
                     action = Some(SessionListAction::NewSession);
                 }
             });
@@ -667,6 +659,31 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
 /// instead of folding a board per session per frame. A lookup that changed
 /// what was kept regroups the list, since card parents link successor chains
 /// and the parent's title and progress head them.
+/// The new-session button's text, also its accessible label.
+pub(crate) const NEW_SESSION_LABEL: &str = "+ New";
+
+/// The new-session button's tooltip, naming the key that does the same.
+/// Dave's keybindings read the literal Ctrl key on every platform
+/// (`egui::Modifiers::CTRL`, see `keybindings.rs`), so this says Ctrl on
+/// macOS too.
+pub(crate) const NEW_SESSION_TOOLTIP: &str = "New session (Ctrl+T)";
+
+/// A "+ New" button that starts a session the way Ctrl+T does, with the `T`
+/// keycap beside it while ctrl is held. The session list header and the
+/// scene toolbar both draw it, so the control reads the same in either view.
+/// Returns the button's response; the caller turns a click into its
+/// new-session action.
+pub(crate) fn new_session_button(ui: &mut egui::Ui, ctrl_held: bool) -> egui::Response {
+    let response = ui
+        .button(NEW_SESSION_LABEL)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(NEW_SESSION_TOOLTIP);
+    if ctrl_held {
+        keybind_hint(ui, "T");
+    }
+    response
+}
+
 pub fn refresh_card_titles(
     session_manager: &mut SessionManager,
     refs: &TitleRefs<'_, '_>,
@@ -2262,7 +2279,9 @@ fn delete_worktree_menu_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_git_lines, AgentRow, GitLines, SessionListAction, SessionListUi};
+    use super::{
+        folder_git_lines, AgentRow, GitLines, SessionListAction, SessionListUi, NEW_SESSION_LABEL,
+    };
     use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
@@ -2327,6 +2346,38 @@ mod tests {
                 cwd_path,
             }
         }
+    }
+
+    /// The header's "+ New" button, found by its accessible label, starts a
+    /// session the way Ctrl+T does.
+    #[test]
+    fn clicking_the_plus_button_starts_a_new_session() {
+        let mut harness = Harness::new_ui_state(
+            |ui, state: &mut SessionListHarnessState| {
+                let mut session_list = SessionListUi::new(
+                    &mut state.ui.session_manager,
+                    &state.ui.focus_queue,
+                    &state.ui.collapse_state,
+                    state.ui.ctrl_held,
+                );
+                if let Some(action) = session_list.ui(ui) {
+                    state.action = Some(action);
+                }
+            },
+            SessionListHarnessState {
+                ui: SessionListUiOwnedState::new(),
+                action: None,
+            },
+        );
+
+        harness.run();
+        harness.get_by_label(NEW_SESSION_LABEL).click();
+        harness.run();
+
+        assert!(matches!(
+            harness.state().action,
+            Some(SessionListAction::NewSession)
+        ));
     }
 
     #[test]
