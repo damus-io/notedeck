@@ -206,6 +206,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .running_config_ids(running_config_ids)
     .pending_images(&mut session.pending_images)
     .pending_paths((!is_remote).then_some(&mut session.pending_paths))
+    .saving_screenshots((!is_remote).then_some(&mut session.saving_screenshots))
     .slash(&mut session.slash)
     .chat_times(&mut session.chat_times, session.turns.spans())
     .chat_range(&mut session.chat_range)
@@ -4669,6 +4670,90 @@ mod tests {
         let session = harness.state().session_manager.get_active().unwrap();
         assert!(session.pending_paths.is_empty());
         assert_eq!(count_labels(&harness, "notedeck.log"), 0);
+    }
+
+    /// Focus the active session's composer, paste a 4×3 image into it the
+    /// way Cmd/Ctrl+V does (notedeck's egui-winit sends
+    /// [`egui::Event::PasteImage`] when the clipboard holds no text), and run
+    /// until every save it started has landed, or ten seconds pass.
+    fn paste_image(harness: &mut Harness<'static, SessionViewState>) {
+        let session_id = harness.state().session_manager.active_id().unwrap();
+        let input = crate::ui::dave::input_id(session_id);
+        harness.ctx.memory_mut(|m| m.request_focus(input));
+        harness.run_ok();
+        let image = egui::ColorImage::new([4, 3], vec![egui::Color32::RED; 12]);
+        harness.event(egui::Event::PasteImage(std::sync::Arc::new(image)));
+        harness.run_ok();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !saves_landed(harness) && std::time::Instant::now() < deadline {
+            // The save runs on the job pool, which nothing here can await.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            harness.run_ok();
+        }
+    }
+
+    /// Whether the active session has no screenshot save in flight.
+    fn saves_landed(harness: &Harness<'static, SessionViewState>) -> bool {
+        let session = harness.state().session_manager.get_active().unwrap();
+        session.saving_screenshots.is_empty()
+    }
+
+    /// A screenshot pasted into a local session is saved under the cache's
+    /// `dave-attachments/` as `<sha256>.png` and staged as a path chip, not
+    /// as image bytes. Pasting it again stages nothing new.
+    #[test]
+    fn pasting_an_image_into_a_local_session_stages_a_path_chip() {
+        let mut harness = session_view_harness(egui::vec2(1000.0, 600.0));
+        harness.run_ok();
+
+        paste_image(&mut harness);
+        paste_image(&mut harness);
+
+        let cache = std::path::absolute(
+            harness
+                .state_mut()
+                .host
+                .app_context()
+                .path
+                .path(notedeck::DataPathType::Cache),
+        )
+        .unwrap();
+        let session = harness.state().session_manager.get_active().unwrap();
+        assert!(session.saving_screenshots.is_empty(), "the save landed");
+        assert!(session.pending_images.is_empty(), "no image bytes staged");
+        let [path] = session.pending_paths.as_slice() else {
+            panic!("one chip, got {:?}", session.pending_paths);
+        };
+        assert_eq!(path.parent().unwrap(), cache.join("dave-attachments"));
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        assert!(name.ends_with(".png") && name.len() == 64 + 4, "{name}");
+        let bytes = std::fs::read(path).unwrap();
+        let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(decoded.dimensions(), (4, 3));
+        assert_eq!(count_labels(&harness, &name), 1, "the chip shows the file");
+    }
+
+    /// A remote session's agent can't read this machine's disk, so a paste
+    /// into one saves no file and stages no chip.
+    #[test]
+    fn pasting_an_image_into_a_remote_session_saves_nothing() {
+        let mut harness = session_view_harness(egui::vec2(1000.0, 600.0));
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .source = crate::session::SessionSource::Remote;
+        harness.run_ok();
+
+        paste_image(&mut harness);
+
+        let session = harness.state().session_manager.get_active().unwrap();
+        assert!(session.pending_paths.is_empty());
+        assert!(session.saving_screenshots.is_empty());
     }
 
     /// Files dragged over the window, local then remote: the composer is

@@ -26,9 +26,11 @@ pub type SessionId = u32;
 
 mod attachments;
 mod lineage;
+mod screenshot;
 mod subagent;
 pub use attachments::{compose_message, stage_path, ATTACHED_FILES_HEADER};
 pub use lineage::{Edge, EdgeKind, Nesting, Place};
+pub use screenshot::{land_saves, screenshot_dir, ScreenshotSave};
 pub use subagent::{composer_block, parent_instruction, SubagentMessage, SubagentOf};
 
 /// A user message bound for a session's backend: a remote client's message,
@@ -723,6 +725,10 @@ pub struct ChatSession {
     /// [`ChatSession::attach_path`]); sending lists them in the message
     /// ([`ChatSession::take_draft`]).
     pub pending_paths: Vec<PathBuf>,
+    /// Screenshots pasted into a local session's composer, still being
+    /// written to disk. Each lands on [`Self::pending_paths`] once saved
+    /// ([`land_saves`]).
+    pub saving_screenshots: Vec<ScreenshotSave>,
     /// The input's slash-command popup.
     pub slash: crate::slash::SlashPopup,
     /// The commands and models this session's own CLI reported when it last
@@ -892,6 +898,7 @@ impl ChatSession {
             input: String::new(),
             pending_images: vec![],
             pending_paths: vec![],
+            saving_screenshots: vec![],
             slash: Default::default(),
             slash_catalog: None,
             incoming_tokens: None,
@@ -1035,6 +1042,7 @@ impl ChatSession {
             indicator: None,
             pending_images: vec![],
             pending_paths: vec![],
+            saving_screenshots: vec![],
             slash: Default::default(),
             slash_catalog: None,
             pending_created_at: Some(Instant::now()),

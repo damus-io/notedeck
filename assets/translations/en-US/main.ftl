@@ -1126,6 +1126,9 @@ Save_6f7c = Save
 # Button label to save profile changes
 Save_changes_00db = Save changes
 
+# Chip in Dave's composer while a pasted screenshot is written to a file
+Saving_screenshot_a710 = Saving screenshot…
+
 # Dave session inspector files: a remote session's temp files are on the host running it
 Scratchpad_and_task_output_live_on__host_0268 = Scratchpad and task output live on {$host}
 

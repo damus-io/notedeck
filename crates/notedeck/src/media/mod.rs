@@ -8,6 +8,7 @@ pub mod images;
 pub mod imeta;
 pub mod latest;
 pub mod network;
+pub mod png;
 pub mod renderable;
 pub mod static_imgs;
 

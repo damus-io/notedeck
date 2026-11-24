@@ -429,19 +429,7 @@ fn plaintext(source: ImageSource) -> Result<Plain, String> {
     match source {
         ImageSource::Pasted(image) => {
             let [w, h] = image.size;
-            let rgba: Vec<u8> = image
-                .pixels
-                .iter()
-                .flat_map(|c| c.to_srgba_unmultiplied())
-                .collect();
-            let png = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
-                .ok_or("The pasted image has the wrong size")?;
-            let mut bytes = Vec::new();
-            png.write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::Png,
-            )
-            .map_err(|e| format!("The pasted image could not be encoded: {e}"))?;
+            let bytes = notedeck::media::png::encode_color_image(&image)?;
             let dims = Dims {
                 width: w as u32,
                 height: h as u32,

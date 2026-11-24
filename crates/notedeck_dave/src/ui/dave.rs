@@ -36,6 +36,7 @@ use nostrdb::Transaction;
 use notedeck::{tr, AppContext, Localization, NoteAction, NoteContext};
 use notedeck_ui::{icons::search_icon, NoteOptions};
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Wrapped rows a Bash command echo may take before "show all" reveals the
@@ -142,6 +143,10 @@ pub struct DaveUi<'a> {
     /// Files staged as path chips for the next send; `None` (a remote
     /// session) draws no chips.
     pending_paths: Option<&'a mut Vec<std::path::PathBuf>>,
+    /// Screenshots pasted into a local session, still being saved, each
+    /// drawn as a spinner chip until it lands on `pending_paths`. `None` (a
+    /// remote session) saves none.
+    saving_screenshots: Option<&'a mut Vec<crate::session::ScreenshotSave>>,
     /// Normal mode and how far into a chord it is, for the which-key strip.
     normal_mode: Option<NormalView>,
     /// The session's inspector state and which tab it shows. `None` draws the
@@ -368,6 +373,7 @@ impl<'a> DaveUi<'a> {
             running_config_ids: None,
             pending_images: None,
             pending_paths: None,
+            saving_screenshots: None,
             normal_mode: None,
             inspector: None,
             slash: None,
@@ -502,6 +508,17 @@ impl<'a> DaveUi<'a> {
     /// machine's disk.
     pub fn pending_paths(mut self, paths: Option<&'a mut Vec<std::path::PathBuf>>) -> Self {
         self.pending_paths = paths;
+        self
+    }
+
+    /// The screenshots a local session is saving to stage as path chips.
+    /// Only a local session passes them; with `None`, a pasted image is
+    /// sent as image bytes instead.
+    pub fn saving_screenshots(
+        mut self,
+        saves: Option<&'a mut Vec<crate::session::ScreenshotSave>>,
+    ) -> Self {
+        self.saving_screenshots = saves;
         self
     }
 
@@ -2553,13 +2570,22 @@ impl<'a> DaveUi<'a> {
         }
 
         if let Some(r) = &result.text_response {
-            dave_input_context(
+            let saves_screenshots = self.saving_screenshots.is_some();
+            let pasted = dave_input_context(
                 ui,
                 r,
                 app_ctx.clipboard,
                 self.input,
                 self.pending_images.as_deref_mut(),
+                saves_screenshots,
             );
+            if let Some(saves) = self.saving_screenshots.as_deref_mut() {
+                let target = ScreenshotTarget {
+                    job_pool: app_ctx.job_pool,
+                    path: app_ctx.path,
+                };
+                save_pasted_screenshots(saves, pasted, r.has_focus(), &target, ui);
+            }
 
             // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
             // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
@@ -2590,13 +2616,22 @@ impl<'a> DaveUi<'a> {
         // Path chips second — in bottom_up this renders ABOVE the text row,
         // with the image thumbnails above them.
         if let Some(paths) = self.pending_paths.as_deref_mut() {
-            if !paths.is_empty() {
+            let mut saving = 0;
+            if let Some(saves) = self.saving_screenshots.as_deref_mut() {
+                if crate::session::land_saves(saves, paths) {
+                    // The job pool doesn't wake the UI when a save lands.
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(50));
+                    saving = saves.len();
+                }
+            }
+            if !paths.is_empty() || saving > 0 {
                 let strip_height = PATH_CHIP_HEIGHT + ui.spacing().item_spacing.y;
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), strip_height),
                     Layout::top_down(Align::Min),
                     |ui| {
-                        path_chip_strip(paths, i18n, ui);
+                        path_chip_strip(paths, saving, i18n, ui);
                     },
                 );
             }
@@ -3259,23 +3294,36 @@ fn composer_button_ui(ui: &mut egui::Ui, kind: ComposerButton, label: &str) -> e
     response
 }
 
-/// Dave-specific input context menu that prefers image paste before text paste.
 /// The chat input's widget id for `session_id`. Each session has its own
 /// input, so focus follows the session that owns it.
 pub(crate) fn input_id(session_id: SessionId) -> egui::Id {
     egui::Id::unique(("dave_input", session_id))
 }
 
+/// Dave's input context menu (Paste, Copy, Cut), whose Paste prefers an
+/// image on the clipboard to its text.
+///
+/// In a session that saves screenshots (`saves_screenshots`, a local one),
+/// Paste hands back an image on the clipboard for the caller to save as a
+/// path chip; in any other it stages the image's bytes on `pending_images`.
+/// With no image on the clipboard, Paste pastes its text.
 fn dave_input_context(
     ui: &mut egui::Ui,
     response: &egui::Response,
     clipboard: &mut egui_winit::clipboard::Clipboard,
     input: &mut String,
     pending_images: Option<&mut Vec<ImageAttachment>>,
-) {
+    saves_screenshots: bool,
+) -> Option<Arc<egui::ColorImage>> {
+    let mut pasted = None;
     response.context_menu(|ui| {
         if ui.button("Paste").clicked() {
-            let pasted_image = pending_images.map(try_paste_image).unwrap_or(false);
+            let pasted_image = if saves_screenshots {
+                pasted = clipboard_color_image();
+                pasted.is_some()
+            } else {
+                pending_images.map(try_paste_image).unwrap_or(false)
+            };
             if !pasted_image {
                 append_clipboard_text(clipboard, input);
             }
@@ -3299,24 +3347,88 @@ fn dave_input_context(
     }
 
     notedeck_ui::include_input(ui, response);
+    pasted
+}
+
+/// What a pasted screenshot is saved with: the job pool it is encoded and
+/// written on, and notedeck's data path, whose cache it goes in.
+struct ScreenshotTarget<'a> {
+    job_pool: &'a notedeck::JobPool,
+    path: &'a notedeck::DataPath,
+}
+
+/// Start saving each screenshot pasted into a local session's composer:
+/// `pasted` from the right-click Paste, and any Cmd/Ctrl+V image while the
+/// composer has focus (`focused`). notedeck's egui-winit turns a paste with
+/// no text on the clipboard into [`egui::Event::PasteImage`], so that event
+/// is the only way an image arrives from the keyboard.
+fn save_pasted_screenshots(
+    saves: &mut Vec<crate::session::ScreenshotSave>,
+    pasted: Option<Arc<egui::ColorImage>>,
+    focused: bool,
+    target: &ScreenshotTarget,
+    ui: &egui::Ui,
+) {
+    use crate::session::{screenshot_dir, ScreenshotSave};
+
+    let ScreenshotTarget { job_pool, path } = *target;
+    if let Some(image) = pasted {
+        saves.push(ScreenshotSave::start(job_pool, screenshot_dir(path), image));
+    }
+    if !focused {
+        return;
+    }
+    ui.input(|i| {
+        for event in &i.events {
+            if let egui::Event::PasteImage(image) = event {
+                saves.push(ScreenshotSave::start(
+                    job_pool,
+                    screenshot_dir(path),
+                    image.clone(),
+                ));
+            }
+        }
+    });
+}
+
+/// The image on the system clipboard, if it holds one.
+fn clipboard_color_image() -> Option<Arc<egui::ColorImage>> {
+    let img_data = clipboard_image()?;
+    let size = [img_data.width, img_data.height];
+    if img_data.bytes.len() != size[0] * size[1] * 4 {
+        tracing::warn!("paste_image: clipboard image has the wrong size");
+        return None;
+    }
+    Some(Arc::new(egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        &img_data.bytes,
+    )))
+}
+
+/// Read an image from the system clipboard, or `None` when it can't be
+/// opened or holds no image.
+fn clipboard_image() -> Option<arboard::ImageData<'static>> {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::debug!("paste_image: clipboard open failed: {}", err);
+            return None;
+        }
+    };
+    match clipboard.get_image() {
+        Ok(d) => Some(d),
+        Err(err) => {
+            tracing::debug!("paste_image: no image in clipboard: {}", err);
+            None
+        }
+    }
 }
 
 /// Try to paste an image from the clipboard into `pending`.
 /// Returns `true` if an image was staged; `false` if the clipboard had no image.
 fn try_paste_image(pending: &mut Vec<ImageAttachment>) -> bool {
-    let mut clipboard = match arboard::Clipboard::new() {
-        Ok(c) => c,
-        Err(err) => {
-            tracing::debug!("paste_image: clipboard open failed: {}", err);
-            return false;
-        }
-    };
-    let img_data = match clipboard.get_image() {
-        Ok(d) => d,
-        Err(err) => {
-            tracing::debug!("paste_image: no image in clipboard: {}", err);
-            return false;
-        }
+    let Some(img_data) = clipboard_image() else {
+        return false;
     };
     let w = img_data.width as u32;
     let h = img_data.height as u32;
@@ -3449,6 +3561,7 @@ const PATH_CHIP_HEIGHT: f32 = 22.0;
 /// strings of its own.
 fn path_chip_strip(
     paths: &mut Vec<std::path::PathBuf>,
+    saving: usize,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
 ) {
@@ -3462,6 +3575,9 @@ fn path_chip_strip(
                     if path_chip_ui(path, i18n, ui) {
                         remove_idx = Some(i);
                     }
+                }
+                for _ in 0..saving {
+                    saving_chip_ui(i18n, ui);
                 }
             });
         });
@@ -3515,6 +3631,30 @@ fn path_chip_ui(path: &std::path::Path, i18n: &mut Localization, ui: &mut egui::
         ui.label(path.to_string_lossy());
     });
     removed
+}
+
+/// A chip for a pasted screenshot still being saved: a spinner where the
+/// file icon goes. It becomes a path chip once the file is written.
+fn saving_chip_ui(i18n: &mut Localization, ui: &mut egui::Ui) {
+    let visuals = ui.visuals();
+    let frame = egui::Frame::new()
+        .fill(visuals.widgets.inactive.weak_bg_fill)
+        .stroke(visuals.widgets.noninteractive.bg_stroke)
+        .corner_radius(PATH_CHIP_HEIGHT / 2.0)
+        .inner_margin(egui::Margin::symmetric(8, 0));
+    frame.show(ui, |ui| {
+        ui.set_height(PATH_CHIP_HEIGHT);
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.add(egui::Spinner::new().size(12.0));
+            let label = tr!(
+                i18n,
+                "Saving screenshot…",
+                "Chip in Dave's composer while a pasted screenshot is written to a file"
+            );
+            ui.add(egui::Label::new(egui::RichText::new(label).small()).selectable(false));
+        });
+    });
 }
 
 /// Paint a small page outline with a folded top-right corner inside `rect`.
