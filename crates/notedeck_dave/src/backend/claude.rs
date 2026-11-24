@@ -1309,6 +1309,13 @@ fn session_base_options(
     options
         .extra_args
         .insert(ALLOW_BYPASS_FLAG.to_string(), None);
+    // notedeck's own `ANTHROPIC_API_KEY` is for Dave's chat backend. Inherited,
+    // it would put the CLI on API-key auth instead of the user's claude.ai login,
+    // which also drops their claude.ai connectors. The CLI reads empty as unset,
+    // and a `session_env` or profile value, layered on later, still wins.
+    options
+        .env
+        .insert("ANTHROPIC_API_KEY".to_string(), String::new());
     options
 }
 
@@ -3234,6 +3241,25 @@ cat > /dev/null
             options.permission_mode, None,
             "the flag alone starts nothing in bypass"
         );
+    }
+
+    /// notedeck's own API key never reaches a session's CLI, so the CLI signs
+    /// in with the claude.ai login; a configured key still gets through.
+    #[test]
+    fn session_cli_does_not_inherit_the_api_key() {
+        let can_use_tool: claude_agent_sdk_rs::CanUseToolCallback =
+            Arc::new(|_, _, _| Box::pin(async { unreachable!() }));
+        let mut options = session_base_options(can_use_tool);
+        assert_eq!(options.env["ANTHROPIC_API_KEY"], "");
+
+        let configured = BTreeMap::from([(
+            "ANTHROPIC_API_KEY".to_string(),
+            "configured-key".to_string(),
+        )]);
+        options
+            .env
+            .extend(shared::session_env(None, &configured, None));
+        assert_eq!(options.env["ANTHROPIC_API_KEY"], "configured-key");
     }
 
     fn tool_use(id: &str, name: &str, input: serde_json::Value) -> serde_json::Value {
