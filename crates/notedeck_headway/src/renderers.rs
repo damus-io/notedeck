@@ -3,14 +3,14 @@
 //! registry, plus the `headway:<board>/<word-id>` [`ReferenceParser`](notedeck::ReferenceParser).
 //! These are read-only and self-contained, unlike the editable board.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use nostrdb::{Ndb, Note, Transaction};
-use nostrdb_net::Pubkey;
 use notedeck::ColorTheme;
 
-use crate::cache::BoardCache;
+use crate::cache::{BoardCache, LocatedIssue};
 use crate::event;
 use crate::ui::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
@@ -18,11 +18,34 @@ use crate::ui::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issue
 /// note. Registered into [`notedeck::KindRendererRegistry`] at app startup.
 ///
 /// The kind-1621 note is only the card's *creation-time* snapshot; its current
-/// title/labels/description come from folding the owning board's later edits. So
-/// we fold the board (cached, see [`BoardCache`]) and render the resolved
-/// [`event::CardView`], falling back to the raw snapshot if the board isn't local.
+/// title/labels/description come from folding the board it lives on. So we
+/// locate the card by coordinate ([`BoardCache::locate_issue`]: every roster
+/// board's multi-writer fold, so a card on a board shared with us, or one a
+/// teammate added to ours, resolves) and render the folded card, falling back
+/// to the raw snapshot if no local board holds it.
 pub struct HeadwayIssueRenderer {
     pub(crate) cache: Rc<RefCell<BoardCache>>,
+}
+
+impl HeadwayIssueRenderer {
+    /// Locate the card `issue` stands for on the board it lives on (see
+    /// [`BoardCache::locate_issue`]). A handle into the memoized fold, so the
+    /// cache borrow drops before drawing and the card is borrowed out of it
+    /// rather than copied.
+    fn locate(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        issue: &event::IssueEvent,
+    ) -> Option<LocatedIssue> {
+        let origin = event::IssueBoard {
+            owner: issue.board_author,
+            slug: &issue.board_id,
+        };
+        self.cache
+            .borrow_mut()
+            .locate_issue(ndb, txn, &origin, &issue.id)
+    }
 }
 
 impl notedeck::KindRenderer for HeadwayIssueRenderer {
@@ -47,37 +70,25 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
             return notedeck::KindRenderResponse::new(ui.weak("invalid headway issue"));
         };
-        let author = Pubkey::new(issue.board_author);
-        // Resolve the card off the (cached) folded boards and draw the shape the
-        // context asks for: a compact chip inline in prose, the full card as a
-        // block embed. Locate it across *all* the author's boards, not the card's
-        // `a`-tag board: a cross-board move leaves the `a` tag on the origin
-        // while the card lives on the destination (see
-        // [`event::locate_card_in_boards`]). The boards come back as a shared
-        // handle to the memoized finalize, so the cache borrow drops before
-        // drawing and the card is borrowed out of it rather than copied.
-        let boards = self
-            .cache
-            .borrow_mut()
-            .all_boards(note_context.ndb, req.txn, &author);
-        let located = boards
-            .as_deref()
-            .and_then(|boards| event::locate_card_in_boards(boards, &author, &issue.id));
+        // Resolve the card where it lives and draw the shape the context asks
+        // for: a compact chip inline in prose, the full card as a block embed.
+        let located = self.locate(note_context.ndb, req.txn, &issue);
+        let found = located.as_ref().and_then(LocatedIssue::card);
         let response = match req.context {
             // A list row is the chip too: the card's live status and title.
-            notedeck::RenderContext::Inline | notedeck::RenderContext::Row => match located {
-                Some(located) => card_chip_ui(
+            notedeck::RenderContext::Inline | notedeck::RenderContext::Row => match found {
+                Some(found) => card_chip_ui(
                     ui,
                     &theme,
-                    &located.card.title,
-                    ChipStatus::located(located.column),
+                    &found.card.title,
+                    ChipStatus::located(found.column),
                     req.chrome,
                 ),
                 // Card on no folded board: chip from the creation-time snapshot.
                 None => card_chip_ui(ui, &theme, &issue.subject, ChipStatus::Unplaced, req.chrome),
             },
-            _ => match located {
-                Some(located) => card_inline_ui(ui, &theme, located.card),
+            _ => match found {
+                Some(found) => card_inline_ui(ui, &theme, found.card),
                 // Card on no folded board: show the creation-time snapshot.
                 None => issue_inline_ui(ui, &theme, &issue),
             },
@@ -92,14 +103,11 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
             return None;
         };
-        let author = Pubkey::new(issue.board_author);
-        let boards = self.cache.borrow_mut().all_boards(ndb, txn, &author);
-        let title = boards
-            .as_deref()
-            .and_then(|boards| event::locate_card_in_boards(boards, &author, &issue.id))
-            .map_or(issue.subject.as_str(), |located| {
-                located.card.title.as_str()
-            });
+        let located = self.locate(ndb, txn, &issue);
+        let title = located
+            .as_ref()
+            .and_then(LocatedIssue::card)
+            .map_or(issue.subject.as_str(), |found| found.card.title.as_str());
         Some(title.to_owned())
     }
 
@@ -110,13 +118,11 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
             return None;
         };
-        let author = Pubkey::new(issue.board_author);
-        let boards = self.cache.borrow_mut().all_boards(ndb, txn, &author)?;
-        let located = event::locate_card_in_boards(&boards, &author, &issue.id)?;
-        let card = located.card;
+        let located = self.locate(ndb, txn, &issue)?;
+        let card = located.card()?.card;
         let parent = card
             .parent
-            .map(|parent| headway::wordid::card_ref(located.board_id, parent.bytes()));
+            .map(|parent| headway::wordid::card_ref(&located.board().id, parent.bytes()));
         let live = || card.subissues.iter().filter(|s| !s.archived);
         let total = live().count();
         let parts = (total > 0).then(|| notedeck::Progress {
@@ -126,20 +132,25 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         Some(notedeck::Outline { parent, parts })
     }
 
-    /// The fold [`title`](Self::title) and [`outline`](Self::outline) read:
-    /// the card's board author's, since both locate the card across all that
-    /// author's boards. Any edit to any of them moves it.
+    /// The folds [`title`](Self::title) and [`outline`](Self::outline) read
+    /// (see [`BoardCache::ref_revision`]): every roster board, since the card
+    /// may have moved to any of them, plus its origin owner's author fold when
+    /// the origin board isn't on the roster. Any edit to any of them moves it.
     fn revision(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<u64> {
-        // Asked for every card-titled row every frame, so the board's owner
-        // is read off the `a` tag without parsing (and copying) the issue.
-        let author = Pubkey::new(event::issue_board_author(note)?);
-        Some(self.cache.borrow_mut().author_revision(ndb, txn, &author))
+        // Asked for every card-titled row every frame, so the board is read
+        // off the `a` tag without parsing (and copying) the issue.
+        let origin = event::issue_board(note)?;
+        let mut cache = self.cache.borrow_mut();
+        let fallback = cache.fallback_author(&origin.owner, origin.slug);
+        Some(cache.ref_revision(ndb, txn, fallback.as_ref()))
     }
 }
 
 /// Renders a headway board (kind 30619) referenced inline. The note is the
-/// addressable board event; we recover its `(author, board_id)` and fold the
-/// full board (cached, see [`BoardCache`]) off the local db to summarise it.
+/// addressable board event; we recover its coordinate and fold the full board
+/// by it (cached, see [`BoardCache::board_at`]) off the local db to summarise
+/// it: a shared board through its multi-writer fold, so every member's cards
+/// count.
 pub struct HeadwayBoardRenderer {
     pub(crate) cache: Rc<RefCell<BoardCache>>,
 }
@@ -166,11 +177,10 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         let Some(event::HeadwayEvent::Board(board)) = event::parse(note) else {
             return notedeck::KindRenderResponse::new(ui.weak("invalid headway board"));
         };
-        let author = Pubkey::new(board.author);
-        let view = self
-            .cache
-            .borrow_mut()
-            .board(note_context.ndb, req.txn, &author, &board.id);
+        let view =
+            self.cache
+                .borrow_mut()
+                .board_at(note_context.ndb, req.txn, &board.author, &board.id);
         let response = match view {
             Some(view) => board_inline_ui(ui, &theme, &view),
             None => ui.weak("headway board not found"),
@@ -197,10 +207,13 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
 /// invisible, not a broken chip. Unlike the old `#` sigil, `:` and `/` survive
 /// nostrdb's tokenizer, so the ref stays whole inside note content.
 ///
-/// **Author gap.** A headway ref carries no pubkey, but folding a board needs
-/// one. We resolve against [`ReferenceResolveCtx::selected_account`], so a ref
-/// only resolves to a board the *current* account owns. A later grammar
-/// extension can carry an explicit author (e.g. an `naddr`-style coordinate).
+/// **Owner gap.** A headway ref carries a slug but no owner, and a board is a
+/// coordinate (owner + slug). We resolve it relative to
+/// [`ReferenceResolveCtx::selected_account`]: the account's own board at that
+/// slug first, then a board someone shared with it at that slug (see
+/// [`BoardCache::resolve_ref`]), each folded by coordinate so a teammate's
+/// card resolves too. A later grammar extension can carry an explicit owner
+/// (e.g. an `naddr`-style coordinate).
 pub struct HeadwayRefParser {
     /// Shared with the app's kind renderers (see [`Headway::board_cache`](crate::Headway::board_cache)), so a
     /// card referenced by word id folds the same cached board a directly-embedded
@@ -226,36 +239,38 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
         ctx: &notedeck::ReferenceResolveCtx,
     ) -> Option<notedeck::ResolvedRef> {
         let headway::wordid::CardRef { board: slug, words } = headway::wordid::parse_ref(matched)?;
-        // Author gap: no pubkey in the ref, so fold the current account's boards.
-        let author = ctx.selected_account?;
-        let board_id = slug.to_lowercase();
-
-        // Fold (memoized) the board, then re-encode its cards to match the word id.
-        // The closure yields the owned `NoteId` so the cache borrow drops here, and
-        // resolving through the shared finalize means a chip drawn right after
+        // Owner gap: no pubkey in the ref, so resolve relative to the account.
+        let me = ctx.selected_account?;
+        // Resolving through the shared finalize means a chip drawn right after
         // reuses this frame's fold instead of walking the reducer again.
-        let note_id = self
-            .cache
-            .borrow_mut()
-            .with_boards(ctx.ndb, ctx.txn, &author, |boards| {
-                event::find_board(boards, &author, &board_id)
-                    .and_then(|board| event::resolve_card_by_wordid(board, words))
-            })
-            .flatten()?;
+        let note_id =
+            self.cache
+                .borrow_mut()
+                .resolve_ref(ctx.ndb, ctx.txn, &me, &board_slug(slug), words)?;
         Some(notedeck::ResolvedRef::note(note_id))
     }
 
-    /// The fold [`resolve`](Self::resolve) reads: the selected account's
-    /// boards (the author gap). A card arriving, or any other edit to that
-    /// account's boards, moves it.
+    /// The folds [`resolve`](Self::resolve) reads (see
+    /// [`BoardCache::ref_revision`]): every roster board, plus the selected
+    /// account's author fold when its own board at the slug isn't on the
+    /// roster. A card arriving, or any other edit to those, moves it.
     fn revision(&self, matched: &str, ctx: &notedeck::ReferenceResolveCtx) -> Option<u64> {
-        headway::wordid::parse_ref(matched)?;
-        let author = ctx.selected_account?;
-        Some(
-            self.cache
-                .borrow_mut()
-                .author_revision(ctx.ndb, ctx.txn, &author),
-        )
+        let headway::wordid::CardRef { board: slug, .. } = headway::wordid::parse_ref(matched)?;
+        let me = ctx.selected_account?;
+        let mut cache = self.cache.borrow_mut();
+        let fallback = cache.fallback_author(me.bytes(), &board_slug(slug));
+        Some(cache.ref_revision(ctx.ndb, ctx.txn, fallback.as_ref()))
+    }
+}
+
+/// A ref's board slug as boards store it: lowercase. Borrowed when it already
+/// is, which a ref written by headway always is, so the per-frame
+/// [`revision`](HeadwayRefParser::revision) check copies nothing.
+fn board_slug(slug: &str) -> Cow<'_, str> {
+    if slug.chars().any(char::is_uppercase) {
+        Cow::Owned(slug.to_lowercase())
+    } else {
+        Cow::Borrowed(slug)
     }
 }
 
@@ -536,5 +551,227 @@ mod tests {
             lookup(&registries).title.as_deref(),
             Some("Renamed on its board")
         );
+    }
+
+    /// A sealed board at `slug`, owned by `owner`, on one SNS channel that the
+    /// renderers' cache has on its roster, as a key-share would put it there.
+    struct SharedBoard {
+        cache: Rc<RefCell<BoardCache>>,
+        channel: store::SnsChannel,
+        teams: Vec<crate::teams::Team>,
+        slug: &'static str,
+        owner: nostrdb_net::FullKeypair,
+    }
+
+    impl SharedBoard {
+        /// Register a fresh channel root, put the board on the cache's roster,
+        /// subscribe its envelope leg, then seal the board's definition, signed
+        /// by `owner`, into the channel and wait for it to fold.
+        async fn new(t: &TestSync, owner: nostrdb_net::FullKeypair, slug: &'static str) -> Self {
+            // A root of the owner's own, so two boards' channels differ.
+            let mut root = *owner.pubkey.bytes();
+            root[0] ^= 0x5a;
+            assert!(t.ndb.add_team_root(&root));
+            let channel = store::SnsChannel {
+                keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
+            };
+            let teams = vec![crate::teams::Team {
+                team_root: hex::encode(root),
+                board_addr: event::board_address(&owner.pubkey, slug),
+                epoch: None,
+                shared_at: 1,
+            }];
+            let cache = Rc::new(RefCell::new(BoardCache::default()));
+            cache.borrow_mut().set_roster(&teams);
+            let board = Self {
+                cache,
+                channel,
+                teams,
+                slug,
+                owner,
+            };
+            // Subscribe the envelope leg before anything is sealed, so every
+            // later envelope is reported and re-folds the board.
+            board.poll(t);
+
+            let mut stream = crate::cache::tests::ingest_stream(&t.ndb, &board.owner.pubkey);
+            let cols = vec![
+                event::ColumnDef::new("backlog", "Backlog"),
+                event::ColumnDef::new("done", "Done"),
+            ];
+            store::ingest_signed(
+                &t.ndb,
+                event::build_board(slug, "Shared", "", &cols),
+                &store::Signer::shared(&board.owner.secret_key.secret_bytes(), &board.channel),
+                &mut store::NoPublish,
+            );
+            while board.view(t).is_none() {
+                notedeck_testing::await_batch(&mut stream).await;
+            }
+            board
+        }
+
+        /// One pass of the app's per-frame shared pump (`Headway::update`).
+        fn poll(&self, t: &TestSync) {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            self.cache
+                .borrow_mut()
+                .poll_shared(&t.ndb, &txn, &self.teams);
+        }
+
+        /// The board's multi-writer fold, if its definition has folded in.
+        fn view(&self, t: &TestSync) -> Option<crate::cache::BoardRef> {
+            self.poll(t);
+            let txn = Transaction::new(&t.ndb).unwrap();
+            self.cache
+                .borrow_mut()
+                .board_at(&t.ndb, &txn, self.owner.pubkey.bytes(), self.slug)
+                .filter(|v| !v.columns.is_empty())
+        }
+
+        /// Seal a card titled `title`, signed by `member`, onto the board and
+        /// wait for its fold to show it. Returns the card's id.
+        async fn add_card(
+            &self,
+            t: &TestSync,
+            member: &nostrdb_net::FullKeypair,
+            title: &str,
+        ) -> nostrdb_net::NoteId {
+            let mut stream = crate::cache::tests::ingest_stream(&t.ndb, &member.pubkey);
+            let view = self.view(t).expect("board folded");
+            let card = store::apply_outcome(
+                &t.ndb,
+                self.slug,
+                &view,
+                &member.pubkey,
+                &store::Signer::new(&member.secret_key.secret_bytes(), Some(&self.channel)),
+                store::BoardAction::AddCard(store::NewCard {
+                    col: 0,
+                    title: title.to_string(),
+                    ..store::NewCard::default()
+                }),
+                &mut store::NoPublish,
+            )
+            .created
+            .expect("card created");
+            while !self
+                .view(t)
+                .is_some_and(|v| event::card_in_board(&v, card.bytes()).is_some())
+            {
+                notedeck_testing::await_batch(&mut stream).await;
+            }
+            card
+        }
+
+        /// The ref parser and issue renderer, registered over this board's cache.
+        fn registries(&self) -> notedeck::AppRegistries {
+            let mut registries = notedeck::AppRegistries::default();
+            registries
+                .reference_parsers
+                .register(Box::new(HeadwayRefParser {
+                    cache: self.cache.clone(),
+                }));
+            registries
+                .kind_renderers
+                .register(Box::new(HeadwayIssueRenderer {
+                    cache: self.cache.clone(),
+                }));
+            registries
+        }
+    }
+
+    /// Resolve `card_ref` as `me` through `registries`, returning the card's
+    /// id and its title as the issue renderer folds it.
+    fn lookup(
+        t: &TestSync,
+        registries: &notedeck::AppRegistries,
+        me: nostrdb_net::Pubkey,
+        card_ref: &str,
+    ) -> Option<ChipLookup> {
+        let txn = Transaction::new(&t.ndb).unwrap();
+        let ctx = notedeck::ReferenceResolveCtx {
+            ndb: &t.ndb,
+            txn: &txn,
+            selected_account: Some(me),
+        };
+        let found = registries.lookup_reference(card_ref, &ctx, |note| {
+            registries.kind_renderers.title(&t.ndb, &txn, note, None)
+        });
+        let note = t.ndb.get_note_by_key(&txn, found.note?).ok()?;
+        Some(ChipLookup {
+            id: nostrdb_net::NoteId::new(*note.id()),
+            title: found.value.flatten(),
+        })
+    }
+
+    /// What [`lookup`] found for a ref: the card's note and its folded title.
+    struct ChipLookup {
+        id: nostrdb_net::NoteId,
+        title: Option<String>,
+    }
+
+    /// A ref to a card on a board another key owns and shared with us
+    /// resolves, by the board's coordinate, to the card and its title: the
+    /// agentium/Dave chip that stayed plain text while chips read only the
+    /// selected account's own author fold.
+    #[tokio::test]
+    async fn ref_resolves_a_card_on_a_board_shared_with_us() {
+        let t = TestSync::new();
+        let owner = nostrdb_net::FullKeypair::generate();
+        let board = SharedBoard::new(&t, owner, "team").await;
+        let card = board.add_card(&t, &board.owner, "Owner's card").await;
+
+        let card_ref = headway::wordid::card_ref(board.slug, card.bytes());
+        let found = lookup(&t, &board.registries(), t.kp.pubkey, &card_ref)
+            .expect("a joined board's card resolves");
+        assert_eq!(found.id, card);
+        assert_eq!(found.title.as_deref(), Some("Owner's card"));
+    }
+
+    /// A ref to a card a member added to our own sealed board resolves: the
+    /// card is the member's, so it is in no author fold of ours, only in the
+    /// board's multi-writer fold.
+    #[tokio::test]
+    async fn ref_resolves_a_card_a_member_added_to_our_board() {
+        let t = TestSync::new();
+        let board = SharedBoard::new(&t, t.kp.clone(), "ours").await;
+        let member = nostrdb_net::FullKeypair::generate();
+        let card = board.add_card(&t, &member, "Member's card").await;
+
+        let card_ref = headway::wordid::card_ref(board.slug, card.bytes());
+        let found = lookup(&t, &board.registries(), t.kp.pubkey, &card_ref)
+            .expect("a member's card on our board resolves");
+        assert_eq!(found.id, card);
+        assert_eq!(found.title.as_deref(), Some("Member's card"));
+
+        // A kept chip looks again once the shared fold moves: another
+        // member's edit re-folds the board and moves the ref's revision.
+        let registries = board.registries();
+        let revision = || {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            let ctx = notedeck::ReferenceResolveCtx {
+                ndb: &t.ndb,
+                txn: &txn,
+                selected_account: Some(t.kp.pubkey),
+            };
+            registries.reference_parsers.revision_exact(&card_ref, &ctx)
+        };
+        let before = revision().expect("a headway ref is versioned");
+        assert_eq!(revision(), Some(before), "idle: the revision holds");
+        board.add_card(&t, &member, "Another card").await;
+        assert_ne!(revision(), Some(before), "a shared edit moves it");
+    }
+
+    /// A slug no board of ours or shared with us has resolves to nothing,
+    /// and so stays plain text.
+    #[tokio::test]
+    async fn ref_to_an_unknown_slug_does_not_resolve() {
+        let t = TestSync::new();
+        let owner = nostrdb_net::FullKeypair::generate();
+        let board = SharedBoard::new(&t, owner, "team").await;
+        let card = board.add_card(&t, &board.owner, "Owner's card").await;
+
+        let card_ref = headway::wordid::card_ref("elsewhere", card.bytes());
+        assert!(lookup(&t, &board.registries(), t.kp.pubkey, &card_ref).is_none());
     }
 }

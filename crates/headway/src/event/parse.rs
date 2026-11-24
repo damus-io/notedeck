@@ -305,6 +305,24 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
 /// card lives in. Allocation-free, unlike [`parse`], so a caller can ask it
 /// for many notes every frame. `None` for another kind or a malformed tag.
 pub fn issue_board_author(note: &Note) -> Option<[u8; 32]> {
+    issue_board(note).map(|board| board.owner)
+}
+
+/// The board coordinate a card's issue note (kind 1621) names in its `a`
+/// tag, borrowed out of the note: its owner and slug. The card's *origin*
+/// board; a cross-board move can since have placed it elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IssueBoard<'n> {
+    /// The board owner's pubkey.
+    pub owner: [u8; 32],
+    /// The board's slug (its `d`-tag id).
+    pub slug: &'n str,
+}
+
+/// The board coordinate an issue note's `a` tag names (see [`IssueBoard`]).
+/// Allocation-free, unlike [`parse`], so a caller can ask it for many notes
+/// every frame. `None` for another kind or a malformed tag.
+pub fn issue_board<'n>(note: &Note<'n>) -> Option<IssueBoard<'n>> {
     if note.kind() != KIND_ISSUE {
         return None;
     }
@@ -320,8 +338,8 @@ pub fn issue_board_author(note: &Note) -> Option<[u8; 32]> {
     let mut owner = [0u8; 32];
     hex::decode_to_slice(parts.next()?, &mut owner).ok()?;
     // A coordinate with no slug isn't a board's.
-    parts.next()?;
-    Some(owner)
+    let slug = parts.next().filter(|slug| !slug.is_empty())?;
+    Some(IssueBoard { owner, slug })
 }
 
 /// What one revision of a saved list view (kind 30626) holds: a live view's

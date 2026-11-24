@@ -79,9 +79,9 @@ pub use model::{
 };
 pub use parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
-    IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewCommentEvent,
-    ReviewEvent, ReviewSourceEvent, SequenceEvent, SubjectEdit, ViewRevision, issue_board_author,
-    parse, parse_view,
+    IssueBoard, IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent,
+    ReviewCommentEvent, ReviewEvent, ReviewSourceEvent, SequenceEvent, SubjectEdit, ViewRevision,
+    issue_board, issue_board_author, parse, parse_view,
 };
 pub use rank::rank_between;
 pub use reduce::{BoardReducer, reduce};

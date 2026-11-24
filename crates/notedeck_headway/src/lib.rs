@@ -398,6 +398,7 @@ impl Headway {
         });
         self.teams.extend(self.pending_teams.iter().cloned());
         self.root_registry.register(ndb, &self.teams);
+        self.board_cache.borrow_mut().set_roster(&self.teams);
     }
 
     /// Create a new team-of-one board (sealed + self-shared via
@@ -452,6 +453,7 @@ impl Headway {
         {
             self.teams.push(team);
         }
+        self.board_cache.borrow_mut().set_roster(&self.teams);
         true
     }
 

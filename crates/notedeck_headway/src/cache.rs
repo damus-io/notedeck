@@ -7,7 +7,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
-use nostrdb_net::Pubkey;
+use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{self, BoardReducer, BoardView};
 use crate::teams;
@@ -78,7 +78,63 @@ pub(crate) struct BoardCache {
     /// The last revision handed to a shared board's fold (see
     /// [`SharedBoard::revision`]): one counter for every shared board, as
     /// [`RealtimeCache`](notedeck::RealtimeCache) keeps one for every author.
+    /// Also moved when the [`roster`](Self::roster) changes, so it moves
+    /// whenever any lookup by coordinate could answer differently (see
+    /// [`ref_revision`](Self::ref_revision)).
     shared_revisions: u64,
+    /// The account's roster, one entry per board coordinate, newest key-share
+    /// first: what the inline renderers and the `headway:` ref parser resolve
+    /// a board by coordinate through. Set from the app's roster by
+    /// [`set_roster`](Self::set_roster) whenever it changes, so a lookup reads
+    /// precomputed channel keys rather than re-deriving them per chip.
+    roster: Vec<RosterBoard>,
+}
+
+/// One board on the account's roster (see [`BoardCache::roster`]): its
+/// coordinate and every channel its multi-writer fold gathers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RosterBoard {
+    /// The board coordinate, `30619:<owner>:<slug>`: the key of its fold in
+    /// [`BoardCache::shared`].
+    addr: String,
+    /// The board owner's pubkey.
+    owner: [u8; 32],
+    /// The board's slug.
+    slug: String,
+    /// The board's channel pubkeys, primary first (see
+    /// [`teams::board_channel_pubkeys`]).
+    channels: Vec<Pubkey>,
+    /// `created_at` of the newest key-share naming this board: which of two
+    /// joined boards sharing a slug a bare ref means (see
+    /// [`BoardCache::resolve_ref`]).
+    shared_at: u64,
+}
+
+impl RosterBoard {
+    /// Is this the board at `owner`/`slug`?
+    fn is(&self, owner: &[u8; 32], slug: &str) -> bool {
+        &self.owner == owner && self.slug == slug
+    }
+}
+
+/// A card's issue note located on the board it lives on (see
+/// [`BoardCache::locate_issue`]): a handle to that folded board, from which
+/// [`card`](Self::card) borrows the card without copying it.
+pub(crate) struct LocatedIssue {
+    board: BoardRef,
+    issue_id: [u8; 32],
+}
+
+impl LocatedIssue {
+    /// The board the card lives on.
+    pub(crate) fn board(&self) -> &BoardView {
+        &self.board
+    }
+
+    /// The card and its live column, borrowed out of [`board`](Self::board).
+    pub(crate) fn card(&self) -> Option<event::ResolvedCard<'_>> {
+        event::card_with_column_in_board(&self.board, &self.issue_id)
+    }
 }
 
 /// One joined shared board within [`BoardCache`]: the multi-writer reducer folded
@@ -389,26 +445,250 @@ impl BoardCache {
         board_addr: &str,
         team_pubkeys: &[Pubkey],
     ) -> Option<BoardRef> {
-        let entry = self.shared.entry(board_addr.to_string()).or_default();
-        if entry.reducer.is_none() {
-            entry.refold(
-                ndb,
-                txn,
-                board_addr,
-                team_pubkeys,
-                &mut self.shared_revisions,
-            );
+        fold_shared(
+            &mut self.shared,
+            &mut self.shared_revisions,
+            ndb,
+            txn,
+            board_addr,
+            team_pubkeys,
+        )
+    }
+
+    /// Take the account's roster (see [`roster`](Self::roster)): one entry per
+    /// board coordinate, with the channels its fold gathers, newest key-share
+    /// first. Called whenever the app's roster changes; a roster equal to the
+    /// one held is a no-op, and a different one moves
+    /// [`ref_revision`](Self::ref_revision), since a ref may now name another
+    /// board.
+    pub(crate) fn set_roster(&mut self, teams: &[teams::Team]) {
+        let mut roster: Vec<RosterBoard> = Vec::new();
+        for team in teams {
+            if let Some(known) = roster.iter_mut().find(|b| b.addr == team.board_addr) {
+                known.shared_at = known.shared_at.max(team.shared_at);
+                continue;
+            }
+            let Some(coord) = event::BoardCoord::parse(&team.board_addr) else {
+                continue;
+            };
+            let channels = teams::board_channel_pubkeys(teams, &team.board_addr);
+            if channels.is_empty() {
+                continue;
+            }
+            roster.push(RosterBoard {
+                addr: team.board_addr.clone(),
+                owner: coord.owner,
+                slug: coord.slug,
+                channels,
+                shared_at: team.shared_at,
+            });
         }
-        if entry.finalized.is_none() {
-            entry.finalized = Some(entry.reducer.as_ref()?.finalize().into());
+        roster.sort_by_key(|b| std::cmp::Reverse(b.shared_at));
+        if roster == self.roster {
+            return;
         }
-        // fold_shared_board folds a single coordinate, so its finalize yields the
-        // one board (empty until the board definition has arrived).
-        BoardRef::first(Boards {
-            boards: Rc::clone(entry.finalized.as_ref()?),
-            revision: FoldRevision::Shared(entry.revision),
+        self.roster = roster;
+        self.shared_revisions += 1;
+    }
+
+    /// Is the board at `owner`/`slug` on the roster, so folded by coordinate?
+    fn on_roster(&self, owner: &[u8; 32], slug: &str) -> bool {
+        self.roster.iter().any(|b| b.is(owner, slug))
+    }
+
+    /// Fold (memoized) the roster's `index`th board by coordinate.
+    fn roster_fold(&mut self, ndb: &Ndb, txn: &Transaction, index: usize) -> Option<BoardRef> {
+        let board = self.roster.get(index)?;
+        fold_shared(
+            &mut self.shared,
+            &mut self.shared_revisions,
+            ndb,
+            txn,
+            &board.addr,
+            &board.channels,
+        )
+    }
+
+    /// The board at `owner`/`slug`, by coordinate: its multi-writer fold when
+    /// it is on the roster, else (an old plaintext board) out of the owner's
+    /// author fold. What an inline board widget draws.
+    pub(crate) fn board_at(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        owner: &[u8; 32],
+        slug: &str,
+    ) -> Option<BoardRef> {
+        match self.roster.iter().position(|b| b.is(owner, slug)) {
+            Some(index) => self.roster_fold(ndb, txn, index),
+            None => self.board(ndb, txn, &Pubkey::new(*owner), slug),
+        }
+    }
+
+    /// Resolve a `headway:<slug>/<words>` ref, read by `me`, to its card's
+    /// issue note id. A ref names a slug but no owner, so the boards it could
+    /// mean are tried in order and the first holding a card with that word id
+    /// wins:
+    ///
+    /// 1. `me`'s own board at `slug` (by coordinate, see [`board_at`](Self::board_at));
+    /// 2. a joined board at `slug` someone else owns, newest key-share first.
+    ///    Two joined boards sharing a slug are told apart only by which holds
+    ///    the card; when both somehow do, the board shared with us most
+    ///    recently wins.
+    pub(crate) fn resolve_ref(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        me: &Pubkey,
+        slug: &str,
+        words: &str,
+    ) -> Option<NoteId> {
+        let own = self
+            .board_at(ndb, txn, me.bytes(), slug)
+            .and_then(|board| event::resolve_card_by_wordid(&board, words));
+        if own.is_some() {
+            return own;
+        }
+        for index in 0..self.roster.len() {
+            let board = &self.roster[index];
+            if &board.owner == me.bytes() || board.slug != slug {
+                continue;
+            }
+            let found = self
+                .roster_fold(ndb, txn, index)
+                .and_then(|board| event::resolve_card_by_wordid(&board, words));
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    /// Locate the card an issue note stands for on the board it lives on.
+    ///
+    /// The note's `a` tag names its *origin* board, but a cross-board move
+    /// places it elsewhere, so every board on the roster is searched by
+    /// coordinate and the card's live placement wins (a live column over the
+    /// archive, then the newest placement, as [`event::locate_card_in_boards`]
+    /// picks). Only a card on no roster board falls back to its origin
+    /// owner's author fold: an old plaintext board.
+    pub(crate) fn locate_issue(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        origin: &event::IssueBoard,
+        issue_id: &[u8; 32],
+    ) -> Option<LocatedIssue> {
+        /// Where a card was found: is it in a live column, and when was it
+        /// placed. Ordered so the better placement is the greater.
+        #[derive(PartialEq, Eq, PartialOrd, Ord)]
+        struct Placement {
+            live: bool,
+            placed_at: u64,
+        }
+        /// The best placement found so far, and the board it is on.
+        struct Best {
+            placement: Placement,
+            board: BoardRef,
+        }
+        let mut best: Option<Best> = None;
+        for index in 0..self.roster.len() {
+            let Some(board) = self.roster_fold(ndb, txn, index) else {
+                continue;
+            };
+            if board.deleted {
+                continue;
+            }
+            let Some(found) = event::card_with_column_in_board(&board, issue_id) else {
+                continue;
+            };
+            let placement = Placement {
+                live: found.column.is_some(),
+                placed_at: found.card.placed_at,
+            };
+            if best.as_ref().is_none_or(|have| placement > have.placement) {
+                best = Some(Best { placement, board });
+            }
+        }
+        if let Some(Best { board, .. }) = best {
+            return Some(LocatedIssue {
+                board,
+                issue_id: *issue_id,
+            });
+        }
+        if self.on_roster(&origin.owner, origin.slug) {
+            return None;
+        }
+        let owner = Pubkey::new(origin.owner);
+        let boards = self.all_boards(ndb, txn, &owner)?;
+        let board_id = event::locate_card_in_boards(&boards, &owner, issue_id)?
+            .board_id
+            .to_owned();
+        Some(LocatedIssue {
+            board: BoardRef::find(boards, &origin.owner, &board_id)?,
+            issue_id: *issue_id,
         })
     }
+
+    /// Which revision of its folds a lookup by coordinate reads: a number that
+    /// moves whenever [`resolve_ref`](Self::resolve_ref),
+    /// [`locate_issue`](Self::locate_issue) or [`board_at`](Self::board_at)
+    /// could answer differently, and holds while they can't.
+    ///
+    /// Those lookups may read any roster board (a ref's slug can name a joined
+    /// board, a card can have moved to one), so this is the cache-wide shared
+    /// counter, which every shared re-fold and every roster change moves (the
+    /// [`FoldRevision::Shared`] side). `fallback`, when given, is the author
+    /// whose plaintext fold the lookup falls back to, and its
+    /// [`author_revision`](Self::author_revision) is added in. Both counters
+    /// only grow, so their sum moves exactly when either does.
+    pub(crate) fn ref_revision(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        fallback: Option<&Pubkey>,
+    ) -> u64 {
+        let author = fallback.map_or(0, |author| self.author_revision(ndb, txn, author));
+        author.wrapping_add(self.shared_revisions)
+    }
+
+    /// The author whose plaintext fold a lookup of the board at `owner`/`slug`
+    /// falls back to (see [`ref_revision`](Self::ref_revision)): `None` for a
+    /// board on the roster, which folds by coordinate alone.
+    pub(crate) fn fallback_author(&self, owner: &[u8; 32], slug: &str) -> Option<Pubkey> {
+        (!self.on_roster(owner, slug)).then(|| Pubkey::new(*owner))
+    }
+}
+
+/// Fold (memoized) the shared board at `board_addr` over `channels`, seeding
+/// it on first touch: [`BoardCache::shared_board`]'s body, over the two fields
+/// it touches so a caller can pass channels borrowed from another field (the
+/// roster) of the same cache. Allocates the map key only on a board's first
+/// touch.
+fn fold_shared(
+    shared: &mut HashMap<String, SharedBoard>,
+    revisions: &mut u64,
+    ndb: &Ndb,
+    txn: &Transaction,
+    board_addr: &str,
+    channels: &[Pubkey],
+) -> Option<BoardRef> {
+    if !shared.contains_key(board_addr) {
+        shared.insert(board_addr.to_owned(), SharedBoard::default());
+    }
+    let entry = shared.get_mut(board_addr)?;
+    if entry.reducer.is_none() {
+        entry.refold(ndb, txn, board_addr, channels, revisions);
+    }
+    if entry.finalized.is_none() {
+        entry.finalized = Some(entry.reducer.as_ref()?.finalize().into());
+    }
+    // fold_shared_board folds a single coordinate, so its finalize yields the
+    // one board (empty until the board definition has arrived).
+    BoardRef::first(Boards {
+        boards: Rc::clone(entry.finalized.as_ref()?),
+        revision: FoldRevision::Shared(entry.revision),
+    })
 }
 
 #[cfg(test)]
