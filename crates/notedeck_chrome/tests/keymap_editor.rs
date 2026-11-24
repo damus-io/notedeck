@@ -75,8 +75,14 @@ fn signed_in() -> SignedIn {
 
 /// Save `toml` through the chrome and wait for it to land in nostrdb.
 async fn saved(f: &mut Fixture, stream: &mut SubscriptionStream, toml: &str) {
-    let mut ctx = f.notedeck.app_context();
-    f.chrome.save_user_keymap(&mut ctx, toml).expect("saved");
+    // Split the borrow through the driver: going through `Fixture`'s
+    // `DerefMut` twice would borrow the whole fixture mutably twice.
+    let driver = &mut f.driver;
+    let mut ctx = driver.notedeck.app_context();
+    driver
+        .chrome
+        .save_user_keymap(&mut ctx, toml)
+        .expect("saved");
     stream
         .wait_for_notes(1, INGEST_TIMEOUT)
         .await
