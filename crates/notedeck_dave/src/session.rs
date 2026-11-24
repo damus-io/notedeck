@@ -24,8 +24,10 @@ use uuid::Uuid;
 
 pub type SessionId = u32;
 
+mod attachments;
 mod lineage;
 mod subagent;
+pub use attachments::{compose_message, ATTACHED_FILES_HEADER};
 pub use lineage::{Edge, EdgeKind, Nesting, Place};
 pub use subagent::{composer_block, parent_instruction, SubagentMessage, SubagentOf};
 
@@ -716,6 +718,11 @@ pub struct ChatSession {
     pub input: String,
     /// Images staged for the next message send, cleared after dispatch.
     pub pending_images: Vec<crate::messages::ImageAttachment>,
+    /// Files staged as chips for the next message send, absolute and
+    /// deduped, cleared after dispatch. Only a local session stages any (see
+    /// [`ChatSession::attach_path`]); sending lists them in the message
+    /// ([`ChatSession::take_draft`]).
+    pub pending_paths: Vec<PathBuf>,
     /// The input's slash-command popup.
     pub slash: crate::slash::SlashPopup,
     /// The commands and models this session's own CLI reported when it last
@@ -884,6 +891,7 @@ impl ChatSession {
             chat: vec![],
             input: String::new(),
             pending_images: vec![],
+            pending_paths: vec![],
             slash: Default::default(),
             slash_catalog: None,
             incoming_tokens: None,
@@ -1026,6 +1034,7 @@ impl ChatSession {
             last_activity: None,
             indicator: None,
             pending_images: vec![],
+            pending_paths: vec![],
             slash: Default::default(),
             slash_catalog: None,
             pending_created_at: Some(Instant::now()),

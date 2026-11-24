@@ -1257,12 +1257,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext) {
-        let host = HostCtx::from_app(app_ctx);
+        self.send_draft(&HostCtx::from_app(app_ctx));
+    }
+
+    /// Send the active session's draft: its typed text and staged chips (see
+    /// [`ChatSession::take_draft`]), or the command it holds.
+    fn send_draft(&mut self, host: &HostCtx<'_>) {
         // A subagent's session runs no backend: its message goes to the
         // parent, which passes it on (see `session::subagent`).
         if let Some(sid) = self.session_manager.active_id() {
             if self.session_manager.backing_id(sid) != sid {
-                self.send_to_subagent(sid, &host);
+                self.send_to_subagent(sid, host);
                 return;
             }
         }
@@ -1301,10 +1306,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(session) = self.session_manager.get_mut(sid) else {
             return;
         };
-        let user_text = std::mem::take(&mut session.input);
+        let user_text = session.take_draft();
         let images = std::mem::take(&mut session.pending_images);
-        if self.add_user_message_for_session(sid, &host, user_text, images) {
-            self.send_user_message_for(sid, &host);
+        if self.add_user_message_for_session(sid, host, user_text, images) {
+            self.send_user_message_for(sid, host);
         }
     }
 
@@ -1979,6 +1984,42 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    /// Sending a local session's draft with path chips staged: the chips
+    /// are cleared, and the user message, in the chat and as handed to the
+    /// backend, carries the attached-files block under the typed text.
+    #[test]
+    fn sending_takes_the_path_chips_into_the_message() {
+        use crate::test_support::RecordingBackend;
+
+        let mut test = TestDave::new();
+        let [sid] = test.add_sessions(["/tmp/chips"], BackendType::Claude);
+        let recorder = RecordingBackend::new();
+        let log = recorder.log();
+        test.dave
+            .backends
+            .insert(BackendType::Claude, Box::new(recorder));
+        let session = test.session_mut(sid);
+        session.input = "what is this crash?".into();
+        assert!(session.attach_path(PathBuf::from("/tmp/shot.png")));
+        assert!(session.attach_path(PathBuf::from("/var/log/app.log")));
+
+        let parts = test.parts();
+        parts.dave.send_draft(&parts.host);
+
+        let expected =
+            "what is this crash?\n\nAttached files:\n- /tmp/shot.png\n- /var/log/app.log";
+        let session = test.session_mut(sid);
+        assert!(session.pending_paths.is_empty(), "the chips are cleared");
+        assert!(session.input.is_empty());
+        let Some(Message::User(sent)) = session.chat.last() else {
+            panic!("the draft becomes a user message");
+        };
+        assert_eq!(sent.text, expected);
+        let turns = log.turns();
+        assert_eq!(turns.len(), 1, "the message is dispatched");
+        assert_eq!(turns[0].last_user.as_deref(), Some(expected));
+    }
 
     /// A lone Claude backend plus one profile is two picker rows, so the
     /// picker shows instead of starting plain Claude; picking the profile row

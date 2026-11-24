@@ -1018,6 +1018,9 @@ Relays_9d89 = Relays
 # Label for relay transport settings section
 Relays_ab62 = Relays
 
+# Hover text on the × of a file chip staged in Dave's composer
+Remove_attachment_028f = Remove attachment
+
 # Tooltip on the button that removes a session environment variable
 Remove_variable_625d = Remove variable
 

@@ -205,6 +205,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .run_configs(session_run_configs)
     .running_config_ids(running_config_ids)
     .pending_images(&mut session.pending_images)
+    .pending_paths((!is_remote).then_some(&mut session.pending_paths))
     .slash(&mut session.slash)
     .chat_times(&mut session.chat_times, session.turns.spans())
     .chat_range(&mut session.chat_range)
@@ -4441,6 +4442,8 @@ mod tests {
         working: bool,
         draft: &'static str,
         mode: PermissionMode,
+        /// Files staged as path chips above the input.
+        paths: &'static [&'static str],
     }
 
     /// Seed the active session with everything the composer and status bar
@@ -4452,6 +4455,7 @@ mod tests {
         seed_usage(state);
         let session = state.session_manager.get_active_mut().unwrap();
         session.input = scene.draft.to_string();
+        session.pending_paths = scene.paths.iter().map(std::path::PathBuf::from).collect();
         session.wakeup_turn = scene.working;
         session.update_status();
         let agentic = session.agentic.as_mut().unwrap();
@@ -4511,6 +4515,7 @@ mod tests {
                 working: true,
                 draft: "and keep the old meter behind a hover",
                 mode: PermissionMode::Plan,
+                paths: &[],
             },
         );
     }
@@ -4527,6 +4532,7 @@ mod tests {
                 working: false,
                 draft: "",
                 mode: PermissionMode::Default,
+                paths: &[],
             },
         );
     }
@@ -4543,6 +4549,7 @@ mod tests {
                 working: true,
                 draft: "",
                 mode: PermissionMode::AcceptEdits,
+                paths: &[],
             },
         );
     }
@@ -4559,6 +4566,28 @@ mod tests {
                 working: false,
                 draft: "rebase onto autowork and land it",
                 mode: PermissionMode::Auto,
+                paths: &[],
+            },
+        );
+    }
+
+    /// Wide and dark, idle, with two files staged as path chips above a
+    /// draft: Send is ready, and each chip shows its file's name.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_composer_path_chips() {
+        snapshot_composer(
+            "composer_path_chips",
+            egui::vec2(1000.0, 340.0),
+            notedeck::theme::dark_mode(),
+            &ComposerScene {
+                working: false,
+                draft: "why does it crash here?",
+                mode: PermissionMode::Default,
+                paths: &[
+                    "/home/me/Pictures/crash screenshot.png",
+                    "/var/log/notedeck.log",
+                ],
             },
         );
     }

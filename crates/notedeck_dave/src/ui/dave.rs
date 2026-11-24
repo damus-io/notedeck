@@ -139,6 +139,9 @@ pub struct DaveUi<'a> {
     running_config_ids: Option<&'a std::collections::HashSet<String>>,
     /// Pending image attachments staged for the next send
     pending_images: Option<&'a mut Vec<ImageAttachment>>,
+    /// Files staged as path chips for the next send; `None` (a remote
+    /// session) draws no chips.
+    pending_paths: Option<&'a mut Vec<std::path::PathBuf>>,
     /// Normal mode and how far into a chord it is, for the which-key strip.
     normal_mode: Option<NormalView>,
     /// The session's inspector state and which tab it shows. `None` draws the
@@ -364,6 +367,7 @@ impl<'a> DaveUi<'a> {
             run_configs: &[],
             running_config_ids: None,
             pending_images: None,
+            pending_paths: None,
             normal_mode: None,
             inspector: None,
             slash: None,
@@ -490,6 +494,14 @@ impl<'a> DaveUi<'a> {
 
     pub fn pending_images(mut self, images: &'a mut Vec<ImageAttachment>) -> Self {
         self.pending_images = Some(images);
+        self
+    }
+
+    /// The files staged as path chips above the composer. Only a local
+    /// session passes them: a remote session's agent can't read this
+    /// machine's disk.
+    pub fn pending_paths(mut self, paths: Option<&'a mut Vec<std::path::PathBuf>>) -> Self {
+        self.pending_paths = paths;
         self
     }
 
@@ -2501,8 +2513,15 @@ impl<'a> DaveUi<'a> {
         };
 
         let claim_popup_keys = self.slash.as_deref().is_some_and(|p| p.claims_keys());
+        // Staged files or images send on their own, with nothing typed.
+        let has_attachments = self.pending_paths.as_deref().is_some_and(|p| !p.is_empty())
+            || self
+                .pending_images
+                .as_deref()
+                .is_some_and(|p| !p.is_empty());
         let mut layout = InputboxLayout::new(self.input, i18n, mode)
             .show_stop(show_stop)
+            .has_attachments(has_attachments)
             .claim_popup_keys(claim_popup_keys)
             .id(input_id(self.session_id));
         // A subagent's session messages the subagent, not dave.
@@ -2563,7 +2582,22 @@ impl<'a> DaveUi<'a> {
             }
         }
 
-        // Thumbnail strip second — in bottom_up this renders ABOVE the text row.
+        // Path chips second — in bottom_up this renders ABOVE the text row,
+        // with the image thumbnails above them.
+        if let Some(paths) = self.pending_paths.as_deref_mut() {
+            if !paths.is_empty() {
+                let strip_height = PATH_CHIP_HEIGHT + ui.spacing().item_spacing.y;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), strip_height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        path_chip_strip(paths, i18n, ui);
+                    },
+                );
+            }
+        }
+
+        // Thumbnail strip — in bottom_up this renders ABOVE the text row.
         // allocate_ui_with_layout pre-positions the rect at the bottom_up cursor
         // (unlike with_layout which takes the full available rect) and forces
         // top_down so image_thumbnail_strip's internal widgets render correctly.
@@ -2948,6 +2982,9 @@ pub struct InputboxLayout<'a> {
     /// The slash popup is open over the input and takes Tab, Esc and the
     /// arrows (see [`claim_popup_keys`](Self::claim_popup_keys)).
     pub claim_popup_keys: bool,
+    /// Files or images are staged, so Send is ready with nothing typed (see
+    /// [`has_attachments`](Self::has_attachments)).
+    pub has_attachments: bool,
 }
 
 impl<'a> InputboxLayout<'a> {
@@ -2981,6 +3018,7 @@ impl<'a> InputboxLayout<'a> {
             id: None,
             mode,
             claim_popup_keys: false,
+            has_attachments: false,
         }
     }
 
@@ -2994,6 +3032,7 @@ impl<'a> InputboxLayout<'a> {
             id: None,
             mode: InputMode::Insert,
             claim_popup_keys: false,
+            has_attachments: false,
         }
     }
 
@@ -3016,12 +3055,20 @@ impl<'a> InputboxLayout<'a> {
         self
     }
 
+    /// Files or images are staged for the next send: Send shows as ready
+    /// with nothing typed, and comes back beside Stop mid-turn, since a
+    /// message of attachments alone still sends.
+    pub fn has_attachments(mut self, staged: bool) -> Self {
+        self.has_attachments = staged;
+        self
+    }
+
     pub fn show(self, ui: &mut egui::Ui) -> InputboxResult {
         let line_count = self.input.lines().count().clamp(1, 8);
         let line_height = 20.0;
         // One line sits level with the buttons; each further one grows the box.
         let input_height = (line_count as f32 * line_height + 14.0).max(COMPOSER_BUTTON);
-        let has_text = !self.input.trim().is_empty();
+        let has_text = !self.input.trim().is_empty() || self.has_attachments;
         // While a turn runs, Stop takes Send's place, and Send comes back
         // beside it once there is something to queue.
         let show_send = !self.show_stop || has_text;
@@ -3296,6 +3343,110 @@ fn image_thumbnail_strip(pending: &mut Vec<ImageAttachment>, ui: &mut egui::Ui) 
     if let Some(idx) = remove_idx {
         pending.remove(idx);
     }
+}
+
+/// The height of one path chip, and so of the strip that holds them.
+const PATH_CHIP_HEIGHT: f32 = 22.0;
+
+/// Draw the staged files as one row of compact chips: a file icon and the
+/// file's name, the full path on hover, and an × that unstages it. Draws
+/// from the stored paths, borrowing each name, so a frame allocates no
+/// strings of its own.
+fn path_chip_strip(
+    paths: &mut Vec<std::path::PathBuf>,
+    i18n: &mut Localization,
+    ui: &mut egui::Ui,
+) {
+    let mut remove_idx = None;
+    egui::ScrollArea::horizontal()
+        .id_salt("dave_path_chips")
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (i, path) in paths.iter().enumerate() {
+                    if path_chip_ui(path, i18n, ui) {
+                        remove_idx = Some(i);
+                    }
+                }
+            });
+        });
+    if let Some(idx) = remove_idx {
+        paths.remove(idx);
+    }
+}
+
+/// One path chip. Returns whether its × was clicked.
+fn path_chip_ui(path: &std::path::Path, i18n: &mut Localization, ui: &mut egui::Ui) -> bool {
+    let visuals = ui.visuals();
+    let fill = visuals.widgets.inactive.weak_bg_fill;
+    let stroke = visuals.widgets.noninteractive.bg_stroke;
+    let icon_color = visuals.weak_text_color();
+    let name = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy();
+
+    let frame = egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(PATH_CHIP_HEIGHT / 2.0)
+        .inner_margin(egui::Margin::symmetric(8, 0));
+    let mut removed = false;
+    let chip = frame.show(ui, |ui| {
+        ui.set_height(PATH_CHIP_HEIGHT);
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            let (icon_rect, _) =
+                ui.allocate_exact_size(egui::vec2(10.0, 12.0), egui::Sense::hover());
+            paint_file_icon(ui.painter(), icon_rect, icon_color);
+            ui.add(egui::Label::new(egui::RichText::new(name).small()).selectable(false));
+            let remove = ui.add(
+                egui::Button::new(egui::RichText::new("×").small().strong())
+                    .frame(false)
+                    .min_size(egui::vec2(12.0, 12.0)),
+            );
+            removed = remove.clicked();
+            remove.on_hover_ui(|ui| {
+                ui.label(tr!(
+                    i18n,
+                    "Remove attachment",
+                    "Hover text on the × of a file chip staged in Dave's composer"
+                ));
+            });
+        });
+    });
+    // The full path only on hover: the closure runs only then.
+    chip.response.on_hover_ui(|ui| {
+        ui.label(path.to_string_lossy());
+    });
+    removed
+}
+
+/// Paint a small page outline with a folded top-right corner inside `rect`.
+fn paint_file_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let stroke = egui::Stroke::new(1.2, color);
+    let fold = rect.width() * 0.4;
+    let (l, t, r, b) = (rect.left(), rect.top(), rect.right(), rect.bottom());
+    let corners = [
+        egui::pos2(l, t),
+        egui::pos2(r - fold, t),
+        egui::pos2(r, t + fold),
+        egui::pos2(r, b),
+        egui::pos2(l, b),
+    ];
+    // Segment by segment: a closed path shape would allocate its points.
+    for (i, &from) in corners.iter().enumerate() {
+        let to = corners[(i + 1) % corners.len()];
+        painter.line_segment([from, to], stroke);
+    }
+    painter.line_segment(
+        [egui::pos2(r - fold, t), egui::pos2(r - fold, t + fold)],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(r - fold, t + fold), egui::pos2(r, t + fold)],
+        stroke,
+    );
 }
 
 /// Extract a concise, human-readable summary of what a tool call operates on
