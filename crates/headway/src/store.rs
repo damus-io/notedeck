@@ -275,8 +275,9 @@ impl<'a> Signer<'a> {
 /// A comment signed by another key only shows on a sealed board. The shared fold
 /// takes any rumor sealed into the board's channel, whoever signed it, so the
 /// comment folds and is attributed to the comment key. A plaintext board folds
-/// only its owner's own events ([`event::fold_board`]), so a comment signed by
-/// anyone else would be published and never seen — refused here instead.
+/// only its owner's own signed events ([`event::fold_shared_board`] with no
+/// channel), so a comment signed by anyone else would be published and never
+/// seen — refused here instead.
 pub fn signing_key<'a>(
     action: &BoardAction,
     secret: &'a [u8; 32],
@@ -1744,21 +1745,21 @@ impl std::error::Error for CrossBoardError {}
 /// The two read paths gather issues differently, and neither reaches an issue
 /// that belongs to a *differently sealed* board:
 ///
-/// - A plaintext board folds author-scoped ([`event::fold_board`]), which gathers
-///   every issue the author wrote whatever board it is anchored to — but a sealed
-///   card is a rumor that exists only on a device holding the source board's key,
-///   so landing one on a plaintext board resolves on this device and nowhere else.
-/// - A sealed board folds by coordinate ([`event::board_scoped_filters`]), which
-///   gathers issues by their `a` tag and trusts only rumors sealed under its own
-///   team key or its owner's plaintext ([`event::shared_fold_admits`]) — so an
-///   issue created on another board is invisible to it twice over.
+/// - A plaintext board folds by coordinate with no channel
+///   ([`event::fold_shared_board`]), which gathers the owner's plaintext issues
+///   its placements name, whatever board they are anchored to — but a sealed
+///   card is a rumor, which that fold never trusts, so it can't land on one.
+/// - A sealed board folds by coordinate over its channels
+///   ([`event::board_scoped_filters`]), which gathers issues by their `a` tag or
+///   a placement naming them and trusts only rumors sealed under its own team
+///   key or its owner's plaintext ([`event::shared_fold_admits`]) — so an issue
+///   sealed into another board's channel is invisible to it.
 ///
 /// Channels are per-board by construction (each root derives from the slug), so
 /// in practice this holds only between two plaintext boards, or for a card being
 /// moved back to the sealed board it was created on. Making a card genuinely
-/// cross-channel needs the issue re-sealed into the target channel and the fold
-/// gathering issues by placement rather than by `a` tag — a schema change, not a
-/// write-path fix (headway:headway/series-high-praise).
+/// cross-channel needs the issue re-sealed into the target channel — a schema
+/// change, not a write-path fix (headway:headway/series-high-praise).
 fn target_can_read_card(ndb: &Ndb, target: BoardRef, card: NoteId) -> bool {
     let Ok(txn) = Transaction::new(ndb) else {
         return false;
@@ -2373,13 +2374,10 @@ fn unique_col_id(existing: &[ColumnDef], name: &str) -> String {
     }
 }
 
-/// Convenience re-export so the app layer can load a board without naming the
-/// event module directly.
-pub use event::load_board;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::load_board;
     use crate::test_config;
     use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;

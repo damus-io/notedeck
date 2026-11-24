@@ -23,19 +23,26 @@ use crate::ui::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issue
 /// board's multi-writer fold, so a card on a board shared with us, or one a
 /// teammate added to ours, resolves) and render the folded card, falling back
 /// to the raw snapshot if no local board holds it.
+///
+/// The roster is the selected account's: [`render`](notedeck::KindRenderer::render)
+/// reads it for that account, while [`title`](notedeck::KindRenderer::title),
+/// [`outline`](notedeck::KindRenderer::outline) and
+/// [`revision`](notedeck::KindRenderer::revision), handed no account, read
+/// whichever roster the cache holds.
 pub struct HeadwayIssueRenderer {
     pub(crate) cache: Rc<RefCell<BoardCache>>,
 }
 
 impl HeadwayIssueRenderer {
     /// Locate the card `issue` stands for on the board it lives on (see
-    /// [`BoardCache::locate_issue`]). A handle into the memoized fold, so the
-    /// cache borrow drops before drawing and the card is borrowed out of it
-    /// rather than copied.
+    /// [`BoardCache::locate_issue`]), on `me`'s roster when given. A handle
+    /// into the memoized fold, so the cache borrow drops before drawing and the
+    /// card is borrowed out of it rather than copied.
     fn locate(
         &self,
         ndb: &Ndb,
         txn: &Transaction,
+        me: Option<&nostrdb_net::Pubkey>,
         issue: &event::IssueEvent,
     ) -> Option<LocatedIssue> {
         let origin = event::IssueBoard {
@@ -44,7 +51,7 @@ impl HeadwayIssueRenderer {
         };
         self.cache
             .borrow_mut()
-            .locate_issue(ndb, txn, &origin, &issue.id)
+            .locate_issue(ndb, txn, me, &origin, &issue.id)
     }
 }
 
@@ -72,7 +79,8 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         };
         // Resolve the card where it lives and draw the shape the context asks
         // for: a compact chip inline in prose, the full card as a block embed.
-        let located = self.locate(note_context.ndb, req.txn, &issue);
+        let me = note_context.accounts.selected_account_pubkey();
+        let located = self.locate(note_context.ndb, req.txn, Some(me), &issue);
         let found = located.as_ref().and_then(LocatedIssue::card);
         let response = match req.context {
             // A list row is the chip too: the card's live status and title.
@@ -103,7 +111,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
             return None;
         };
-        let located = self.locate(ndb, txn, &issue);
+        let located = self.locate(ndb, txn, None, &issue);
         let title = located
             .as_ref()
             .and_then(LocatedIssue::card)
@@ -118,7 +126,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
             return None;
         };
-        let located = self.locate(ndb, txn, &issue)?;
+        let located = self.locate(ndb, txn, None, &issue)?;
         let card = located.card()?.card;
         let parent = card
             .parent
@@ -133,16 +141,13 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
     }
 
     /// The folds [`title`](Self::title) and [`outline`](Self::outline) read
-    /// (see [`BoardCache::ref_revision`]): every roster board, since the card
-    /// may have moved to any of them, plus its origin owner's author fold when
-    /// the origin board isn't on the roster. Any edit to any of them moves it.
-    fn revision(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<u64> {
-        // Asked for every card-titled row every frame, so the board is read
-        // off the `a` tag without parsing (and copying) the issue.
-        let origin = event::issue_board(note)?;
-        let mut cache = self.cache.borrow_mut();
-        let fallback = cache.fallback_author(&origin.owner, origin.slug);
-        Some(cache.ref_revision(ndb, txn, fallback.as_ref()))
+    /// (see [`BoardCache::ref_revision`]): every board, since the card may have
+    /// moved to any of them. Any edit to any of them moves it.
+    fn revision(&self, _ndb: &Ndb, _txn: &Transaction, note: &Note) -> Option<u64> {
+        // Asked for every card-titled row every frame, so it only checks the
+        // note is a card, off the `a` tag without parsing (and copying) it.
+        event::issue_board(note)?;
+        Some(self.cache.borrow().ref_revision())
     }
 }
 
@@ -251,15 +256,12 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
     }
 
     /// The folds [`resolve`](Self::resolve) reads (see
-    /// [`BoardCache::ref_revision`]): every roster board, plus the selected
-    /// account's author fold when its own board at the slug isn't on the
-    /// roster. A card arriving, or any other edit to those, moves it.
+    /// [`BoardCache::ref_revision`]): every roster board. A card arriving, or
+    /// any other edit to those, moves it.
     fn revision(&self, matched: &str, ctx: &notedeck::ReferenceResolveCtx) -> Option<u64> {
-        let headway::wordid::CardRef { board: slug, .. } = headway::wordid::parse_ref(matched)?;
-        let me = ctx.selected_account?;
-        let mut cache = self.cache.borrow_mut();
-        let fallback = cache.fallback_author(me.bytes(), &board_slug(slug));
-        Some(cache.ref_revision(ctx.ndb, ctx.txn, fallback.as_ref()))
+        headway::wordid::parse_ref(matched)?;
+        ctx.selected_account?;
+        Some(self.cache.borrow().ref_revision())
     }
 }
 
@@ -281,6 +283,18 @@ mod tests {
 
     use crate::cache::tests::TestSync;
     use crate::store;
+
+    /// Pump `cache` for `t`'s account until it settles, as the app's `update`
+    /// does every frame: the first pass puts its boards on the roster and
+    /// subscribes them, the next seeds them.
+    fn pump(cache: &RefCell<BoardCache>, t: &TestSync) {
+        let mut cache = cache.borrow_mut();
+        cache.set_roster(&t.ndb, &t.kp.pubkey, &[]);
+        for _ in 0..3 {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            cache.poll(&t.ndb, &txn);
+        }
+    }
 
     fn ref_parser() -> HeadwayRefParser {
         HeadwayRefParser {
@@ -363,13 +377,8 @@ mod tests {
         let p = ref_parser();
         // In the app the parser shares the board cache `update` already drives
         // (see `reference_parsers`), so it reads an already-seeded one. This
-        // parser owns a fresh cache, so drive the two advances that seed it —
-        // the first subscribes, the next folds the history (see
-        // `RealtimeCache::advance`) — before resolving against it.
-        for _ in 0..2 {
-            let txn = Transaction::new(&t.ndb).unwrap();
-            p.cache.borrow_mut().poll(&t.ndb, &txn, &t.kp.pubkey);
-        }
+        // parser owns a fresh cache, so pump it as `update` would.
+        pump(&p.cache, &t);
 
         let txn = Transaction::new(&t.ndb).unwrap();
         let ctx = ReferenceResolveCtx {
@@ -433,12 +442,8 @@ mod tests {
         })
         .await;
 
-        // Seed the registry's own cache: the first advance subscribes, the next
-        // folds (see `RealtimeCache::advance`).
-        for _ in 0..2 {
-            let txn = Transaction::new(&t.ndb).unwrap();
-            cache.borrow_mut().poll(&t.ndb, &txn, &t.kp.pubkey);
-        }
+        // Seed the registry's own cache, as `update` would.
+        pump(&cache, &t);
 
         let txn = Transaction::new(&t.ndb).unwrap();
         let note = t.ndb.get_note_by_id(&txn, card_id.bytes()).unwrap();
@@ -485,10 +490,7 @@ mod tests {
             .register(Box::new(HeadwayIssueRenderer {
                 cache: cache.clone(),
             }));
-        for _ in 0..2 {
-            let txn = Transaction::new(&t.ndb).unwrap();
-            cache.borrow_mut().poll(&t.ndb, &txn, &t.kp.pubkey);
-        }
+        pump(&cache, &t);
 
         let (card_id, card_ref) = {
             let view = t.view().expect("board loaded");
@@ -543,8 +545,13 @@ mod tests {
                 &mut store::NoPublish,
             );
         }
-        // The registries' own cache folds the rename, which moves the revision.
-        while lookup(&registries).current == Some(kept) {
+        // The registries' own cache folds the rename on its next pump (the
+        // app's `update`), which moves the revision.
+        loop {
+            pump(&cache, &t);
+            if lookup(&registries).current != Some(kept) {
+                break;
+            }
             notedeck_testing::await_batch(&mut stream).await;
         }
         assert_eq!(
@@ -558,7 +565,6 @@ mod tests {
     struct SharedBoard {
         cache: Rc<RefCell<BoardCache>>,
         channel: store::SnsChannel,
-        teams: Vec<crate::teams::Team>,
         slug: &'static str,
         owner: nostrdb_net::FullKeypair,
     }
@@ -582,11 +588,11 @@ mod tests {
                 shared_at: 1,
             }];
             let cache = Rc::new(RefCell::new(BoardCache::default()));
-            cache.borrow_mut().set_roster(&teams);
+            // The reader's roster: `t`'s account holds the key-share.
+            cache.borrow_mut().set_roster(&t.ndb, &t.kp.pubkey, &teams);
             let board = Self {
                 cache,
                 channel,
-                teams,
                 slug,
                 owner,
             };
@@ -614,9 +620,7 @@ mod tests {
         /// One pass of the app's per-frame shared pump (`Headway::update`).
         fn poll(&self, t: &TestSync) {
             let txn = Transaction::new(&t.ndb).unwrap();
-            self.cache
-                .borrow_mut()
-                .poll_shared(&t.ndb, &txn, &self.teams);
+            self.cache.borrow_mut().poll(&t.ndb, &txn);
         }
 
         /// The board's multi-writer fold, if its definition has folded in.

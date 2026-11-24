@@ -2653,7 +2653,7 @@ mod tests {
     /// `view` as the one source the list reads, folded at `revision`: a
     /// test that re-folds the board passes a new one.
     fn sources_at(view: BoardView, revision: u64) -> Vec<BoardRef> {
-        let boards = Boards::at(vec![view], FoldRevision::Author(revision));
+        let boards = Boards::at(vec![view], FoldRevision(revision));
         vec![BoardRef::find(boards, &[0; 32], "headway").expect("the board")]
     }
 

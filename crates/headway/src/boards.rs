@@ -134,8 +134,8 @@ impl Roster {
     /// boards shared with us — one per coordinate, sorted by slug then owner.
     ///
     /// A board can back several channels (one per key-share generation), so the
-    /// coordinates are deduplicated; our own boards are left out because the
-    /// author fold in [`list_boards`] already lists them.
+    /// coordinates are deduplicated; our own boards are left out because
+    /// [`list_boards`] lists them.
     pub fn foreign_boards(&self) -> Vec<BoardCoord> {
         let me = &self.id.me;
         let mut coords: Vec<BoardCoord> = self
@@ -174,9 +174,10 @@ impl Roster {
     }
 }
 
-/// Fold the roster owner's board `board_id`, by whichever transport it uses: a
-/// joined shared board folds by *coordinate* (gathering every member's sealed
-/// edits), a private one folds from the owner's own plaintext events.
+/// Fold the roster owner's board `board_id` by coordinate: a sealed board over
+/// every channel the roster holds for it (gathering every member's sealed
+/// edits), a plaintext one, with no channel, from the owner's own plaintext
+/// events.
 pub fn load_board(ndb: &Ndb, roster: &Roster, board_id: &str) -> Option<BoardView> {
     let txn = Transaction::new(ndb).ok()?;
     load_board_in(ndb, &txn, roster, board_id)
@@ -193,10 +194,26 @@ fn load_board_in(
 ) -> Option<BoardView> {
     let author = &roster.id.owner;
     let channels = roster.channel_pubkeys(board_id);
-    if channels.is_empty() {
-        return event::load_board(ndb, txn, author, board_id);
-    }
     event::load_shared_board(ndb, txn, &event::board_address(author, board_id), &channels)
+}
+
+/// The slugs of every board the roster owner has that this run can read, sorted
+/// and deduplicated: each sealed board of theirs the roster holds a channel for,
+/// and each plaintext board they signed (see [`event::plaintext_board_slugs`]).
+fn owner_board_slugs(ndb: &Ndb, txn: &Transaction, roster: &Roster) -> Vec<String> {
+    let owner = &roster.id.owner;
+    let mut slugs = event::plaintext_board_slugs(ndb, txn, owner);
+    slugs.extend(
+        roster
+            .teams
+            .iter()
+            .filter_map(|t| BoardCoord::parse(&t.board_addr))
+            .filter(|c| &c.owner == owner.bytes())
+            .map(|c| c.slug),
+    );
+    slugs.sort();
+    slugs.dedup();
+    slugs
 }
 
 /// The roster owner's live boards in the cache — [`list_all_boards`] without the
@@ -208,28 +225,17 @@ pub fn list_boards(ndb: &Ndb, roster: &Roster) -> Vec<BoardView> {
 }
 
 /// All of the roster owner's boards in the cache, deleted ones included, sorted
-/// by id for a stable listing. Each shared board is re-folded by coordinate so
-/// its card counts match what the app draws, rather than the plaintext-only
-/// subset the author fold sees.
+/// by id for a stable listing. Each folds by coordinate (see [`load_board`]), so
+/// its card counts match what the app draws. A board that hasn't folded (a
+/// sealed one whose definition hasn't arrived) is left out.
 pub fn list_all_boards(ndb: &Ndb, roster: &Roster) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
-    let mut boards = event::fold_board(ndb, &txn, &roster.id.owner)
-        .map(|r| r.finalize())
-        .unwrap_or_default();
-    for board in &mut boards {
-        // Only the shared ones: the author fold above already produced every
-        // private board, and re-folding those would pay a whole extra walk each.
-        if roster.channel_pubkeys(&board.id).is_empty() {
-            continue;
-        }
-        if let Some(shared) = load_board_in(ndb, &txn, roster, &board.id) {
-            *board = shared;
-        }
-    }
-    boards.sort_by(|a, b| a.id.cmp(&b.id));
-    boards
+    owner_board_slugs(ndb, &txn, roster)
+        .iter()
+        .filter_map(|slug| load_board_in(ndb, &txn, roster, slug))
+        .collect()
 }
 
 /// Every board shared with us (the roster's `me`) — owned by someone else,

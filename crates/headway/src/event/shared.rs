@@ -8,6 +8,10 @@
 //! later note folds in by itself: [`SharedFold::apply`] routes each new note to
 //! the board the way the three phases would have, and catches a newly-known card
 //! up on the overlays that reached nostrdb before it did.
+//!
+//! A board with no channel folds the same way, from its owner's plaintext
+//! alone (see [`shared_fold_admits`]): every board, sealed or not, folds by
+//! coordinate.
 
 use std::collections::HashSet;
 
@@ -66,6 +70,10 @@ pub struct SharedFold {
     /// Every review record admitted: what an inline review comment's `E` tag
     /// names.
     records: HashSet<[u8; 32]>,
+    /// Every card an admitted placement names: an issue anchored at another
+    /// board (its `a` tag records where it was created) belongs to this one
+    /// too once a placement moves or links it here, so it is gathered by id.
+    placed: HashSet<[u8; 32]>,
     /// Envelope ids of sealed rumors [`apply`](Self::apply) has been handed but
     /// whose envelope it hasn't seen yet. Each envelope should find its rumor
     /// here; one that doesn't carried a note nostrdb wrote without notifying any
@@ -103,11 +111,13 @@ struct Found {
     cards: Vec<[u8; 32]>,
     /// New review records: gather their inline comments.
     records: Vec<[u8; 32]>,
+    /// Cards newly named by a placement: gather their issues.
+    placed: Vec<[u8; 32]>,
 }
 
 impl Found {
     fn is_empty(&self) -> bool {
-        self.cards.is_empty() && self.records.is_empty()
+        self.cards.is_empty() && self.records.is_empty() && self.placed.is_empty()
     }
 }
 
@@ -130,6 +140,7 @@ impl SharedFold {
             teams: team_pubkeys.iter().map(|k| *k.bytes()).collect(),
             cards: HashSet::new(),
             records: HashSet::new(),
+            placed: HashSet::new(),
             wraps: HashSet::new(),
         };
         let mut found = Found::default();
@@ -140,12 +151,13 @@ impl SharedFold {
 
     /// The filters a subscription feeding [`apply`](Self::apply) needs, so
     /// that every note the board could come to hold is reported: the channels'
-    /// kind-1081 envelopes, the board definition, every card and placement at
-    /// the coordinate, and every card-anchored overlay and comment, whatever
-    /// card it names (which card ids belong is [`apply`](Self::apply)'s check,
-    /// since a filter keyed on them would have to be replaced on every new
-    /// card). Unbounded, since a subscription's limit caps nothing useful.
-    /// `None` if `board_addr` isn't a board coordinate.
+    /// kind-1081 envelopes (none for a plaintext board), the board definition,
+    /// every placement at the coordinate, and every card, card-anchored overlay
+    /// and comment, whatever board or card it names (which ones belong is
+    /// [`apply`](Self::apply)'s check: a card can arrive after a placement
+    /// moved it here, and a filter keyed on card ids would have to be replaced
+    /// on every new card). Unbounded, since a subscription's limit caps nothing
+    /// useful. `None` if `board_addr` isn't a board coordinate.
     ///
     /// Matching every overlay and comment kind means the subscription sees
     /// other boards' notes too, so drain it every pass: nostrdb drops what
@@ -153,25 +165,35 @@ impl SharedFold {
     /// note stays out of the fold until its next reseed.
     pub fn subscription_filters(board_addr: &str, team_pubkeys: &[Pubkey]) -> Option<Vec<Filter>> {
         let coord = BoardCoord::parse(board_addr)?;
-        Some(vec![
-            Filter::new()
-                .kinds([SNS_ENVELOPE_KIND as u64])
-                .authors(team_pubkeys.iter().map(|k| k.bytes()))
-                .build(),
+        let mut filters = Vec::with_capacity(5);
+        if !team_pubkeys.is_empty() {
+            filters.push(
+                Filter::new()
+                    .kinds([SNS_ENVELOPE_KIND as u64])
+                    .authors(team_pubkeys.iter().map(|k| k.bytes()))
+                    .build(),
+            );
+        }
+        filters.extend([
             Filter::new()
                 .kinds([KIND_BOARD as u64])
                 .authors([&coord.owner])
                 .tags([coord.slug.as_str()], 'd')
                 .build(),
             Filter::new()
-                .kinds([KIND_ISSUE as u64, KIND_PLACEMENT as u64])
+                .kinds([KIND_PLACEMENT as u64])
                 .tags([board_addr], 'a')
                 .build(),
             Filter::new()
-                .kinds(OVERLAY_KINDS.iter().map(|k| *k as u64))
+                .kinds(
+                    std::iter::once(KIND_ISSUE)
+                        .chain(OVERLAY_KINDS)
+                        .map(u64::from),
+                )
                 .build(),
             Filter::new().kinds([KIND_COMMENT as u64]).build(),
-        ])
+        ]);
+        Some(filters)
     }
 
     /// The folded reducer.
@@ -272,13 +294,22 @@ impl SharedFold {
     }
 
     /// Gather the overlays and comments of the cards and records in `found`
-    /// (phases B and C of the walk), and of whatever records those turn up,
-    /// until nothing new is found. Returns how many notes it folded, or `None`
+    /// (phases B and C of the walk), the issues of the cards its placements
+    /// name, and the same for whatever those turn up, until nothing new is
+    /// found. Returns how many notes it folded, or `None`
     /// if an index walk failed.
     fn catch_up(&mut self, ndb: &Ndb, txn: &Transaction, mut found: Found) -> Option<usize> {
         let mut folded = 0;
         while !found.is_empty() {
-            let mut filters = Vec::with_capacity(3);
+            let mut filters = Vec::with_capacity(4);
+            if !found.placed.is_empty() {
+                filters.push(
+                    Filter::new()
+                        .ids(found.placed.iter())
+                        .kinds([KIND_ISSUE as u64])
+                        .build(),
+                );
+            }
             if !found.cards.is_empty() {
                 filters.push(card_meta_filter(&found.cards));
                 filters.push(comment_filter(&found.cards));
@@ -304,12 +335,33 @@ impl SharedFold {
         let (known, new) = match note.kind() {
             KIND_ISSUE => (&mut self.cards, &mut found.cards),
             KIND_REVIEW => (&mut self.records, &mut found.records),
+            KIND_PLACEMENT => {
+                self.note_placed(note, found);
+                return self.ingest(note);
+            }
             _ => return self.ingest(note),
         };
         if known.insert(*note.id()) {
             new.push(*note.id());
         }
         self.ingest(note)
+    }
+
+    /// Remember the card an admitted `placement` names, and put it in `found`
+    /// when its issue hasn't been gathered yet, so a card moved or linked here
+    /// from another board is gathered by id.
+    fn note_placed(&mut self, placement: &Note, found: &mut Found) {
+        let card = placement
+            .tags()
+            .iter()
+            .find(|tag| tag.get_str(0) == Some("e"))
+            .and_then(|tag| tag.get_id(1).copied());
+        let Some(card) = card else {
+            return;
+        };
+        if !self.cards.contains(&card) && self.placed.insert(card) {
+            found.placed.push(card);
+        }
     }
 
     /// Parse `note` and fold it into the reducer. Returns whether it folded.
@@ -323,17 +375,20 @@ impl SharedFold {
 
     /// Whether `note` is one of this board's, by the rule the walk's filters
     /// apply: the owner's definition at the coordinate, a card or placement
-    /// `a`-tagged with it, an overlay whose `e` names one of its cards, or a
-    /// comment whose root `E` names one of its cards or review records.
+    /// `a`-tagged with it, a card one of its placements names, an overlay whose
+    /// `e` names one of its cards, or a comment whose root `E` names one of its
+    /// cards or review records.
     fn belongs(&self, note: &Note) -> bool {
         match note.kind() {
             KIND_BOARD => {
                 note.pubkey() == &self.coord.owner
                     && has_tag(note, "d", |tag| tag.get_str(1) == Some(&self.coord.slug))
             }
-            KIND_ISSUE | KIND_PLACEMENT => {
-                has_tag(note, "a", |tag| tag.get_str(1) == Some(&self.addr))
+            KIND_ISSUE => {
+                self.placed.contains(note.id())
+                    || has_tag(note, "a", |tag| tag.get_str(1) == Some(&self.addr))
             }
+            KIND_PLACEMENT => has_tag(note, "a", |tag| tag.get_str(1) == Some(&self.addr)),
             KIND_COMMENT => has_tag(note, "E", |tag| {
                 tag.get_id(1)
                     .is_some_and(|id| self.cards.contains(id) || self.records.contains(id))
@@ -457,6 +512,95 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+
+    /// A plaintext board, one with no channel, folds by coordinate from its
+    /// owner's signed plaintext, definition included, and from no one
+    /// else's. A card moved onto it from another of the owner's plaintext
+    /// boards, whose issue is `a`-tagged with the board it was created on, is
+    /// gathered by the placement that moved it: as a delta, and by a seed.
+    #[test]
+    fn a_plaintext_board_folds_its_owners_notes_and_moved_in_cards() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let plain = |who: &FullKeypair, b: NoteBuilder| {
+            store::ingest_signed(
+                &ndb,
+                b,
+                &Signer::new(&who.secret_key.secret_bytes(), None),
+                &mut NoPublish,
+            )
+            .expect("plaintext ingest")
+        };
+        let settle = |done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !done() {
+                assert!(Instant::now() < deadline, "the notes never landed");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let full = |addr: &str| {
+            let txn = Transaction::new(&ndb).unwrap();
+            fold_shared_board(&ndb, &txn, addr, &[])?
+                .finalize()
+                .into_iter()
+                .next()
+        };
+        let a = board_address(&owner.pubkey, "a");
+        let b = board_address(&owner.pubkey, "b");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let sub = ndb
+            .subscribe(&SharedFold::subscription_filters(&b, &[]).unwrap())
+            .unwrap();
+
+        plain(&owner, build_board("a", "A", "", &cols));
+        plain(&owner, build_board("b", "B", "", &cols));
+        let card = plain(&owner, build_issue(&a, "Moved", ""));
+        settle(&|| full(&b).is_some_and(|v| v.title == "B"));
+        assert_eq!(
+            full(&a).map(|v| v.title),
+            Some("A".to_owned()),
+            "a board with no channel reads its owner's plaintext definition"
+        );
+
+        // Seeded before the move, so the card can only arrive as a delta.
+        let mut fold = {
+            let txn = Transaction::new(&ndb).unwrap();
+            SharedFold::seed(&ndb, &txn, &b, &[]).expect("seed")
+        };
+        let _ = ndb.poll_for_notes(sub, 1024);
+        assert!(card_count(&view(&fold)) == 0);
+
+        // A stranger's plaintext card placed on the board is refused.
+        let squat = plain(&stranger, build_issue(&b, "Squatted", ""));
+        plain(&stranger, build_placement("b", &b, &squat, "todo", "a"));
+        plain(&owner, build_placement("b", &b, &card, "todo", "m"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut pending: Vec<NoteKey> = Vec::new();
+        while card_count(&view(&fold)) == 0 {
+            assert!(Instant::now() < deadline, "the moved card never folded in");
+            std::thread::sleep(Duration::from_millis(10));
+            let txn = Transaction::new(&ndb).unwrap();
+            pending.extend(ndb.poll_for_notes(sub, 1024));
+            pending = fold.apply(&ndb, &txn, &pending).deferred;
+        }
+        let titles = |v: &BoardView| -> Vec<String> {
+            v.columns
+                .iter()
+                .flat_map(|c| &c.cards)
+                .map(|c| c.title.clone())
+                .collect()
+        };
+        assert_eq!(titles(&view(&fold)), ["Moved"]);
+        settle(&|| full(&b).is_some_and(|v| card_count(&v) == 1));
+        assert_eq!(titles(&full(&b).unwrap()), ["Moved"], "and by a seed");
+    }
+
+    /// How many cards `view` shows across its columns.
+    fn card_count(view: &BoardView) -> usize {
+        view.columns.iter().map(|c| c.cards.len()).sum()
     }
 
     fn view(fold: &SharedFold) -> BoardView {

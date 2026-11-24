@@ -198,7 +198,13 @@ pub fn teams_from_ndb(ndb: &Ndb, author: &Pubkey) -> Vec<Team> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
-    let Ok(results) = ndb.query(&txn, &[keyshare_filter()], 500) else {
+    teams_in(ndb, &txn, author)
+}
+
+/// [`teams_from_ndb`] in the caller's transaction, for a reader that already
+/// holds one (LMDB refuses a second read transaction on the same thread).
+pub fn teams_in(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<Team> {
+    let Ok(results) = ndb.query(txn, &[keyshare_filter()], 500) else {
         return Vec::new();
     };
     let mut teams: Vec<Team> = Vec::new();

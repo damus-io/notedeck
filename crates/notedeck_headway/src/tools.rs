@@ -2,7 +2,7 @@
 //! shared per-app tool interface ([`notedeck::AppTool`]).
 //!
 //! Each tool is a read-only nostrdb query that reuses headway core's board
-//! folding ([`event::fold_board`]) and JSON serializers ([`event::board_json`] /
+//! folding ([`headway::boards`], by coordinate) and JSON serializers ([`event::board_json`] /
 //! [`event::card_json`]), so a backend (Dave, `notedeck --mcp`) sees exactly the
 //! same curated schema the CLI emits with `--json`. Boards are folded for the
 //! currently-selected account — the pubkey that authors this user's boards.
@@ -1085,10 +1085,10 @@ struct ResolvedTarget {
 ///
 /// A board is shared iff its coordinate is in `teams`, matched on the full
 /// coordinate — so a board you *own* and shared (self-shared team-of-one, whose
-/// coordinate is your own) folds by coordinate (every member's cards) and seals
-/// every edit, instead of folding author-scoped and leaking a plaintext rumor.
-/// That own-coordinate case is checked first; a private own board (not in the
-/// roster) then wins the author-scoped fold on a bare-slug collision with a joined
+/// coordinate is your own) folds over its channels (every member's cards) and
+/// seals every edit, instead of leaking a plaintext rumor. That own-coordinate
+/// case is checked first; a private own board (not in the roster, so folded by
+/// coordinate with no channel) then wins on a bare-slug collision with a joined
 /// board; otherwise a joined shared board of that slug is folded and sealed. A
 /// shared board whose channel can't be derived, or that hasn't synced yet, is
 /// *refused* rather than edited unsealed.
@@ -1101,14 +1101,14 @@ fn resolve_target(
     let txn = Transaction::new(ndb).map_err(|e| format!("failed to open db: {e}"))?;
 
     // Your own board, matched by coordinate against the roster first: if shared,
-    // fold + seal it rather than leak plaintext via the author-scoped fold below.
+    // fold + seal it rather than leak plaintext via the channel-less fold below.
     let own_coord = event::board_address(author, board_id);
     if let Some(team) = teams.iter().find(|t| t.board_addr == own_coord) {
         return resolve_shared(ndb, &txn, board_id, team, teams);
     }
 
     // Own plaintext board wins on a bare-slug collision with a joined board.
-    if let Some(view) = event::load_board(ndb, &txn, author, board_id) {
+    if let Some(view) = event::load_shared_board(ndb, &txn, &own_coord, &[]) {
         return Ok(ResolvedTarget {
             view,
             channel: None,

@@ -1,93 +1,77 @@
-//! The board-data engine: [`BoardCache`], a per-account
-//! [`notedeck::RealtimeCache`] over the [`HeadwayReducer`] plus the multi-writer
-//! shared-board leg. The foreground board and every inline widget read it.
+//! The board-data engine: [`BoardCache`], one multi-writer fold per board
+//! *coordinate* (`30619:<owner>:<slug>`), whoever owns the board and however it
+//! is stored. The foreground board, the switcher and every inline widget read
+//! it.
+//!
+//! An account's own board is a team-of-one shared board: it folds through the
+//! same [`event::SharedFold`] as a board someone shared with us, over the
+//! channels its key-shares name. A plaintext board, created before boards were
+//! born sealed, has no channel and folds from its owner's signed plaintext
+//! alone (see `event::shared_fold_admits`).
 
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
+use nostrdb::{Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 
-use crate::event::{self, BoardReducer, BoardView};
+use crate::event::{self, BoardView};
 use crate::teams;
 
-/// notedeck_headway's [`notedeck::Reducer`] adapter over the pure-data
-/// [`BoardReducer`], so a generic [`notedeck::RealtimeCache`] can drive the board
-/// fold without the `headway` data crate depending on the `notedeck` app
-/// framework (the orphan rule forbids impl'ing a notedeck trait for a headway
-/// type here, and the layering shouldn't invert anyway). A newtype whose trait
-/// methods forward straight to the existing free functions ([`event::fold_board`]
-/// / [`event::reduce_delta`]) and [`BoardReducer::finalize`].
-///
-/// The reducer holds *all* of the author's boards ([`event::fold_board`] folds an
-/// account's whole history), so one cache entry backs the foreground board and
-/// every inline reference to any of that author's boards.
-struct HeadwayReducer(BoardReducer);
-
-impl notedeck::Reducer for HeadwayReducer {
-    type View = BoardView;
-
-    fn filter(author: &Pubkey) -> Filter {
-        event::headway_filter(author)
-    }
-
-    fn fold(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Self> {
-        event::fold_board(ndb, txn, author).map(HeadwayReducer)
-    }
-
-    fn reduce_delta(&mut self, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) -> Vec<NoteKey> {
-        event::reduce_delta(&mut self.0, ndb, txn, keys)
-    }
-
-    fn finalize(&self) -> Vec<BoardView> {
-        self.0.finalize()
-    }
-}
-
-/// The single board-data engine for the Headway app: a per-account
-/// [`notedeck::RealtimeCache`] over the [`HeadwayReducer`], plus the
-/// headway-specific shared-board leg. Shared (behind `Rc<RefCell<…>>`) between the
-/// app and everything it registers for inline display.
+/// The single board-data engine for the Headway app, shared behind
+/// `Rc<RefCell<…>>` between the app and everything it registers for inline
+/// display.
 ///
 /// The foreground board and every inline widget — the
 /// [`KindRenderer`](notedeck::KindRenderer)s and the
-/// [`ReferenceParser`](notedeck::ReferenceParser) — read the *same* reducer, so a
+/// [`ReferenceParser`](notedeck::ReferenceParser) — read the *same* folds, so a
 /// realtime edit (a CLI move, a remote sync) that [`update`](notedeck::App::update)'s
 /// per-frame [`poll`](Self::poll) folds in is immediately visible to an inline
 /// chip drawn in another app, not just to the open board.
 ///
-/// The author-keyed leg ([`authors`](Self::authors)) is the reusable
-/// subscribe/seed/delta/memoize skeleton, generic in notedeck; the shared-board
-/// leg ([`shared`](Self::shared)) stays here because it folds by board
-/// *coordinate* (multi-writer), not by author.
+/// Every board folds by coordinate ([`folds`](Self::folds)), so there is one
+/// fold of a board however many surfaces read it, and a teammate's card on a
+/// board we own is in the same fold that draws it.
 #[derive(Default)]
 pub(crate) struct BoardCache {
-    /// Per-account board fold: [`event::fold_board`] folds an account's whole
-    /// board history into one reducer, so a single entry serves all of that
-    /// author's boards with no per-board refold. Seed-once + delta, the memoized
-    /// finalize, and the post-snapshot deferral are all owned by the generic
-    /// cache; [`HeadwayReducer`] supplies only the fold itself.
-    authors: notedeck::RealtimeCache<HeadwayReducer>,
-    /// Joined shared boards, keyed by board coordinate (`30619:owner:slug`). Unlike
-    /// [`authors`](Self::authors) these are multi-writer, folded by *coordinate*
-    /// through an [`event::SharedFold`] so every member's events are gathered:
-    /// seeded once by walking the board's history, then fed what its
-    /// subscription reports as deltas.
-    shared: HashMap<String, SharedBoard>,
-    /// The last revision handed to a shared board's fold (see
-    /// [`SharedBoard::revision`]): one counter for every shared board, as
-    /// [`RealtimeCache`](notedeck::RealtimeCache) keeps one for every author.
-    /// Also moved when the [`roster`](Self::roster) changes, so it moves
-    /// whenever any lookup by coordinate could answer differently (see
-    /// [`ref_revision`](Self::ref_revision)).
-    shared_revisions: u64,
-    /// The account's roster, one entry per board coordinate, newest key-share
-    /// first: what the inline renderers and the `headway:` ref parser resolve
-    /// a board by coordinate through. Set from the app's roster by
-    /// [`set_roster`](Self::set_roster) whenever it changes, so a lookup reads
-    /// precomputed channel keys rather than re-deriving them per chip.
+    /// Every board folded so far, keyed by board coordinate
+    /// (`30619:owner:slug`). Each folds through an [`event::SharedFold`] so every
+    /// member's events are gathered: seeded once by walking the board's
+    /// history, then fed what its subscription reports as deltas.
+    folds: HashMap<String, BoardFold>,
+    /// The last revision handed to a fold (see [`BoardFold::revision`]): one
+    /// counter for every board. Also moved when the [`roster`](Self::roster)
+    /// changes, so it moves whenever any lookup by coordinate could answer
+    /// differently (see [`ref_revision`](Self::ref_revision)).
+    revisions: u64,
+    /// The account whose boards the [`roster`](Self::roster) lists.
+    account: Option<Account>,
+    /// Every board the account can open, one entry per coordinate: each board
+    /// a key-share names (its own sealed boards and the ones shared with it),
+    /// newest key-share first, then its plaintext boards. What the switcher
+    /// lists, and what the inline renderers and the `headway:` ref parser
+    /// resolve a board through, with each board's channels precomputed rather
+    /// than re-derived per chip.
     roster: Vec<RosterBoard>,
+}
+
+/// The account a [`BoardCache`] lists boards for, and the two sources its
+/// [`roster`](BoardCache::roster) is built from.
+struct Account {
+    /// The account's pubkey.
+    me: Pubkey,
+    /// One entry per board coordinate its key-shares name, newest first.
+    keyshared: Vec<RosterBoard>,
+    /// The slugs of its plaintext boards (see [`event::plaintext_board_slugs`]).
+    plaintext: Vec<String>,
+    /// Subscription over the account's board definitions: a new one may be a
+    /// plaintext board to list, so it makes [`plaintext`](Self::plaintext)
+    /// [`stale`](Self::stale).
+    definitions: Option<Subscription>,
+    /// [`plaintext`](Self::plaintext) has to be read again before the roster
+    /// is next used.
+    stale: bool,
 }
 
 /// One board on the account's roster (see [`BoardCache::roster`]): its
@@ -95,18 +79,18 @@ pub(crate) struct BoardCache {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RosterBoard {
     /// The board coordinate, `30619:<owner>:<slug>`: the key of its fold in
-    /// [`BoardCache::shared`].
+    /// [`BoardCache::folds`].
     addr: String,
     /// The board owner's pubkey.
     owner: [u8; 32],
     /// The board's slug.
     slug: String,
     /// The board's channel pubkeys, primary first (see
-    /// [`teams::board_channel_pubkeys`]).
+    /// [`teams::board_channel_pubkeys`]). Empty for a plaintext board.
     channels: Vec<Pubkey>,
     /// `created_at` of the newest key-share naming this board: which of two
     /// joined boards sharing a slug a bare ref means (see
-    /// [`BoardCache::resolve_ref`]).
+    /// [`BoardCache::resolve_ref`]). Zero for a plaintext board.
     shared_at: u64,
 }
 
@@ -115,6 +99,34 @@ impl RosterBoard {
     fn is(&self, owner: &[u8; 32], slug: &str) -> bool {
         &self.owner == owner && self.slug == slug
     }
+}
+
+/// One entry per board coordinate the key-shares in `teams` name, with the
+/// channels its fold gathers, newest key-share first.
+fn keyshared_boards(teams: &[teams::Team]) -> Vec<RosterBoard> {
+    let mut boards: Vec<RosterBoard> = Vec::new();
+    for team in teams {
+        if let Some(known) = boards.iter_mut().find(|b| b.addr == team.board_addr) {
+            known.shared_at = known.shared_at.max(team.shared_at);
+            continue;
+        }
+        let Some(coord) = event::BoardCoord::parse(&team.board_addr) else {
+            continue;
+        };
+        let channels = teams::board_channel_pubkeys(teams, &team.board_addr);
+        if channels.is_empty() {
+            continue;
+        }
+        boards.push(RosterBoard {
+            addr: team.board_addr.clone(),
+            owner: coord.owner,
+            slug: coord.slug,
+            channels,
+            shared_at: team.shared_at,
+        });
+    }
+    boards.sort_by_key(|b| std::cmp::Reverse(b.shared_at));
+    boards
 }
 
 /// A card's issue note located on the board it lives on (see
@@ -137,21 +149,18 @@ impl LocatedIssue {
     }
 }
 
-/// One joined shared board within [`BoardCache`]: the multi-writer fold by board
-/// coordinate, plus the subscription that feeds it deltas.
+/// One board within [`BoardCache`]: its multi-writer fold by coordinate, plus
+/// the subscription that feeds it deltas.
 #[derive(Default)]
-struct SharedBoard {
+struct BoardFold {
     /// The board's fold, `None` until seeded (and again whenever it has to be
     /// re-seeded: its channels changed, or its subscription was just opened).
     fold: Option<event::SharedFold>,
-    /// Memoized finalize of `fold` — the shared-board analogue of the memo the
-    /// generic [`RealtimeCache`](notedeck::RealtimeCache) keeps for the per-author
-    /// leg, rebuilt lazily after a re-fold. Shared so [`BoardRef`] can hand it
-    /// out without copying.
+    /// Memoized finalize of `fold`, rebuilt lazily after a re-fold. Shared so
+    /// [`BoardRef`] can hand it out without copying.
     finalized: Option<Rc<[BoardView]>>,
     /// Which fold `fold` is at: moved by [`changed`](Self::changed) on every
-    /// seed and every delta that folded something, the shared-board twin of
-    /// [`RealtimeCache::revision`](notedeck::RealtimeCache::revision).
+    /// seed and every delta that folded something.
     revision: u64,
     /// Subscription over [`event::SharedFold::subscription_filters`]: the
     /// channels' envelopes and every note the board could come to hold, which
@@ -169,7 +178,7 @@ struct SharedBoard {
     seeds: u32,
 }
 
-impl SharedBoard {
+impl BoardFold {
     /// The fold, (re)seeded by walking the board's history when it has none or
     /// it admits a different set of channels. A seed moves the revision.
     fn seeded(
@@ -220,7 +229,7 @@ impl SharedBoard {
     }
 
     /// The fold changed: drop the memo and move [`revision`](Self::revision)
-    /// to `next`, the cache's next unused shared revision.
+    /// to `next`, the cache's next unused revision.
     fn changed(&mut self, next: &mut u64) {
         self.finalized = None;
         *next += 1;
@@ -228,17 +237,12 @@ impl SharedBoard {
     }
 }
 
-/// Which fold a set of [`Boards`] came out of. Two equal ones are the same
-/// fold, so whatever was derived from the first still holds for the second:
-/// the key a reader caches derived rows on.
+/// Which fold a set of [`Boards`] came out of: a board's
+/// [`BoardFold::revision`]. Two equal ones are the same fold, so whatever was
+/// derived from the first still holds for the second: the key a reader caches
+/// derived rows on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FoldRevision {
-    /// An author's own boards, at
-    /// [`RealtimeCache::revision`](notedeck::RealtimeCache::revision).
-    Author(u64),
-    /// One shared board's multi-writer fold, at [`SharedBoard::revision`].
-    Shared(u64),
-}
+pub(crate) struct FoldRevision(pub(crate) u64);
 
 /// A shared handle to one fold's memoized boards, with the revision they were
 /// folded at. Derefs to the boards; cloning bumps a refcount.
@@ -293,6 +297,7 @@ pub(crate) struct BoardRef {
 
 impl BoardRef {
     /// The board `board_id` authored by `author` within `boards`, if present.
+    #[cfg(test)]
     pub(crate) fn find(boards: Boards, author: &[u8; 32], board_id: &str) -> Option<Self> {
         let index = boards
             .iter()
@@ -311,7 +316,8 @@ impl BoardRef {
         }
     }
 
-    /// The first board in `boards` — a shared fold's only board — if it has one.
+    /// The first board in `boards` — a coordinate fold's only board — if it
+    /// has one.
     fn first(boards: Boards) -> Option<Self> {
         (!boards.is_empty()).then_some(Self { boards, index: 0 })
     }
@@ -325,127 +331,149 @@ impl Deref for BoardRef {
     }
 }
 
-/// What one [`BoardCache::poll_shared`] pass found.
+/// One board on the account's roster, as [`BoardCache::boards`] lists it.
+pub(crate) struct ListedBoard {
+    /// The board owner's pubkey.
+    pub(crate) owner: [u8; 32],
+    /// The board's slug.
+    pub(crate) slug: String,
+    /// Its fold, `None` until its definition has folded in (a joined board
+    /// whose envelopes haven't arrived).
+    pub(crate) board: Option<BoardRef>,
+}
+
+/// What one [`BoardCache::poll`] pass found.
 #[derive(Default)]
-pub(crate) struct SharedPoll {
+pub(crate) struct CachePoll {
     /// Some board's fold changed, so whatever draws it should redraw.
     pub(crate) changed: bool,
-    /// A channel subscribed on this pass and so deliberately didn't fold yet (see
-    /// [`BoardCache::poll_shared`]). The caller has to schedule another frame, or
-    /// the fold waits for whatever repaints next.
+    /// A board subscribed on this pass and so deliberately didn't fold yet (see
+    /// [`BoardCache::poll`]). The caller has to schedule another frame, or the
+    /// fold waits for whatever repaints next.
     pub(crate) subscribed: bool,
 }
 
 impl BoardCache {
-    /// Advance `author`'s reducer and report the change — the per-frame pump
-    /// called from [`update`](notedeck::App::update). Fan out
-    /// [`fresh`](notedeck::PollResponse::fresh) and wake on
-    /// [`changed`](notedeck::PollResponse::changed). Thin delegate to the generic
-    /// [`RealtimeCache`](notedeck::RealtimeCache), which owns the
-    /// subscribe/seed/delta/pending discipline; a chip's lazy fold-on-render goes
-    /// through [`with_boards`](Self::with_boards).
-    pub(crate) fn poll(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        author: &Pubkey,
-    ) -> notedeck::PollResponse {
-        self.authors.poll(ndb, txn, author)
+    /// Take the account and its key-shares (`teams`), building the
+    /// [`roster`](Self::roster) from them and the account's plaintext boards.
+    /// Called whenever the app's roster changes. A different roster moves
+    /// [`ref_revision`](Self::ref_revision), since a ref may now name another
+    /// board.
+    pub(crate) fn set_roster(&mut self, ndb: &Ndb, me: &Pubkey, teams: &[teams::Team]) {
+        let keyshared = keyshared_boards(teams);
+        match &mut self.account {
+            Some(account) if account.me == *me => account.keyshared = keyshared,
+            _ => {
+                if let Some(old) = self.account.take().and_then(|a| a.definitions) {
+                    let _ = ndb.clone().unsubscribe(old);
+                }
+                self.account = Some(Account {
+                    me: *me,
+                    keyshared,
+                    plaintext: Vec::new(),
+                    definitions: None,
+                    stale: true,
+                });
+            }
+        }
+        self.rebuild_roster();
     }
 
-    /// Advance `author`'s reducer, (re)finalize it *at most once per fold*, and run
-    /// `read` against the memoized [`BoardView`]s. `None` only when the reducer
-    /// hasn't seeded yet. Delegates to
-    /// [`RealtimeCache::with_views`](notedeck::RealtimeCache::with_views): the
-    /// foreground board and every inline widget resolve through it, so on a steady
-    /// frame the first read finalizes and the rest reuse the memo. `read` runs
-    /// under the cache borrow, so it should pull out what it needs (an id, a
-    /// title) rather than draw; a reader that must draw from the boards takes
-    /// [`board`](Self::board) or [`all_boards`](Self::all_boards) instead.
-    pub(crate) fn with_boards<R>(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        author: &Pubkey,
-        read: impl FnOnce(&[BoardView]) -> R,
-    ) -> Option<R> {
-        self.authors.with_views(ndb, txn, author, read)
+    /// Make `me` the account the roster lists, reading its key-shares out of
+    /// `txn` when it isn't already: for a reader that may run before the app
+    /// has ever set a roster (an inline chip drawn in another app while
+    /// Headway was never opened). A no-op once the account is `me`.
+    fn ensure_account(&mut self, ndb: &Ndb, txn: &Transaction, me: &Pubkey) {
+        if self.account.as_ref().is_some_and(|a| a.me == *me) {
+            return;
+        }
+        let teams = teams::teams_in(ndb, txn, me);
+        self.set_roster(ndb, me, &teams);
     }
 
-    /// Fold and pick a single board (`board_id`) authored by `author`, seeding the
-    /// reducer on first touch. `None` before the first fold or when no such board
-    /// exists. The foreground board, a cross-board move target and an inline board
-    /// widget all resolve through this. A [`BoardRef`] into the memo, so it copies
-    /// nothing.
-    #[profiling::function]
-    pub(crate) fn board(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        author: &Pubkey,
-        board_id: &str,
-    ) -> Option<BoardRef> {
-        BoardRef::find(self.all_boards(ndb, txn, author)?, author.bytes(), board_id)
+    /// Bring the roster up to date with the account's plaintext boards: read
+    /// them again when a new board definition of the account's arrived, or
+    /// the account just changed.
+    ///
+    /// The subscription opens inside the caller's `txn`, so a plaintext board
+    /// defined in between is listed only once another definition arrives.
+    /// Boards are born sealed now, so a new plaintext one is rare to begin
+    /// with, and a sealed one is listed through its key-share.
+    fn refresh(&mut self, ndb: &Ndb, txn: &Transaction) {
+        let Some(account) = &mut self.account else {
+            return;
+        };
+        match account.definitions {
+            None => {
+                account.definitions = ndb
+                    .subscribe(&[event::board_definition_filter(&account.me)])
+                    .ok();
+            }
+            Some(sub) => {
+                if !drain(ndb, sub).is_empty() {
+                    account.stale = true;
+                }
+            }
+        }
+        if !account.stale {
+            return;
+        }
+        account.plaintext = event::plaintext_board_slugs(ndb, txn, &account.me);
+        account.stale = false;
+        self.rebuild_roster();
     }
 
-    /// Every board `author` currently holds, seeding on first touch; `None` until
-    /// the reducer seeds. The foreground render derives *both* the active board
-    /// and the switcher list from this single fold (memoized, see
-    /// [`with_boards`](Self::with_boards)) rather than finalizing per read. A
-    /// shared handle to the memo, so a frame's read is a refcount bump, not a copy
-    /// of every board.
-    #[profiling::function]
-    pub(crate) fn all_boards(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        author: &Pubkey,
-    ) -> Option<Boards> {
-        let folded = self.authors.views(ndb, txn, author)?;
-        Some(Boards {
-            boards: folded.views,
-            revision: FoldRevision::Author(folded.revision),
-        })
+    /// Rebuild [`roster`](Self::roster) from the account's key-shared and
+    /// plaintext boards. A board both lists is the key-shared one: the channels
+    /// decide how it reads. Moves the revision when the roster changed.
+    fn rebuild_roster(&mut self) {
+        let Some(account) = &self.account else {
+            return;
+        };
+        let mut roster = account.keyshared.clone();
+        for slug in &account.plaintext {
+            if roster.iter().any(|b| b.is(account.me.bytes(), slug)) {
+                continue;
+            }
+            roster.push(RosterBoard {
+                addr: event::board_address(&account.me, slug),
+                owner: *account.me.bytes(),
+                slug: slug.clone(),
+                channels: Vec::new(),
+                shared_at: 0,
+            });
+        }
+        if roster == self.roster {
+            return;
+        }
+        self.roster = roster;
+        self.revisions += 1;
     }
 
-    /// Advance `author`'s reducer and return which fold its boards are at (see
-    /// [`RealtimeCache::revision`](notedeck::RealtimeCache::revision)): the key
-    /// for text derived off [`all_boards`](Self::all_boards), such as a card's
-    /// title. Costs an empty subscription poll when nothing arrived.
-    pub(crate) fn author_revision(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> u64 {
-        self.authors.revision(ndb, txn, author)
-    }
-
-    /// Advance every joined shared board: ensure its subscription (see
-    /// [`event::SharedFold::subscription_filters`]) and fold what it reports
+    /// The per-frame pump, called from [`update`](notedeck::App::update):
+    /// advance every board folded so far and every board on the roster.
+    /// Ensures each one's subscription (see
+    /// [`event::SharedFold::subscription_filters`]) and folds what it reports
     /// into the board as deltas, seeding the fold first if it has none.
     ///
     /// Only a seed walks the board's history: on first touch, when the
     /// board's channels change, and when an envelope arrives whose rumor never
     /// did (see [`event::SharedFold::apply`]). An edit is one note folded in.
-    pub(crate) fn poll_shared(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        teams: &[teams::Team],
-    ) -> SharedPoll {
-        let mut poll = SharedPoll::default();
-        // One pass per *board*, not per key-share: a board with several channels
-        // (a rotation epoch, or a re-seal that ran under a fresh root) has its
-        // content split across them irrecoverably, so it folds — and watches —
-        // the union. Two key-shares naming one coordinate must not become two
-        // competing entries for the same cache slot.
-        let mut done: Vec<&str> = Vec::new();
-        for team in teams {
-            if done.contains(&team.board_addr.as_str()) {
-                continue;
+    pub(crate) fn poll(&mut self, ndb: &Ndb, txn: &Transaction) -> CachePoll {
+        self.refresh(ndb, txn);
+        for board in &self.roster {
+            if !self.folds.contains_key(&board.addr) {
+                self.folds.insert(board.addr.clone(), BoardFold::default());
             }
-            done.push(&team.board_addr);
-            let channels = teams::board_channel_pubkeys(teams, &team.board_addr);
-            if channels.is_empty() {
-                continue;
-            }
-            let entry = self.shared.entry(team.board_addr.clone()).or_default();
+        }
+        let mut poll = CachePoll::default();
+        for (addr, entry) in &mut self.folds {
+            // One pass per *board*, not per key-share: a board with several
+            // channels (a rotation epoch, or a re-seal that ran under a fresh
+            // root) has its content split across them irrecoverably, so it
+            // folds — and watches — the union. A board off the roster (a
+            // plaintext board a chip named) has none.
+            let channels = channels_of(&self.roster, addr);
             if entry.sub.is_some() && entry.sub_channels != channels {
                 // A channel joined or left: what the subscription watches and
                 // what the fold admits are both out of date.
@@ -455,109 +483,55 @@ impl BoardCache {
                 entry.pending.clear();
             }
             if entry.sub.is_none() {
-                entry.sub = event::SharedFold::subscription_filters(&team.board_addr, &channels)
+                entry.sub = event::SharedFold::subscription_filters(addr, channels)
                     .and_then(|filters| ndb.subscribe(&filters).ok());
                 if entry.sub.is_some() {
                     // Don't fold on the pass that subscribes, and drop any fold
-                    // seeded before it (a render's lazy `shared_board`): `txn`
-                    // and that seed's snapshot were both taken before this
+                    // seeded before it (a render's lazy `board_at`): `txn` and
+                    // that seed's snapshot were both taken before this
                     // subscription existed, and a note that committed in
                     // between is in neither — too new for the snapshot, too old
                     // for a subscription that only reports later ingests — so
-                    // the fold would be one note short for good. Same hazard,
-                    // and the same shape of fix, as the author leg's seed
-                    // (`notedeck::RealtimeCache::advance`).
+                    // the fold would be one note short for good.
                     //
-                    // The next toucher (the next pass here, or `shared_board`
-                    // during this frame's render) seeds with a transaction
-                    // opened after this one is dropped, so its snapshot
-                    // postdates the subscribe.
+                    // The next toucher (the next pass here, or a read during
+                    // this frame's render) seeds with a transaction opened
+                    // after this one is dropped, so its snapshot postdates the
+                    // subscribe.
                     entry.fold = None;
-                    entry.sub_channels = channels;
+                    entry.sub_channels = channels.to_vec();
                     poll.subscribed = true;
                     continue;
                 }
             }
             let polled = entry.sub.map(|sub| drain(ndb, sub)).unwrap_or_default();
-            poll.changed |= entry.advance(
-                ndb,
-                txn,
-                &team.board_addr,
-                &channels,
-                polled,
-                &mut self.shared_revisions,
-            );
+            poll.changed |= entry.advance(ndb, txn, addr, channels, polled, &mut self.revisions);
         }
         poll
     }
 
-    /// Fold (memoized) a joined shared board by coordinate and return its view.
-    /// `None` until its definition has folded in. Seeds the fold lazily so a render
-    /// before the next [`poll_shared`] still resolves.
-    pub(crate) fn shared_board(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        board_addr: &str,
-        team_pubkeys: &[Pubkey],
-    ) -> Option<BoardRef> {
-        fold_shared(
-            &mut self.shared,
-            &mut self.shared_revisions,
-            ndb,
-            txn,
-            board_addr,
-            team_pubkeys,
-        )
-    }
-
-    /// Take the account's roster (see [`roster`](Self::roster)): one entry per
-    /// board coordinate, with the channels its fold gathers, newest key-share
-    /// first. Called whenever the app's roster changes; a roster equal to the
-    /// one held is a no-op, and a different one moves
-    /// [`ref_revision`](Self::ref_revision), since a ref may now name another
-    /// board.
-    pub(crate) fn set_roster(&mut self, teams: &[teams::Team]) {
-        let mut roster: Vec<RosterBoard> = Vec::new();
-        for team in teams {
-            if let Some(known) = roster.iter_mut().find(|b| b.addr == team.board_addr) {
-                known.shared_at = known.shared_at.max(team.shared_at);
-                continue;
-            }
-            let Some(coord) = event::BoardCoord::parse(&team.board_addr) else {
-                continue;
-            };
-            let channels = teams::board_channel_pubkeys(teams, &team.board_addr);
-            if channels.is_empty() {
-                continue;
-            }
-            roster.push(RosterBoard {
-                addr: team.board_addr.clone(),
-                owner: coord.owner,
-                slug: coord.slug,
-                channels,
-                shared_at: team.shared_at,
-            });
-        }
-        roster.sort_by_key(|b| std::cmp::Reverse(b.shared_at));
-        if roster == self.roster {
-            return;
-        }
-        self.roster = roster;
-        self.shared_revisions += 1;
-    }
-
-    /// Is the board at `owner`/`slug` on the roster, so folded by coordinate?
-    fn on_roster(&self, owner: &[u8; 32], slug: &str) -> bool {
-        self.roster.iter().any(|b| b.is(owner, slug))
+    /// Every board on the roster, with its fold once it has one, deleted
+    /// boards included (a card ref into one still resolves; the switcher
+    /// leaves them out). Each fold is a handle into its memo, so this copies
+    /// no cards.
+    #[profiling::function]
+    pub(crate) fn boards(&mut self, ndb: &Ndb, txn: &Transaction) -> Vec<ListedBoard> {
+        self.refresh(ndb, txn);
+        (0..self.roster.len())
+            .map(|index| ListedBoard {
+                owner: self.roster[index].owner,
+                slug: self.roster[index].slug.clone(),
+                board: self.roster_fold(ndb, txn, index),
+            })
+            .collect()
     }
 
     /// Fold (memoized) the roster's `index`th board by coordinate.
     fn roster_fold(&mut self, ndb: &Ndb, txn: &Transaction, index: usize) -> Option<BoardRef> {
         let board = self.roster.get(index)?;
-        fold_shared(
-            &mut self.shared,
-            &mut self.shared_revisions,
+        fold_board(
+            &mut self.folds,
+            &mut self.revisions,
             ndb,
             txn,
             &board.addr,
@@ -565,9 +539,11 @@ impl BoardCache {
         )
     }
 
-    /// The board at `owner`/`slug`, by coordinate: its multi-writer fold when
-    /// it is on the roster, else (an old plaintext board) out of the owner's
-    /// author fold. What an inline board widget draws.
+    /// The board at `owner`/`slug`, by coordinate: over the channels the
+    /// roster holds for it, or, a board off the roster, over none, which
+    /// folds its owner's plaintext. `None` until its definition has folded
+    /// in. What the foreground board and an inline board widget draw.
+    #[profiling::function]
     pub(crate) fn board_at(
         &mut self,
         ndb: &Ndb,
@@ -575,10 +551,12 @@ impl BoardCache {
         owner: &[u8; 32],
         slug: &str,
     ) -> Option<BoardRef> {
-        match self.roster.iter().position(|b| b.is(owner, slug)) {
-            Some(index) => self.roster_fold(ndb, txn, index),
-            None => self.board(ndb, txn, &Pubkey::new(*owner), slug),
+        self.refresh(ndb, txn);
+        if let Some(index) = self.roster.iter().position(|b| b.is(owner, slug)) {
+            return self.roster_fold(ndb, txn, index);
         }
+        let addr = event::board_address(&Pubkey::new(*owner), slug);
+        fold_board(&mut self.folds, &mut self.revisions, ndb, txn, &addr, &[])
     }
 
     /// Resolve a `headway:<slug>/<words>` ref, read by `me`, to its card's
@@ -586,11 +564,14 @@ impl BoardCache {
     /// mean are tried in order and the first holding a card with that word id
     /// wins:
     ///
-    /// 1. `me`'s own board at `slug` (by coordinate, see [`board_at`](Self::board_at));
+    /// 1. `me`'s own board at `slug`;
     /// 2. a joined board at `slug` someone else owns, newest key-share first.
     ///    Two joined boards sharing a slug are told apart only by which holds
     ///    the card; when both somehow do, the board shared with us most
     ///    recently wins.
+    ///
+    /// Only roster boards are tried (`me`'s own plaintext boards are on it), so
+    /// a ref to a slug nobody has folds nothing.
     pub(crate) fn resolve_ref(
         &mut self,
         ndb: &Ndb,
@@ -599,8 +580,13 @@ impl BoardCache {
         slug: &str,
         words: &str,
     ) -> Option<NoteId> {
+        self.ensure_account(ndb, txn, me);
+        self.refresh(ndb, txn);
         let own = self
-            .board_at(ndb, txn, me.bytes(), slug)
+            .roster
+            .iter()
+            .position(|b| b.is(me.bytes(), slug))
+            .and_then(|index| self.roster_fold(ndb, txn, index))
             .and_then(|board| event::resolve_card_by_wordid(&board, words));
         if own.is_some() {
             return own;
@@ -620,18 +606,22 @@ impl BoardCache {
         None
     }
 
-    /// Locate the card an issue note stands for on the board it lives on.
+    /// Locate the card an issue note stands for on the board it lives on,
+    /// with the roster read for `me` when one is given (see
+    /// [`ensure_account`](Self::ensure_account)), else for whichever account
+    /// last set it.
     ///
     /// The note's `a` tag names its *origin* board, but a cross-board move
     /// places it elsewhere, so every board on the roster is searched by
     /// coordinate and the card's live placement wins (a live column over the
-    /// archive, then the newest placement, as [`event::locate_card_in_boards`]
-    /// picks). Only a card on no roster board falls back to its origin
-    /// owner's author fold: an old plaintext board.
+    /// archive, then the newest placement). A card on no roster board is
+    /// looked for on its origin board, folded by coordinate: someone else's
+    /// plaintext board.
     pub(crate) fn locate_issue(
         &mut self,
         ndb: &Ndb,
         txn: &Transaction,
+        me: Option<&Pubkey>,
         origin: &event::IssueBoard,
         issue_id: &[u8; 32],
     ) -> Option<LocatedIssue> {
@@ -647,6 +637,10 @@ impl BoardCache {
             placement: Placement,
             board: BoardRef,
         }
+        if let Some(me) = me {
+            self.ensure_account(ndb, txn, me);
+        }
+        self.refresh(ndb, txn);
         let mut best: Option<Best> = None;
         for index in 0..self.roster.len() {
             let Some(board) = self.roster_fold(ndb, txn, index) else {
@@ -675,15 +669,17 @@ impl BoardCache {
         if self.on_roster(&origin.owner, origin.slug) {
             return None;
         }
-        let owner = Pubkey::new(origin.owner);
-        let boards = self.all_boards(ndb, txn, &owner)?;
-        let board_id = event::locate_card_in_boards(&boards, &owner, issue_id)?
-            .board_id
-            .to_owned();
+        let board = self.board_at(ndb, txn, &origin.owner, origin.slug)?;
+        event::card_with_column_in_board(&board, issue_id)?;
         Some(LocatedIssue {
-            board: BoardRef::find(boards, &origin.owner, &board_id)?,
+            board,
             issue_id: *issue_id,
         })
+    }
+
+    /// Is the board at `owner`/`slug` on the roster?
+    fn on_roster(&self, owner: &[u8; 32], slug: &str) -> bool {
+        self.roster.iter().any(|b| b.is(owner, slug))
     }
 
     /// Which revision of its folds a lookup by coordinate reads: a number that
@@ -691,29 +687,21 @@ impl BoardCache {
     /// [`locate_issue`](Self::locate_issue) or [`board_at`](Self::board_at)
     /// could answer differently, and holds while they can't.
     ///
-    /// Those lookups may read any roster board (a ref's slug can name a joined
-    /// board, a card can have moved to one), so this is the cache-wide shared
-    /// counter, which every shared re-fold and every roster change moves (the
-    /// [`FoldRevision::Shared`] side). `fallback`, when given, is the author
-    /// whose plaintext fold the lookup falls back to, and its
-    /// [`author_revision`](Self::author_revision) is added in. Both counters
-    /// only grow, so their sum moves exactly when either does.
-    pub(crate) fn ref_revision(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        fallback: Option<&Pubkey>,
-    ) -> u64 {
-        let author = fallback.map_or(0, |author| self.author_revision(ndb, txn, author));
-        author.wrapping_add(self.shared_revisions)
+    /// Those lookups may read any board (a ref's slug can name a joined board,
+    /// a card can have moved to another), so this is the cache-wide counter,
+    /// which every re-fold and every roster change moves.
+    pub(crate) fn ref_revision(&self) -> u64 {
+        self.revisions
     }
+}
 
-    /// The author whose plaintext fold a lookup of the board at `owner`/`slug`
-    /// falls back to (see [`ref_revision`](Self::ref_revision)): `None` for a
-    /// board on the roster, which folds by coordinate alone.
-    pub(crate) fn fallback_author(&self, owner: &[u8; 32], slug: &str) -> Option<Pubkey> {
-        (!self.on_roster(owner, slug)).then(|| Pubkey::new(*owner))
-    }
+/// The channels `roster` holds for the board at `addr`: none for a board off
+/// the roster, which then folds as plaintext.
+fn channels_of<'r>(roster: &'r [RosterBoard], addr: &str) -> &'r [Pubkey] {
+    roster
+        .iter()
+        .find(|b| b.addr == addr)
+        .map_or(&[], |b| b.channels.as_slice())
 }
 
 /// Everything `sub` has waiting, however much that is.
@@ -729,32 +717,31 @@ fn drain(ndb: &Ndb, sub: Subscription) -> Vec<NoteKey> {
     keys
 }
 
-/// Fold (memoized) the shared board at `board_addr` over `channels`, seeding
-/// it on first touch: [`BoardCache::shared_board`]'s body, over the two fields
-/// it touches so a caller can pass channels borrowed from another field (the
-/// roster) of the same cache. Allocates the map key only on a board's first
-/// touch.
-fn fold_shared(
-    shared: &mut HashMap<String, SharedBoard>,
+/// Fold (memoized) the board at `board_addr` over `channels`, seeding it on
+/// first touch, over the two fields of [`BoardCache`] it touches so a caller
+/// can pass channels borrowed from another field (the roster) of the same
+/// cache. Allocates the map key only on a board's first touch.
+fn fold_board(
+    folds: &mut HashMap<String, BoardFold>,
     revisions: &mut u64,
     ndb: &Ndb,
     txn: &Transaction,
     board_addr: &str,
     channels: &[Pubkey],
 ) -> Option<BoardRef> {
-    if !shared.contains_key(board_addr) {
-        shared.insert(board_addr.to_owned(), SharedBoard::default());
+    if !folds.contains_key(board_addr) {
+        folds.insert(board_addr.to_owned(), BoardFold::default());
     }
-    let entry = shared.get_mut(board_addr)?;
+    let entry = folds.get_mut(board_addr)?;
     entry.seeded(ndb, txn, board_addr, channels, revisions)?;
     if entry.finalized.is_none() {
         entry.finalized = Some(entry.fold.as_ref()?.reducer().finalize().into());
     }
-    // fold_shared_board folds a single coordinate, so its finalize yields the
-    // one board (empty until the board definition has arrived).
+    // A coordinate fold folds a single board, so its finalize yields that one
+    // board (empty until the board definition has arrived).
     BoardRef::first(Boards {
         boards: Rc::clone(entry.finalized.as_ref()?),
-        revision: FoldRevision::Shared(entry.revision),
+        revision: FoldRevision(entry.revision),
     })
 }
 
@@ -778,14 +765,19 @@ pub(crate) mod tests {
     }
 
     impl TestSync {
+        /// A fresh account with no key-shares: its boards are whatever
+        /// plaintext boards it writes, until [`set_teams`](Self::set_teams).
         pub(crate) fn new() -> Self {
             let dir = tempfile::TempDir::new().unwrap();
             let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+            let kp = FullKeypair::generate();
+            let mut cache = BoardCache::default();
+            cache.set_roster(&ndb, &kp.pubkey, &[]);
             Self {
                 ndb,
                 _dir: dir,
-                kp: FullKeypair::generate(),
-                cache: BoardCache::default(),
+                kp,
+                cache,
             }
         }
 
@@ -793,11 +785,32 @@ pub(crate) mod tests {
             self.kp.secret_key.secret_bytes()
         }
 
-        /// One poll cycle: advance this account's reducer. Returns whether it
-        /// changed (a seed or a folded-in delta) this call.
+        /// Hand the cache this account's key-shares, as the app does when its
+        /// roster changes.
+        fn set_teams(&mut self, teams: &[teams::Team]) {
+            self.cache.set_roster(&self.ndb, &self.kp.pubkey, teams);
+        }
+
+        /// One pump of the cache (the app's per-frame `update`), in its own
+        /// transaction. Returns whether some board changed (a seed or a
+        /// folded-in delta) this call.
         pub(crate) fn poll(&mut self) -> bool {
             let txn = Transaction::new(&self.ndb).unwrap();
-            self.cache.poll(&self.ndb, &txn, &self.kp.pubkey).changed
+            self.cache.poll(&self.ndb, &txn).changed
+        }
+
+        /// Pump until a pass neither subscribes nor folds anything: every board
+        /// on the roster is subscribed and caught up. Bounded, since a pass
+        /// subscribes each board once and seeds it once.
+        fn settle(&mut self) {
+            for _ in 0..8 {
+                let txn = Transaction::new(&self.ndb).unwrap();
+                let poll = self.cache.poll(&self.ndb, &txn);
+                if !poll.changed && !poll.subscribed {
+                    return;
+                }
+            }
+            panic!("the cache kept changing with nothing new to fold");
         }
 
         /// Seed the demo board, returning how many events it wrote (for
@@ -806,41 +819,44 @@ pub(crate) mod tests {
             seed_demo(&self.ndb, &self.kp)
         }
 
-        /// Seed the demo board and fold until the *whole* seed has committed.
+        /// Seed the demo board and pump until the *whole* seed has committed
+        /// and folded.
         ///
         /// Ingest is async, so quiescence is proven by count, not by inspecting
         /// the board: [`seed`](Self::seed) reports how many events it wrote and
-        /// this returns only once the writer has delivered them all. That is what
-        /// lets the idle / finalize tests assert "no further folds" without racing
-        /// a straggler, and it holds no matter which seed event lands last.
-        ///
-        /// Subscribe *before* seeding so every ingest wakes the stream; a prior
-        /// [`poll`](Self::poll) must have primed the cache's own subscription so
-        /// the seed folds in as deltas (one full reload, not a per-event walk).
+        /// this waits until the writer has delivered them all. That is what lets
+        /// the idle tests assert "no further folds" without racing a straggler,
+        /// and it holds no matter which seed event lands last.
         pub(crate) async fn seed_and_settle(&mut self) {
             let mut stream = ingest_stream(&self.ndb, &self.kp.pubkey);
             let n = self.seed();
             await_ingested(&mut stream, n).await;
-            self.poll();
+            self.settle();
         }
 
-        /// Fold and pick the default board out of the cache, if present.
+        /// Pump, then fold and pick the default board, if present.
         pub(crate) fn view(&mut self) -> Option<BoardRef> {
             self.board(store::BOARD_ID)
         }
 
-        /// Fold and pick an arbitrary board — exercises reading a board other than
-        /// the default out of the one per-account reducer.
+        /// Pump, then fold and pick this account's board `board_id`: what a
+        /// frame does, `update` then `render`.
         fn board(&mut self, board_id: &str) -> Option<BoardRef> {
+            self.poll();
             let txn = Transaction::new(&self.ndb).unwrap();
-            self.cache.board(&self.ndb, &txn, &self.kp.pubkey, board_id)
+            self.cache
+                .board_at(&self.ndb, &txn, self.kp.pubkey.bytes(), board_id)
         }
 
-        /// Every board folded for this account, summarized for the switcher.
+        /// Every board on this account's roster, summarized for the switcher.
         fn boards(&mut self) -> Vec<BoardSummary> {
             let txn = Transaction::new(&self.ndb).unwrap();
-            let boards = self.cache.all_boards(&self.ndb, &txn, &self.kp.pubkey);
-            board_summaries(boards.as_deref().unwrap_or(&[]))
+            board_summaries(&self.cache.boards(&self.ndb, &txn))
+        }
+
+        /// How many times any board was seeded by walking its history.
+        fn seeds(&self) -> u32 {
+            self.cache.folds.values().map(|f| f.seeds).sum()
         }
 
         /// Fold until the default board satisfies `pred` (ingest is async).
@@ -849,7 +865,7 @@ pub(crate) mod tests {
                 .await;
         }
 
-        /// Shared loop for [`wait`](Self::wait): pump the reducer until `done`
+        /// Shared loop for [`wait`](Self::wait): pump the cache until `done`
         /// holds, awaiting the writer's own ingest
         /// notification (see [`await_ingest`]) between folds rather than polling
         /// against a wall-clock deadline — the only race-free way to wait on an
@@ -898,7 +914,7 @@ pub(crate) mod tests {
     /// Seed the populated demo board for the sync tests to fold and act on. The
     /// production seed is card-less; the fixture lives in [`store::seed_demo_board`].
     /// Seeded in the past so follow-up edits (stamped with the wall clock)
-    /// always sort after it.
+    /// always sort after it. Plaintext: no channel.
     fn seed_demo(ndb: &Ndb, kp: &FullKeypair) -> usize {
         store::seed_demo_board(
             ndb,
@@ -910,14 +926,38 @@ pub(crate) mod tests {
         )
     }
 
-    /// Subscribing before seeding, then polling, materialises the whole board
-    /// from events already in ndb.
+    /// A channel for a sealed board, its root registered with `ndb` so the
+    /// envelopes sealed into it unwrap.
+    fn channel(ndb: &Ndb, seed: u8) -> store::SnsChannel {
+        let mut root = [0u8; 32];
+        root[0] = seed;
+        root[31] = 0x42;
+        assert!(ndb.add_team_root(&root));
+        store::SnsChannel {
+            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
+        }
+    }
+
+    /// The key-share naming `owner`'s board `slug`, sealed into the channel
+    /// [`channel`] makes from `seed`.
+    fn team(owner: &Pubkey, slug: &str, seed: u8) -> teams::Team {
+        let mut root = [0u8; 32];
+        root[0] = seed;
+        root[31] = 0x42;
+        teams::Team {
+            team_root: hex::encode(root),
+            board_addr: event::board_address(owner, slug),
+            epoch: None,
+            shared_at: 0,
+        }
+    }
+
+    /// Polling materialises a plaintext board from events already in ndb: the
+    /// account's board definitions put it on the roster, and it folds by
+    /// coordinate with no channel.
     #[tokio::test]
     async fn poll_materialises_the_board() {
         let mut t = TestSync::new();
-        // Subscribe (via poll) first so the seed's ingests are reported as new
-        // notes, then seed and fold until the writer has delivered every event —
-        // a card count can hold mid-fold, asserting a half-materialised layout.
         t.poll();
         t.seed_and_settle().await;
         let view = t.view().expect("board loaded");
@@ -959,7 +999,7 @@ pub(crate) mod tests {
             );
         }
 
-        // The new card only appears if a later poll re-folded the board.
+        // The new card only appears if a later poll folded it in.
         t.wait(|v| {
             v.columns[1]
                 .cards
@@ -971,13 +1011,11 @@ pub(crate) mod tests {
         assert_eq!(view.columns[1].cards.last().unwrap().title, "Fresh card");
     }
 
-    /// Two boards under one account are both discoverable, and switching the
-    /// active board re-picks from the existing reducer — no full re-fold, since
-    /// the target board's events are already folded in.
+    /// Two plaintext boards under one account are both listed, and reading
+    /// either reads its memo: no fold walks a board's history again.
     #[tokio::test]
-    async fn switching_board_repicks_without_refold() {
+    async fn switching_board_reads_its_memo_without_refold() {
         let mut t = TestSync::new();
-        // Subscribe first so the seeds' ingests arrive as subscription deltas.
         t.poll();
         let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
         let n = t.seed()
@@ -995,10 +1033,8 @@ pub(crate) mod tests {
         // events were still in flight, and folding those stragglers after the
         // snapshot below is exactly what this test must not race.
         await_ingested(&mut stream, n).await;
-        t.poll();
-        let folds = t.cache.authors.stats().full_reloads;
+        t.settle();
 
-        // Both boards are discoverable from the one reducer.
         let boards = t.boards();
         assert!(
             boards
@@ -1006,17 +1042,17 @@ pub(crate) mod tests {
                 .any(|b| b.id == store::BOARD_ID && b.title == "Headway")
         );
         assert!(boards.iter().any(|b| b.id == "work" && b.title == "Work"));
+        let seeds = t.seeds();
 
-        // Reading the 'work' board picks it out of the same reducer — a different
-        // board, no full re-fold.
         let view = t.board("work").expect("work board");
         assert_eq!(view.id, "work");
         assert_eq!(view.title, "Work");
         assert_eq!(total_cards(&view), 0, "fresh board has no cards");
+        t.view().expect("the demo board");
         assert_eq!(
-            t.cache.authors.stats().full_reloads,
-            folds,
-            "reading another board must not trigger a full re-fold"
+            t.seeds(),
+            seeds,
+            "reading a board must not walk its history again"
         );
     }
 
@@ -1027,15 +1063,17 @@ pub(crate) mod tests {
         let mut t = TestSync::new();
         t.poll();
         t.seed_and_settle().await;
+        let seeds = t.seeds();
 
         assert!(
             !t.poll(),
             "cache re-folded with no new events — the per-frame fold is back"
         );
+        assert_eq!(t.seeds(), seeds);
     }
 
-    /// A change after the initial load is absorbed incrementally: the live
-    /// reducer folds the delta, with no additional full-history re-fold. Guards
+    /// A change after the initial load is absorbed incrementally: the board's
+    /// fold takes the delta, with no additional walk of its history. Guards
     /// against a regression to reload-on-every-change.
     #[tokio::test]
     async fn poll_folds_changes_as_a_delta() {
@@ -1043,12 +1081,9 @@ pub(crate) mod tests {
         t.poll();
         t.seed_and_settle().await;
 
-        // Seeding does exactly one full fold; everything since is incremental.
-        assert_eq!(
-            t.cache.authors.stats().full_reloads,
-            1,
-            "seeding should fold the history once"
-        );
+        // The board is seeded once, after its subscription opened; everything
+        // since is incremental.
+        assert_eq!(t.seeds(), 1, "seeding should fold the history once");
 
         {
             let view = t.view().expect("board loaded");
@@ -1069,115 +1104,97 @@ pub(crate) mod tests {
         t.wait(|v| v.columns[1].cards.len() == 3).await;
 
         assert_eq!(
-            t.cache.authors.stats().full_reloads,
+            t.seeds(),
             1,
             "the edit triggered a full re-fold instead of a delta"
         );
     }
 
-    /// [`BoardCache`] folds the history once on first touch and then absorbs later
-    /// edits as deltas via its subscription — never re-walking the history per
-    /// frame. The render-path counterpart to [`poll_folds_changes_as_a_delta`],
-    /// exercising the `&Ndb` fold-on-read the inline widgets use.
+    /// A board written while the cache is pumping folds its history once, the
+    /// pass after it reaches the roster, and takes every later event as a
+    /// delta: the seed's own events arrive interleaved with the pumps and
+    /// never cost a walk each.
     #[tokio::test]
     async fn board_cache_folds_once_then_deltas() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
-        let kp = FullKeypair::generate();
-        let mut cache = BoardCache::default();
+        let mut t = TestSync::new();
+        t.poll();
+        let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
+        t.seed();
 
-        // One read cycle (what a renderer does each frame): bring the cached
-        // reducer up to date and fold out the board.
-        let fold = |cache: &mut BoardCache, ndb: &Ndb| -> Option<BoardRef> {
-            let txn = Transaction::new(ndb).unwrap();
-            cache.board(ndb, &txn, &kp.pubkey, store::BOARD_ID)
-        };
-
-        // Subscribe (seeding an empty reducer) before the board exists, so the
-        // seed's ingests arrive as subscription deltas rather than a re-fold.
-        fold(&mut cache, &ndb);
-        let mut stream = ingest_stream(&ndb, &kp.pubkey);
-        seed_demo(&ndb, &kp);
-
-        // Fold each ingest in as the writer delivers it (ingest is async on a
-        // writer thread), until the whole board has materialised.
-        while fold(&mut cache, &ndb).is_none_or(|v| total_cards(&v) != 7) {
+        // Pump each ingest in as the writer delivers it (ingest is async on a
+        // writer thread), reading the roster's boards the way the switcher
+        // does, until the whole board has materialised.
+        loop {
+            t.poll();
+            let done = t
+                .boards_folded()
+                .iter()
+                .any(|v| v.id == store::BOARD_ID && total_cards(v) == 7);
+            if done {
+                break;
+            }
             await_ingest(&mut stream).await;
         }
-
-        // Exactly one full fold — the initial empty seed; every event since
-        // (the whole seeded board) folded in incrementally as deltas.
         assert_eq!(
-            cache.authors.stats().full_reloads,
+            t.seeds(),
             1,
             "board cache re-walked the history instead of folding deltas"
         );
     }
 
-    /// A frame with several inline references resolves and renders many cards, but
-    /// [`BoardCache`] must [`finalize`](event::BoardReducer::finalize) the reducer
-    /// only *once* per frame — the first read builds the boards, every later read
-    /// reuses them. Only a fresh fold (a new note) invalidates the memo.
+    impl TestSync {
+        /// Every roster board that has folded.
+        fn boards_folded(&mut self) -> Vec<BoardRef> {
+            let txn = Transaction::new(&self.ndb).unwrap();
+            self.cache
+                .boards(&self.ndb, &txn)
+                .into_iter()
+                .filter_map(|b| b.board)
+                .collect()
+        }
+    }
+
+    /// A frame with several inline references reads one board many times, but
+    /// [`BoardCache`] must [`finalize`](event::BoardReducer::finalize) its fold
+    /// only *once* per fold: the first read builds the board, every later read
+    /// hands out the same memo. Only a fresh fold (a new note) replaces it.
     #[tokio::test]
     async fn board_cache_finalizes_once_per_fold() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
-        let kp = FullKeypair::generate();
-        let mut cache = BoardCache::default();
-
-        // Prime the cache's own (internal) subscription and open a read stream to
-        // await the writer, both before seeding so every seeded event is reported.
-        {
-            let txn = Transaction::new(&ndb).unwrap();
-            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
-        }
-        let mut stream = ingest_stream(&ndb, &kp.pubkey);
-        let n = seed_demo(&ndb, &kp);
-
-        // Wait for the seed to fully commit *and quiesce* before measuring. Any
-        // straggler arriving mid-frame below would fold and re-finalize, breaking
-        // the "no fold ⇒ no finalize" invariant this test measures — and a board
-        // predicate (e.g. `total_cards == 7`) can hold while trailing notes are
-        // still in flight. Counting the seed's own events is the race-free signal:
-        // once the writer has delivered all `n`, nothing else is coming.
-        await_ingested(&mut stream, n).await;
-        {
-            let txn = Transaction::new(&ndb).unwrap();
-            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
-        }
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed_and_settle().await;
+        let memo = |t: &mut TestSync| {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            let board = t
+                .cache
+                .board_at(&t.ndb, &txn, t.kp.pubkey.bytes(), store::BOARD_ID)
+                .expect("board");
+            Rc::clone(&board.boards.boards)
+        };
 
         // A steady frame with no new notes: many reads (what N inline references
-        // cost — resolve then render each) reuse the memo built while materialising,
-        // finalizing zero more times.
-        let steady = cache.authors.stats().finalizes;
-        let txn = Transaction::new(&ndb).unwrap();
+        // cost — resolve then render each) share one memo.
+        let steady = memo(&mut t);
         for _ in 0..20 {
-            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
-            cache.all_boards(&ndb, &txn, &kp.pubkey);
+            assert!(
+                Rc::ptr_eq(&memo(&mut t), &steady),
+                "reads with no intervening fold re-finalized instead of reusing the memo"
+            );
+            t.boards();
         }
-        drop(txn);
-        assert_eq!(
-            cache.authors.stats().finalizes - steady,
-            0,
-            "reads with no intervening fold re-finalized instead of reusing the memo"
-        );
 
-        // A fold invalidates the memo (see `RealtimeCache::advance`); the next
-        // frame's many reads then share *exactly one* finalize. Simulate the
-        // invalidation a freshly ingested note performs, then read many times.
-        cache.authors.invalidate(&kp.pubkey);
-        let after_fold = cache.authors.stats().finalizes;
-        let txn = Transaction::new(&ndb).unwrap();
+        // A fold drops the memo; the next frame's many reads then share
+        // *exactly one* finalize. Simulate what a folded-in note does.
+        let addr = event::board_address(&t.kp.pubkey, store::BOARD_ID);
+        t.cache.folds.get_mut(&addr).unwrap().finalized = None;
+        let after = memo(&mut t);
+        assert!(!Rc::ptr_eq(&after, &steady), "a fold rebuilds the memo");
         for _ in 0..20 {
-            cache.board(&ndb, &txn, &kp.pubkey, store::BOARD_ID);
-            cache.all_boards(&ndb, &txn, &kp.pubkey);
+            assert!(
+                Rc::ptr_eq(&memo(&mut t), &after),
+                "reads after a fold didn't share a single finalize"
+            );
         }
-        drop(txn);
-        assert_eq!(
-            cache.authors.stats().finalizes - after_fold,
-            1,
-            "reads after a fold didn't share a single finalize"
-        );
     }
 
     /// A note committed *after* the read txn the delta was polled with — the
@@ -1185,115 +1202,80 @@ pub(crate) mod tests {
     /// vanish until an app restart. The subscription drains the key immediately,
     /// but a stale snapshot can't see the note yet; the cache has to retain the
     /// key and retry it, rather than drop it (the bug this guards against).
-    #[test]
-    fn board_cache_retries_deltas_committed_after_the_read_txn() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
-        let kp = FullKeypair::generate();
-        let mut cache = BoardCache::default();
+    #[tokio::test]
+    async fn board_cache_retries_deltas_committed_after_the_read_txn() {
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed_and_settle().await;
+        let addr = event::board_address(&t.kp.pubkey, store::BOARD_ID);
 
         // Block until `sub` reports an ingest (the writer commits asynchronously).
         // Reads the subscription inbox, not the db, so it needs no transaction —
         // which lets us wait while holding a stale read txn open below.
-        let wait_commit = |sub| {
+        let wait_commit = |ndb: &Ndb, sub| {
             let deadline = Instant::now() + Duration::from_secs(5);
             while ndb.poll_for_notes(sub, 64).is_empty() {
                 assert!(Instant::now() < deadline, "note never committed");
                 std::thread::sleep(Duration::from_millis(20));
             }
         };
-        let has_board = |cache: &BoardCache, id: &str| {
-            cache
-                .authors
-                .reducer(&kp.pubkey)
-                .is_some_and(|r| r.0.finalize().iter().any(|b| b.id == id))
-        };
-        let seed = |id: &str, title: &str| {
-            store::seed_board(
-                &ndb,
-                &kp.pubkey,
-                &kp.secret_key.secret_bytes(),
-                id,
-                title,
-                &mut store::NoPublish,
-            );
-        };
+        let det = t
+            .ndb
+            .subscribe(&[event::headway_filter(&t.kp.pubkey)])
+            .unwrap();
 
-        // Board "alpha" exists before the cache subscribes, so it lands in the
-        // seed fold (a detector sub tells us when the async write has committed).
-        let det = ndb.subscribe(&[event::headway_filter(&kp.pubkey)]).unwrap();
-        seed("alpha", "Alpha");
-        wait_commit(det);
-        // Two advances: the first subscribes, the next seeds from a snapshot
-        // taken after it (see `RealtimeCache::advance`).
-        for _ in 0..2 {
-            let txn = Transaction::new(&ndb).unwrap();
-            cache.poll(&ndb, &txn, &kp.pubkey);
-        }
-        assert!(has_board(&cache, "alpha"), "seed fold picked up alpha");
+        // Open a snapshot, *then* commit a card after it: its note is now in the
+        // subscription inbox but invisible to this older transaction.
+        let view = t.view().expect("board");
+        let stale = Transaction::new(&t.ndb).unwrap();
+        store::apply(
+            &t.ndb,
+            store::BOARD_ID,
+            &view,
+            &t.kp.pubkey,
+            &store::Signer::new(&t.secret(), None),
+            store::BoardAction::AddCard(store::NewCard {
+                col: 1,
+                title: "Late".to_string(),
+                ..store::NewCard::default()
+            }),
+            &mut store::NoPublish,
+        );
+        wait_commit(&t.ndb, det);
 
-        // Open a snapshot, *then* commit board "beta" after it: beta's note is now
-        // in the subscription inbox but invisible to this older transaction.
-        let stale = Transaction::new(&ndb).unwrap();
-        seed("beta", "Beta");
-        wait_commit(det);
-
-        // Advancing under the stale snapshot drains beta's key but can't read the
-        // note — it must be retained, not folded and not lost.
-        let changed = cache.poll(&ndb, &stale, &kp.pubkey).changed;
+        // Advancing under the stale snapshot drains the card's keys but can't
+        // read the notes — they must be retained, not folded and not lost.
+        let poll = t.cache.poll(&t.ndb, &stale);
         drop(stale);
-        assert!(!changed, "a deferred-only advance reads as a no-op");
+        assert!(!poll.changed, "a deferred-only advance reads as a no-op");
         assert!(
-            !has_board(&cache, "beta"),
-            "beta isn't visible under the stale snapshot yet"
-        );
-        assert!(
-            cache.authors.pending_len(&kp.pubkey) > 0,
-            "the undrained key is retained for retry, not dropped"
+            !t.cache.folds[&addr].pending.is_empty(),
+            "the undrained keys are retained for retry, not dropped"
         );
 
-        // The next advance opens a fresh snapshot; the retained key now resolves.
-        {
-            let txn = Transaction::new(&ndb).unwrap();
-            cache.poll(&ndb, &txn, &kp.pubkey);
-        }
-        assert!(
-            has_board(&cache, "beta"),
-            "the retained delta folds in on the next, fresher advance"
-        );
-        assert_eq!(cache.authors.pending_len(&kp.pubkey), 0);
+        // Later advances have fresh snapshots; the retained keys now resolve
+        // (the card's notes may still be committing, so wait for all of them).
+        // A dropped key would leave the card unassembled for good.
+        t.wait(|v| v.columns[1].cards.iter().any(|c| c.title == "Late"))
+            .await;
+        assert!(t.cache.folds[&addr].pending.is_empty());
         assert_eq!(
-            cache.authors.stats().full_reloads,
+            t.seeds(),
             1,
             "recovered by folding a delta, not by re-seeding the whole history"
         );
     }
 
-    /// An envelope that commits between the caller's transaction and the shared
-    /// leg's *first* subscribe must still fold. This leg only re-folds when its
+    /// An envelope that commits between the caller's transaction and a board's
+    /// *first* subscribe must still fold. A board only re-folds when its
     /// subscription reports something, so a board whose only envelope landed in
     /// that window would never fold at all — the board stays blank for the life of
-    /// the process, not just for a frame. The author-leg twin of this is
-    /// `notedeck::realtime_cache`'s
-    /// `seeds_a_note_committed_between_the_callers_txn_and_the_first_subscribe`.
+    /// the process, not just for a frame.
     #[tokio::test]
     async fn shared_board_folds_an_envelope_that_landed_before_the_first_subscribe() {
         let mut t = TestSync::new();
-        let mut root = [0u8; 32];
-        root[0] = 0x33;
-        root[31] = 0x44;
-        assert!(t.ndb.add_team_root(&root));
-        let channel = store::SnsChannel {
-            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
-        };
-        let team = teams::Team {
-            team_root: hex::encode(root),
-            board_addr: event::board_address(&t.kp.pubkey, store::BOARD_ID),
-            epoch: None,
-            shared_at: 0,
-        };
-        let teams = vec![team.clone()];
-        let team_pubkey = channel.keys.team_keypair.pubkey;
+        let channel = channel(&t.ndb, 0x33);
+        let teams = vec![team(&t.kp.pubkey, store::BOARD_ID, 0x33)];
 
         // The frame opens its read transaction first, as every caller does...
         let txn = Transaction::new(&t.ndb).unwrap();
@@ -1314,82 +1296,50 @@ pub(crate) mod tests {
         await_ingest(&mut stream).await;
 
         // First touch: subscribes, from a frame whose snapshot predates the commit.
-        t.cache.poll_shared(&t.ndb, &txn, &teams);
+        t.set_teams(&teams);
+        t.cache.poll(&t.ndb, &txn);
         drop(txn);
 
         // No further envelope is ever published, so nothing re-arms the fold; the
         // board has to come from a later pass seeding off a fresher snapshot.
-        let txn = Transaction::new(&t.ndb).unwrap();
-        t.cache.poll_shared(&t.ndb, &txn, &teams);
         let view = t
-            .cache
-            .shared_board(
-                &t.ndb,
-                &txn,
-                &team.board_addr,
-                std::slice::from_ref(&team_pubkey),
-            )
+            .view()
             .expect("the definition that landed before the subscribe must fold in");
         assert_eq!(view.title, "Shared");
     }
 
-    /// The shared-board read path: an edit applied over an SNS channel is folded
-    /// by the cache's multi-writer `poll_shared`/`shared_board` (by coordinate),
-    /// and the stored issue is an unwrapped rumor — the same envelope the 1081
-    /// subscription reports for fan-out. Exercises the read half of the shared
-    /// wiring against a bare ndb.
+    /// The sealed-board read path: an edit applied over an SNS channel is folded
+    /// by the cache by coordinate as a delta, and the stored issue is an
+    /// unwrapped rumor — the same envelope the 1081 subscription reports for
+    /// fan-out.
     #[tokio::test]
     async fn shared_board_folds_via_cache() {
         let mut t = TestSync::new();
-        let mut root = [0u8; 32];
-        root[0] = 0x11;
-        root[31] = 0x22;
-        assert!(t.ndb.add_team_root(&root));
-        let channel = store::SnsChannel {
-            keys: nostrdb_net::sns::derive_sns_keys(&root).expect("keys"),
-        };
-        let team = teams::Team {
-            team_root: hex::encode(root),
-            board_addr: event::board_address(&t.kp.pubkey, store::BOARD_ID),
-            epoch: None,
-            shared_at: 0,
-        };
-        let teams = vec![team.clone()];
+        let channel = channel(&t.ndb, 0x11);
+        t.set_teams(&[team(&t.kp.pubkey, store::BOARD_ID, 0x11)]);
+        let addr = event::board_address(&t.kp.pubkey, store::BOARD_ID);
 
-        // Seal the board definition into the channel (a shared board has no
-        // plaintext leg, and the shared fold gathers only team-sealed rumors), then
-        // establish the shared 1081 subscription *before* editing so it reports our
-        // own envelope when it lands.
+        // Seal the board definition into the channel (a sealed board's own
+        // definition is never read in the clear).
         let cols = vec![
             event::ColumnDef::new("backlog", "Backlog"),
             event::ColumnDef::new("todo", "Todo"),
             event::ColumnDef::new("done", "Done"),
         ];
+        t.poll();
         store::ingest_signed(
             &t.ndb,
             event::build_board(store::BOARD_ID, "Headway", "", &cols),
             &store::Signer::shared(&t.secret(), &channel),
             &mut store::NoPublish,
         );
-        t.poll();
         t.wait(|v| v.id == store::BOARD_ID).await;
-        {
-            let txn = Transaction::new(&t.ndb).unwrap();
-            t.cache.poll_shared(&t.ndb, &txn, &teams);
-        }
-        // Seed the fold now, after the subscribe, so the card below can only
-        // reach it as a delta.
-        {
-            let txn = Transaction::new(&t.ndb).unwrap();
-            t.cache.poll_shared(&t.ndb, &txn, &teams);
-        }
-        let seeds = t.cache.shared[&team.board_addr].seeds;
-        assert_eq!(seeds, 1, "one seed after the subscribe");
+        t.settle();
+        let seeds = t.cache.folds[&addr].seeds;
 
         // Add a card over the SNS channel — wrapped into a 1081 envelope, ingested
         // (and unwrapped) locally.
         let view = t.view().expect("board");
-        let mut author_stream = ingest_stream(&t.ndb, &t.kp.pubkey);
         store::apply(
             &t.ndb,
             store::BOARD_ID,
@@ -1403,41 +1353,137 @@ pub(crate) mod tests {
             }),
             &mut store::NoPublish,
         );
-
-        // Advance the shared board (multi-writer) until the sealed card surfaces.
-        let card = loop {
-            let found = {
-                let txn = Transaction::new(&t.ndb).unwrap();
-                t.cache.poll_shared(&t.ndb, &txn, &teams);
-                t.cache
-                    .shared_board(
-                        &t.ndb,
-                        &txn,
-                        &team.board_addr,
-                        std::slice::from_ref(&channel.keys.team_keypair.pubkey),
-                    )
-                    .and_then(|v| {
-                        v.columns
-                            .iter()
-                            .flat_map(|c| c.cards.iter())
-                            .find(|c| c.title == "Sealed")
-                            .map(|c| c.id)
-                    })
-            };
-            if let Some(id) = found {
-                break id;
-            }
-            await_ingest(&mut author_stream).await;
-        };
+        t.wait(|v| v.columns[0].cards.iter().any(|c| c.title == "Sealed"))
+            .await;
+        let card = t.view().expect("board").columns[0]
+            .cards
+            .iter()
+            .find(|c| c.title == "Sealed")
+            .map(|c| c.id)
+            .unwrap();
 
         assert_eq!(
-            t.cache.shared[&team.board_addr].seeds, seeds,
+            t.cache.folds[&addr].seeds, seeds,
             "the edit folds in as a delta, not a walk of the board's history"
         );
         let txn = Transaction::new(&t.ndb).unwrap();
         assert!(
             t.ndb.get_note_by_id(&txn, card.bytes()).unwrap().is_rumor(),
             "a shared-board edit must be stored as an unwrapped rumor"
+        );
+    }
+
+    /// An own sealed board shows a card a teammate sealed into it, both in
+    /// the switcher's list and to an inline chip locating the card: the one
+    /// fold by coordinate is what both read, so neither can miss a card the
+    /// other shows (the drift the retired author fold had).
+    #[tokio::test]
+    async fn own_sealed_board_shows_a_teammates_card_in_the_switcher_and_a_chip() {
+        let mut t = TestSync::new();
+        let channel = channel(&t.ndb, 0x51);
+        t.set_teams(&[team(&t.kp.pubkey, "ours", 0x51)]);
+        let mate = FullKeypair::generate();
+        let cols = vec![event::ColumnDef::new("todo", "Todo")];
+        t.poll();
+        store::ingest_signed(
+            &t.ndb,
+            event::build_board("ours", "Ours", "", &cols),
+            &store::Signer::shared(&t.secret(), &channel),
+            &mut store::NoPublish,
+        );
+        t.wait_until(|t| t.board("ours").is_some()).await;
+
+        let view = t.board("ours").expect("board");
+        let mut stream = ingest_stream(&t.ndb, &mate.pubkey);
+        let card = store::apply_outcome(
+            &t.ndb,
+            "ours",
+            &view,
+            &mate.pubkey,
+            &store::Signer::new(&mate.secret_key.secret_bytes(), Some(&channel)),
+            store::BoardAction::AddCard(store::NewCard {
+                col: 0,
+                title: "Mate's card".to_string(),
+                ..store::NewCard::default()
+            }),
+            &mut store::NoPublish,
+        )
+        .created
+        .expect("card created");
+        while !t
+            .board("ours")
+            .is_some_and(|v| event::card_in_board(&v, card.bytes()).is_some())
+        {
+            await_ingest(&mut stream).await;
+        }
+
+        let listed = t.boards_folded();
+        let ours = listed
+            .iter()
+            .find(|v| v.id == "ours")
+            .expect("the switcher lists it");
+        assert!(event::card_in_board(ours, card.bytes()).is_some());
+
+        let txn = Transaction::new(&t.ndb).unwrap();
+        let origin = event::IssueBoard {
+            owner: *t.kp.pubkey.bytes(),
+            slug: "ours",
+        };
+        let me = t.kp.pubkey;
+        let located = t
+            .cache
+            .locate_issue(&t.ndb, &txn, Some(&me), &origin, card.bytes())
+            .expect("a chip locates the teammate's card");
+        assert_eq!(located.card().expect("card").card.title, "Mate's card");
+    }
+
+    /// Each board is listed once, by coordinate: an own board both sealed (a
+    /// key-share) and carrying a stray plaintext definition is one entry and
+    /// folds over its channel, and two boards sharing a slug under different
+    /// owners are two.
+    #[tokio::test]
+    async fn roster_lists_each_coordinate_once() {
+        let mut t = TestSync::new();
+        let alice = FullKeypair::generate();
+        let bob = FullKeypair::generate();
+        let mut stream = ingest_stream(&t.ndb, &t.kp.pubkey);
+        // A plaintext definition at a coordinate that is also key-shared.
+        let n = store::seed_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            "roadmap",
+            "Stray",
+            &mut store::NoPublish,
+        );
+        await_ingested(&mut stream, n).await;
+        t.set_teams(&[
+            team(&t.kp.pubkey, "roadmap", 0x21),
+            team(&alice.pubkey, "notes", 0x22),
+            team(&bob.pubkey, "notes", 0x23),
+        ]);
+        t.settle();
+
+        let txn = Transaction::new(&t.ndb).unwrap();
+        let listed = t.cache.boards(&t.ndb, &txn);
+        let count = |owner: &Pubkey, slug: &str| {
+            listed
+                .iter()
+                .filter(|b| &b.owner == owner.bytes() && b.slug == slug)
+                .count()
+        };
+        assert_eq!(count(&t.kp.pubkey, "roadmap"), 1);
+        assert_eq!(count(&alice.pubkey, "notes"), 1);
+        assert_eq!(count(&bob.pubkey, "notes"), 1);
+        assert_eq!(listed.len(), 3);
+        let roadmap = listed
+            .iter()
+            .find(|b| b.slug == "roadmap")
+            .expect("roadmap");
+        assert!(
+            roadmap.board.is_none(),
+            "a key-shared board reads only what is sealed: its stray plaintext \
+             definition doesn't make it a board"
         );
     }
 }

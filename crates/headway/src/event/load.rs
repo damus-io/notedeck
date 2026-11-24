@@ -117,7 +117,12 @@ pub fn headway_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
-/// Fold all of `author`'s headway events out of `ndb` into a fresh reducer.
+/// Fold all of `author`'s headway events out of `ndb` into a fresh reducer: the
+/// single-writer *author fold*.
+///
+/// No reader folds a board this way any more; every board folds by coordinate
+/// ([`fold_shared_board`], with no channel for a plaintext board). This stays
+/// for tests and fixtures that seed a plaintext board and read it back whole.
 ///
 /// The reduction runs inside the [`Ndb::fold`] index walk via [`BoardReducer`],
 /// so no intermediate event `Vec` is built. nostrdb doesn't replace addressable
@@ -313,17 +318,68 @@ pub fn fold_shared_board(
 /// by nobody: 191 such cards were invisible on jb55's `headway` board. Plaintext
 /// from any other key stays out, since anyone can sign a note at the coordinate.
 ///
-/// The board *definition* is the exception. A sealed board's definition is
-/// always sealed (born sealed, or promoted in place by a migration), while a
-/// since-retired auto-seed left later plaintext "Headway" definitions at sealed
-/// coordinates; admitting those would let a stale default rename the board and
-/// reset its columns (see
+/// The board *definition* is the exception on a sealed board. A sealed board's
+/// definition is always sealed (born sealed, or promoted in place by a
+/// migration), while a since-retired auto-seed left later plaintext "Headway"
+/// definitions at sealed coordinates; admitting those would let a stale default
+/// rename the board and reset its columns (see
 /// `shared_fold_sees_sealed_definition_behind_a_later_plaintext_one`).
+///
+/// A board with *no* channel (`team_pubkeys` empty) is a plaintext board, one
+/// created before boards were born sealed and never migrated. Its definition is
+/// plaintext by construction, so there the owner's signed definition is admitted
+/// too, and the board folds from its owner's plaintext alone: what the retired
+/// author fold showed for it, read by coordinate.
 pub(crate) fn shared_fold_admits(note: &Note, owner: &[u8; 32], team_pubkeys: &[[u8; 32]]) -> bool {
     if team_sealed(note, team_pubkeys) {
         return true;
     }
-    !note.is_rumor() && note.pubkey() == owner && note.kind() != KIND_BOARD
+    !note.is_rumor()
+        && note.pubkey() == owner
+        && (note.kind() != KIND_BOARD || team_pubkeys.is_empty())
+}
+
+/// A filter for every board definition (kind 30619) `owner` signed, every
+/// revision of every board: what [`plaintext_board_slugs`] walks, and what a
+/// subscription watching for a new plaintext board matches.
+pub fn board_definition_filter(owner: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([KIND_BOARD as u64])
+        .authors([owner.bytes()])
+        .build()
+}
+
+/// The slugs of `owner`'s plaintext boards: every board whose definition
+/// `owner` signed in the clear, deduplicated and sorted.
+///
+/// A sealed board is found through its key-share (the roster), but a board
+/// created before boards were born sealed has no key-share, so this is how a
+/// reader finds it, to fold it by coordinate with no channel (see
+/// [`shared_fold_admits`]). A sealed board that also has a stray plaintext
+/// definition is listed too; the caller folds it with the roster's channels,
+/// which is what decides how it reads.
+pub fn plaintext_board_slugs(ndb: &Ndb, txn: &Transaction, owner: &Pubkey) -> Vec<String> {
+    let filters = [board_definition_filter(owner)];
+    let mut slugs = ndb
+        .fold(txn, &filters, Vec::new(), |mut slugs: Vec<String>, note| {
+            if note.is_rumor() {
+                return slugs;
+            }
+            let slug = note
+                .tags()
+                .iter()
+                .find(|tag| tag.get_str(0) == Some("d"))
+                .and_then(|tag| tag.get_str(1));
+            if let Some(slug) = slug
+                && !slugs.iter().any(|have| have == slug)
+            {
+                slugs.push(slug.to_owned());
+            }
+            slugs
+        })
+        .unwrap_or_default();
+    slugs.sort();
+    slugs
 }
 
 /// Whether `note` is a rumor nostrdb unwrapped from an SNS kind-1081 envelope
