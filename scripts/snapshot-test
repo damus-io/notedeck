@@ -207,7 +207,11 @@ suites=(
     # test_real_codex_*: live-backend tests gated on CODEX_LIVE_TEST, which CI
     # never sets. Swept in they returned early and counted as passes.
     "notedeck_dave|--lib --test dave_button_tests --test ask_question_wrap_tests --test markdown_table_tests --test reference_chip_tests --test diff_view_tests --test chip_click_tests|--skip test_real_codex"
-    "notedeck_nostrverse|--test snapshot_tests|"
+    # nostrverse disabled for now (headway:notedeck/jaguar-deliver-margin): the
+    # crate is deprioritized, and snapshot_demo_scene downloads wall.glb from
+    # jb55.com at test time, so a dead cert or server fails CI. Re-enable once
+    # the test loads an offline fixture or a placeholder mesh instead.
+    # "notedeck_nostrverse|--test snapshot_tests|"
     # Not a snapshot: renders a model view on lavapipe and compares pixels.
     "renderbud|--features egui,test-util --lib|"
     # --test-threads=1 --nocapture: this suite intermittently dies with SIGILL
