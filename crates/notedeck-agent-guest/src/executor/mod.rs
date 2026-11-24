@@ -128,8 +128,8 @@ pub enum ExecError {
     /// Grep's or Glob's glob isn't a glob.
     #[error("bad glob {pattern:?}: {reason}")]
     Glob { pattern: String, reason: String },
-    /// Bash couldn't be started.
-    #[error("couldn't start bash: {0}")]
+    /// The shell (`/bin/sh`) couldn't be started.
+    #[error("couldn't start /bin/sh: {0}")]
     Spawn(std::io::Error),
     /// A command ran past its timeout, and it and its children were killed.
     #[error("the command ran past {ms} ms and was killed. Its output so far:\n{output}")]

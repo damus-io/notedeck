@@ -167,7 +167,9 @@ pub(super) async fn bash(
         .timeout
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .clamp(1, MAX_TIMEOUT_MS);
-    let mut command = tokio::process::Command::new("bash");
+    // `/bin/sh`, not `bash`: the guest image only promises a POSIX shell
+    // (see agentium-sandbox's `image` module), and `alpine/git` has no bash.
+    let mut command = tokio::process::Command::new("/bin/sh");
     command
         .arg("-c")
         .arg(&input.command)
