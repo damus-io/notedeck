@@ -362,12 +362,16 @@ mod tests {
         body: Vec<u8>,
     }
 
+    /// A one-request stub server: where to reach it, and the thread that
+    /// hands back what it was sent.
+    struct StubServer {
+        base: String,
+        seen: std::thread::JoinHandle<SeenRequest>,
+    }
+
     /// Serve one request on a local port, answer it with `status` and
     /// `reply`, and hand back what was sent.
-    fn stub_server(
-        status: &'static str,
-        reply: String,
-    ) -> (String, std::thread::JoinHandle<SeenRequest>) {
+    fn stub_server(status: &'static str, reply: String) -> StubServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
@@ -412,7 +416,7 @@ mod tests {
                 body,
             }
         });
-        (base, handle)
+        StubServer { base, seen: handle }
     }
 
     /// A PUT to a local stub carries the body and a valid auth header, and
@@ -429,7 +433,7 @@ mod tests {
             "uploaded": 1_700_000_000u64,
         })
         .to_string();
-        let (base, server) = stub_server("200 OK", reply);
+        let StubServer { base, seen: server } = stub_server("200 OK", reply);
 
         let result = upload(
             &SECKEY,
@@ -461,7 +465,7 @@ mod tests {
     /// A refusal surfaces the status and the server's `X-Reason`.
     #[test]
     fn upload_refusal_carries_reason() {
-        let (base, server) = stub_server("401 Unauthorized", String::new());
+        let StubServer { base, seen: server } = stub_server("401 Unauthorized", String::new());
         let err = upload(
             &SECKEY,
             &base,

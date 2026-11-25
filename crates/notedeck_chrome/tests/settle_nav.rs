@@ -58,9 +58,17 @@ impl App for NavApp {
     }
 }
 
+/// A headless chrome, the data directory its notedeck lives in, and the
+/// script its [`NavApp`] follows.
+struct Fixture {
+    _dir: tempfile::TempDir,
+    driver: ChromeDriver,
+    script: Rc<RefCell<Script>>,
+}
+
 /// A headless chrome running only a [`NavApp`], with nav transitions
 /// animated or not. Keeps the notedeck's data directory alive beside it.
-fn driver(animate: bool) -> (tempfile::TempDir, ChromeDriver, Rc<RefCell<Script>>) {
+fn driver(animate: bool) -> Fixture {
     let dir = tempfile::TempDir::new().expect("tmp dir");
     let args = ["notedeck-test", "--testrunner"].map(str::to_owned);
     let egui_ctx = egui::Context::default();
@@ -80,7 +88,11 @@ fn driver(animate: bool) -> (tempfile::TempDir, ChromeDriver, Rc<RefCell<Script>
         [NotedeckApp::Other("nav".to_owned(), Box::new(app))],
     );
     let driver = ChromeDriver::new(egui_ctx, notedeck, chrome);
-    (dir, driver, script)
+    Fixture {
+        _dir: dir,
+        driver,
+        script,
+    }
 }
 
 /// How deep the active app's history is.
@@ -102,7 +114,11 @@ const DRAW_THE_PUSH: &str = "NOTEDECK_SETTLE_NAV_DRAW_THE_PUSH";
 #[test]
 fn a_drawn_push_trips_the_layer_assert() {
     if std::env::var_os(DRAW_THE_PUSH).is_some() {
-        let (_dir, mut driver, script) = driver(false);
+        let Fixture {
+            _dir,
+            mut driver,
+            script,
+        } = driver(false);
         script.borrow_mut().push = true;
         driver.frame(Vec::new());
         driver.frame(Vec::new());
@@ -133,7 +149,11 @@ fn a_drawn_push_trips_the_layer_assert() {
 #[test]
 fn settled_push_and_back_land_without_a_slide() {
     for animate in [false, true] {
-        let (_dir, driver, script) = driver(animate);
+        let Fixture {
+            _dir,
+            driver,
+            script,
+        } = driver(animate);
         let mut driver = driver.settle_nav();
 
         script.borrow_mut().push = true;
@@ -154,7 +174,11 @@ fn settled_push_and_back_land_without_a_slide() {
 /// pass rather than after it, lands before that pass draws.
 #[test]
 fn settled_chrome_back_lands_before_the_draw() {
-    let (_dir, driver, script) = driver(false);
+    let Fixture {
+        _dir,
+        driver,
+        script,
+    } = driver(false);
     let mut driver = driver.settle_nav();
 
     script.borrow_mut().push = true;

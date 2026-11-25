@@ -21,10 +21,16 @@ const GRID: &str = "7 cards · 5 columns";
 /// How many frames a wait gives up after.
 const SETTLE_FRAMES: usize = 600;
 
+/// A headless chrome and the data directory its notedeck lives in.
+struct Fixture {
+    _dir: tempfile::TempDir,
+    driver: ChromeDriver,
+}
+
 /// A headless chrome running the real Headway alone, on the demo board seeded
 /// as a fresh account, with nav settled so a push lands under a debug build.
 /// Keeps the notedeck's data directory alive beside it.
-async fn headway_driver() -> (tempfile::TempDir, ChromeDriver) {
+async fn headway_driver() -> Fixture {
     let dir = tempfile::TempDir::new().expect("tmp dir");
     let kp = FullKeypair::generate();
     let args: Vec<String> = [
@@ -67,7 +73,7 @@ async fn headway_driver() -> (tempfile::TempDir, ChromeDriver) {
     driver.frames_until("the demo board's grid drawn", SETTLE_FRAMES, |d| {
         d.drew(GRID)
     });
-    (dir, driver)
+    Fixture { _dir: dir, driver }
 }
 
 /// The first card of the demo board, as Headway's `headway_show_board` data
@@ -100,7 +106,7 @@ fn depth(driver: &ChromeDriver) -> usize {
 /// card's detail, on top of the board, and holds nothing for a retry.
 #[tokio::test]
 async fn act_open_lands_a_headway_card_one_entry_deep() {
-    let (_dir, mut driver) = headway_driver().await;
+    let Fixture { _dir, mut driver } = headway_driver().await;
     let card = first_card(&mut driver);
     let reference = card["ref"].as_str().expect("the card's ref");
     let id = card["id"].as_str().expect("the card's id").to_owned();

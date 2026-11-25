@@ -303,9 +303,15 @@ mod tests {
         }
     }
 
+    /// A goal measured against a set of books.
+    struct Measured {
+        books: crate::Books,
+        progress: Progress,
+    }
+
     /// The books of `income` CAD earned on 2024-06-01, and the goal measured
     /// on `today`.
-    fn measured(income: &str, today: &str) -> (crate::Books, Progress) {
+    fn measured(income: &str, today: &str) -> Measured {
         let books = books(&format!(
             "2024-06-01 * t\n  income:salary  -{income} CAD\n  assets:checking\n\n"
         ));
@@ -319,11 +325,11 @@ mod tests {
             &spec,
         )
         .unwrap();
-        (books, progress)
+        Measured { books, progress }
     }
 
     fn plan_for(goal: &Goal, income: &str, today: &str, auto_done: bool) -> Option<Write> {
-        let (books, progress) = measured(income, today);
+        let Measured { books, progress } = measured(income, today);
         let commodities = &books.ledger().journal().commodities;
         plan(goal, &progress, date(today), auto_done, commodities)
     }

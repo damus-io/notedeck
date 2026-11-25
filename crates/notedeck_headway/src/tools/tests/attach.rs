@@ -17,10 +17,16 @@ const SERVER: &str = "https://blossom.test";
 /// What the stub server was sent: each blob's bytes.
 type Received = Arc<Mutex<Vec<Vec<u8>>>>;
 
+/// The attach tool under test and what its stub uploader was sent.
+struct StubAttach {
+    tool: RegisteredTool,
+    received: Received,
+}
+
 /// An [`attach::Attach`] whose uploads answer at once, stored at
 /// `<server>/<sha256>` as a Blossom server stores them, and the bytes each
 /// was sent.
-fn stub_attach() -> (RegisteredTool, Received) {
+fn stub_attach() -> StubAttach {
     let received = Received::default();
     let sent = Arc::clone(&received);
     let tool =
@@ -35,7 +41,10 @@ fn stub_attach() -> (RegisteredTool, Received) {
                 mime_type: Some("application/octet-stream".to_owned()),
             }))
         }));
-    (RegisteredTool::slow(tool), received)
+    StubAttach {
+        tool: RegisteredTool::slow(tool),
+        received,
+    }
 }
 
 /// Run `tool` with `args` as the socket does: prepared on the caller's
@@ -84,8 +93,14 @@ fn seed_server_list(live: &mut Live) {
     }
 }
 
+/// A PNG on disk: where it is and what's in it.
+struct Screenshot {
+    path: String,
+    png: Vec<u8>,
+}
+
 /// A 3x2 PNG written to `dir`: its path and bytes.
-fn screenshot(dir: &TempDir) -> (String, Vec<u8>) {
+fn screenshot(dir: &TempDir) -> Screenshot {
     let image = image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 140, 200, 255]));
     let mut bytes = Vec::new();
     image
@@ -96,14 +111,26 @@ fn screenshot(dir: &TempDir) -> (String, Vec<u8>) {
         .expect("png");
     let path = dir.path().join("shot.png");
     std::fs::write(&path, &bytes).expect("write png");
-    (path.to_string_lossy().into_owned(), bytes)
+    Screenshot {
+        path: path.to_string_lossy().into_owned(),
+        png: bytes,
+    }
 }
 
-/// The demo board's first card, as `(ref, id)`.
-fn first_card(live: &mut Live) -> (String, NoteId) {
+/// A card as the tools address it: its `headway:` ref and its id.
+struct CardRef {
+    card: String,
+    id: NoteId,
+}
+
+/// The demo board's first card.
+fn first_card(live: &mut Live) -> CardRef {
     let card = &live.cards()[0];
     let id = NoteId::from_hex(card["id"].as_str().unwrap()).unwrap();
-    (card["ref"].as_str().unwrap().to_owned(), id)
+    CardRef {
+        card: card["ref"].as_str().unwrap().to_owned(),
+        id,
+    }
 }
 
 /// What `pick` reads off the demo board's card `id`, once it reads
@@ -147,10 +174,10 @@ fn check_upload(attachment: &Attachment, received: &Received, png: &[u8]) {
 async fn attach_then_comment_carries_the_image() {
     let mut live = live();
     seed_server_list(&mut live);
-    let (card, id) = first_card(&mut live);
+    let CardRef { card, id } = first_card(&mut live);
     let dir = TempDir::new().unwrap();
-    let (path, png) = screenshot(&dir);
-    let (tool, received) = stub_attach();
+    let Screenshot { path, png } = screenshot(&dir);
+    let StubAttach { tool, received } = stub_attach();
 
     let answer = run_slow(&mut live, &tool, json!({ "paths": [path] })).expect("attach");
     let texts = answer["attachments"].as_array().expect("attachments");
@@ -178,10 +205,10 @@ async fn attach_then_comment_carries_the_image() {
 async fn attach_then_describe_embeds_the_image() {
     let mut live = live();
     seed_server_list(&mut live);
-    let (card, id) = first_card(&mut live);
+    let CardRef { card, id } = first_card(&mut live);
     let dir = TempDir::new().unwrap();
-    let (path, png) = screenshot(&dir);
-    let (tool, received) = stub_attach();
+    let Screenshot { path, png } = screenshot(&dir);
+    let StubAttach { tool, received } = stub_attach();
 
     let answer = run_slow(&mut live, &tool, json!({ "paths": [path] })).expect("attach");
     let attachment =
@@ -210,8 +237,8 @@ async fn attach_then_describe_embeds_the_image() {
 async fn attach_refuses_without_a_server_or_an_image() {
     let mut live = live();
     let dir = TempDir::new().unwrap();
-    let (path, _) = screenshot(&dir);
-    let (tool, received) = stub_attach();
+    let Screenshot { path, .. } = screenshot(&dir);
+    let StubAttach { tool, received } = stub_attach();
 
     let err = run_slow(&mut live, &tool, json!({ "paths": [path] })).unwrap_err();
     assert_eq!(err, crate::ui::attach::NO_SERVER);
@@ -223,7 +250,7 @@ async fn attach_refuses_without_a_server_or_an_image() {
     assert!(err.ends_with("is not an image"), "{err}");
     assert!(received.lock().unwrap().is_empty(), "nothing was uploaded");
 
-    let (card, _) = first_card(&mut live);
+    let CardRef { card, .. } = first_card(&mut live);
     let err = live
         .call(
             "headway_comment_card",
