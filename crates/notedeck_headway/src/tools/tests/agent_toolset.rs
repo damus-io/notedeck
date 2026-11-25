@@ -27,7 +27,12 @@ fn butler() -> AgentSpec {
 /// and every other write waits for the user.
 #[test]
 fn headway_tools_are_the_notedeck_toolset() {
-    let specs: Vec<ToolSpec> = tools().iter().map(|t| t.spec().clone()).collect();
+    // Stamped with the app as chrome stamps them when it collects Headway's
+    // tools (`App::tool_app`): the catalog offers a tool by its app.
+    let specs: Vec<ToolSpec> = tools()
+        .iter()
+        .map(|t| t.spec().clone().in_app("headway"))
+        .collect();
     let catalog = Catalog::build(&butler(), &specs).unwrap();
     let approval = |name: &str| {
         catalog
