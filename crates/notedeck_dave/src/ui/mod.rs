@@ -4886,13 +4886,14 @@ mod tests {
             .with_size(egui::vec2(760.0, 1400.0))
             .build_ui_state(render_session_view, state);
         harness.run_ok();
-        // Fluent isolates each argument in the labels it formats.
+        // Fluent isolates each argument in the labels it formats, the
+        // relative time's count inside its "{count}m" too.
         for label in [
             "Yesterday 4:12 PM",
             "Yesterday 4:13 PM · worked \u{2068}1m\u{2069}",
             "Today 9:41 AM",
-            "\u{2068}8m\u{2069} ago · worked \u{2068}12m\u{2069}",
-            "\u{2068}2m\u{2069} ago",
+            "\u{2068}\u{2068}8\u{2069}m\u{2069} ago · worked \u{2068}12m\u{2069}",
+            "\u{2068}\u{2068}2\u{2069}m\u{2069} ago",
         ] {
             assert_eq!(count_labels(&harness, label), 1, "{label}");
         }
@@ -4907,7 +4908,7 @@ mod tests {
             .with_size(egui::vec2(760.0, 1400.0))
             .build_ui_state(render_session_view, state);
         harness.run_ok();
-        assert_eq!(count_labels(&harness, "11m"), 1);
+        assert_eq!(count_labels(&harness, "\u{2068}11\u{2069}m"), 1);
         assert_eq!(count_labels(&harness, "Today 9:41 AM"), 1);
         assert_eq!(
             count_labels(&harness, "Yesterday 4:13 PM · worked \u{2068}1m\u{2069}"),
