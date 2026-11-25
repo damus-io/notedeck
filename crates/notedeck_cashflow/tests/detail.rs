@@ -282,6 +282,11 @@ fn plan_says(harness: &mut Harness<'static, CashflowTestState>, label: &str) {
         );
         harness.step();
     }
+    // The frame the plan lands in is the first frame of everything it
+    // brought in, drawn before those widgets have settled into their
+    // steady style. Run to a quiet frame so a snapshot taken next shows
+    // the panel as it stays, not whichever frame the plan arrived in.
+    harness.run();
 }
 
 /// Type `text` into the last text box on screen: the account picker's,
@@ -673,6 +678,8 @@ fn plan_says_part(harness: &mut Harness<'static, CashflowTestState>, part: &str)
         );
         harness.step();
     }
+    // As in plan_says: settle past the frame the plan landed in.
+    harness.run();
 }
 
 /// "Use …" on the second grocer run plans an override to where the first
@@ -1027,6 +1034,8 @@ fn snapshot_detail_categorize() {
     harness.get_by_label("Recategorize…").click();
     harness.run();
     type_last(&mut harness, "shop");
+    // The picker narrows to what was typed on a later frame.
+    until_shown(&mut harness, "expenses:shopping");
     harness.get_by_label("expenses:shopping").click();
     harness.run();
     plan_says(&mut harness, "applies");
@@ -1057,6 +1066,7 @@ fn snapshot_detail_rule_preview() {
     harness.get_by_label("All like this…").click();
     harness.run();
     type_last(&mut harness, "expenses:food:coffee");
+    until_shown(&mut harness, "+ New account expenses:food:coffee");
     harness
         .get_by_label("+ New account expenses:food:coffee")
         .click();
