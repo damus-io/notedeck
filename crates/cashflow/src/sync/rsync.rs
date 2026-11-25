@@ -137,6 +137,27 @@ impl SegmentTransport for RsyncTransport {
         if !out.status.success() && !matches!(out.status.code(), Some(PARTIAL | VANISHED)) {
             return Err(failed(&out));
         }
+        // GNU rsync copies the rest of the list around a missing file, but
+        // openrsync (macOS's /usr/bin/rsync) copies nothing once one is
+        // missing. Both name the missing path on stderr, so drop those and
+        // ask once more for what's left.
+        if out.status.code() == Some(PARTIAL) {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let retry: Vec<SegmentHash> = want
+                .iter()
+                .copied()
+                .filter(|&hash| !staging.join(JournalStore::relative_path(hash)).is_file())
+                .filter(|&hash| {
+                    !stderr.contains(&*JournalStore::relative_path(hash).to_string_lossy())
+                })
+                .collect();
+            if !retry.is_empty() {
+                let out = self.copy(&retry, self.remote_dir(), dir_arg(staging))?;
+                if !out.status.success() && !matches!(out.status.code(), Some(PARTIAL | VANISHED)) {
+                    return Err(failed(&out));
+                }
+            }
+        }
         let staged = want
             .iter()
             .copied()
