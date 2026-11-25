@@ -1167,10 +1167,15 @@ mod discovery_tests {
         add_mine("work", "Unlisted", GOAL, &[GOAL_LABEL]).await;
         add_alices(ndb, &alice, &alice_root, "Alice's goal").await;
 
+        // Five cards, and their descriptions folded in: a card can land
+        // before the note that carries its description, and then its spec
+        // reads as missing. Three of the five parse; two are broken on
+        // purpose.
         let goals = settle(ndb, || {
             let roster = roster(ndb, &me, &mut registry);
             let goals = discover(ndb, &roster, &["cashflow", "personal"]);
-            (goals.len() == 5).then_some(goals)
+            let parsed = goals.iter().filter(|g| g.spec.is_ok()).count();
+            (goals.len() == 5 && parsed == 3).then_some(goals)
         })
         .await;
 
