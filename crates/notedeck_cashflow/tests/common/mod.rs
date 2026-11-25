@@ -572,14 +572,17 @@ pub fn snapshot_harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, 
 /// with its `update` held back and then given one: the first load has
 /// started and nothing has come back. With `snapshot`, on the software
 /// renderer.
+///
+/// Unlike the other harnesses it keeps kittest's default step cap, not
+/// [`SETTLE_STEPS`]: the loading pane's spinner repaints every frame, so
+/// the build runs to the cap, and the cap sets the spinner's clock in the
+/// `cashflow_journal_loading` snapshot.
 pub fn journal_harness(
     app: CashflowApp,
     size: egui::Vec2,
     snapshot: bool,
 ) -> Harness<'static, CashflowTestState> {
-    let mut builder = Harness::builder()
-        .with_max_steps(SETTLE_STEPS)
-        .with_size(size);
+    let mut builder = Harness::builder().with_size(size);
     if snapshot {
         builder = builder.renderer(notedeck::software_renderer());
     }
