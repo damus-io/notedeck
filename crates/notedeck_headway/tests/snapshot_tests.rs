@@ -8703,7 +8703,18 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
     chrome_forward(&mut harness);
     wait_for_label(&mut harness, "1 / 2");
 
-    archive_demo_cards(&mut harness, &ids);
+    // The queue's card goes last. Its archive steps the queue on as a
+    // verdict does, onto the epic's other card, which has to be gone by
+    // then: still in review, its own archive would be a verdict on the last
+    // card and close the queue. Archived together, the two fold in one
+    // frame or two as the ingester pleases.
+    assert!(
+        harness.query_by_label(CARDS[1]).is_some() && harness.query_by_label(CARDS[2]).is_none(),
+        "the epic's queue opens on {:?}",
+        CARDS[1]
+    );
+    archive_demo_cards(&mut harness, &[ids[0], ids[2]]);
+    archive_demo_cards(&mut harness, &[ids[1]]);
     wait_for_label(&mut harness, "This card is no longer on the board.");
 
     chrome_back(&mut harness);
