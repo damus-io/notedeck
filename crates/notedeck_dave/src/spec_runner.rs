@@ -1013,11 +1013,31 @@ mod tests {
                 &test.sk
             ));
         }
-        let _ = test.ndb.wait_for_notes(stored, 2).await.unwrap();
+        // Both notes: `wait_for_notes` returns on the first that lands.
+        test.ndb
+            .wait_for_all_notes_within(stored, 2, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
 
+        // The action subscription is told of a write after `stored` may
+        // be, so apply until both actions reached a backend. Each note is
+        // polled once, so a double apply still fails the counts below.
         let ndb = test.ndb.clone();
         let waker = test.waker.clone();
-        test.dave.apply_remote_conversation_actions(&ndb, &waker);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            test.dave.apply_remote_conversation_actions(&ndb, &waker);
+            let interrupts = run.runner.interrupts() + run.host.interrupts();
+            let modes = run.runner.mode_changes().len() + run.host.mode_changes().len();
+            if interrupts >= 1 && modes >= 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the remote stop and mode change never reached a backend"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
         assert_eq!(run.runner.interrupts(), 1);
         assert_eq!(run.runner.mode_changes().len(), 1);
