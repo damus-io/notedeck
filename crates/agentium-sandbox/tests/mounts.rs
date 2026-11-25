@@ -76,14 +76,15 @@ impl Fixture {
     }
 }
 
-/// `path` with its symlinks resolved, on Unix. Windows is left alone:
-/// `canonicalize` there gives a `\\?\` verbatim path, which git can't make
-/// a worktree under, and the temp dir has no symlink to resolve.
+/// `path` as git writes it: symlinks resolved (macOS's `/var` is
+/// `/private/var`) and, on Windows, 8.3 short names expanded (`RUNNER~1`).
+/// `canonicalize` does both, but on Windows it also adds a `\\?\` verbatim
+/// prefix git can't make a worktree under, so that is stripped.
 fn real_path(path: &Path) -> PathBuf {
-    if cfg!(unix) {
-        path.canonicalize().expect("canonical tempdir")
-    } else {
-        path.to_path_buf()
+    let real = path.canonicalize().expect("canonical tempdir");
+    match real.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) => PathBuf::from(plain),
+        None => real,
     }
 }
 
