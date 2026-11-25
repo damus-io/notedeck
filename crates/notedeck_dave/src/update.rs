@@ -2610,7 +2610,14 @@ mod tests {
             std::fs::write(&done_path, "").unwrap();
         }
 
-        // Spawn a child that exits immediately (simulates a daemonizing terminal).
+        // Spawn a child that exits immediately (simulates a daemonizing
+        // terminal). Windows has no `true`.
+        #[cfg(windows)]
+        let child = std::process::Command::new("cmd")
+            .args(["/C", "exit"])
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
         let child = std::process::Command::new("true").spawn().unwrap();
 
         sm.pending_editor = Some(crate::session::EditorJob {
