@@ -107,6 +107,12 @@ impl GitTransport {
             }
         }
         self.git(&["config", "remote.origin.url", &self.remote])?;
+        // A segment is named by the hash of its bytes, so git must keep them
+        // as they are: Git for Windows defaults to core.autocrlf=true, which
+        // checks LF files out as CRLF and makes every fetched segment fail
+        // its hash. Set on every sync, not only at init, so a clone made
+        // before this fix gets it too.
+        self.git(&["config", "core.autocrlf", "false"])?;
         Ok(())
     }
 
