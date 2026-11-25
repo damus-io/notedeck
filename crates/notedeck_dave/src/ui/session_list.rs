@@ -3443,6 +3443,29 @@ mod tests {
         notedeck.register_reference_parser(Box::new(StubCardParser { card: card.clone() }));
         notedeck.register_kind_renderer(Box::new(StubCardRenderer));
 
+        {
+            // Committed before any frame draws the list: the build's frames
+            // look the ref up, and a miss is kept for
+            // UNVERSIONED_REFRESH_SECS of egui time (120 kittest steps),
+            // which a slow runner doesn't reach within the deadline below.
+            let ctx = host.app_context();
+            let sub = ctx
+                .ndb
+                .subscribe(&[nostrdb::Filter::new().kinds([1621]).build()])
+                .expect("subscribe");
+            let secret = account.secret_key.secret_bytes();
+            *card.borrow_mut() = Some(ingest_card(ctx.ndb, &secret, card_ref, title));
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("runtime")
+                .block_on(
+                    ctx.ndb
+                        .wait_for_all_notes_within(sub, 1, Duration::from_secs(5)),
+                )
+                .expect("the card's note is ingested");
+        }
+
         let mut session_manager = SessionManager::new();
         let id = session_manager.new_session(
             PathBuf::from("/tmp/card-title"),
@@ -3468,27 +3491,6 @@ mod tests {
             .with_size(egui::vec2(300.0, 200.0))
             .build_ui_state(ref_title_ui, state);
         harness.run_steps(2);
-
-        let secret = harness.state().account.secret_key.secret_bytes();
-        {
-            // Committed before the next frame looks it up, so that lookup
-            // finds it rather than keeping a miss for a refresh window.
-            let ctx = harness.state_mut().host.app_context();
-            let sub = ctx
-                .ndb
-                .subscribe(&[nostrdb::Filter::new().kinds([1621]).build()])
-                .expect("subscribe");
-            *card.borrow_mut() = Some(ingest_card(ctx.ndb, &secret, card_ref, title));
-            tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .expect("runtime")
-                .block_on(
-                    ctx.ndb
-                        .wait_for_all_notes_within(sub, 1, Duration::from_secs(5)),
-                )
-                .expect("the card's note is ingested");
-        }
 
         // The card's title is looked up for the list, and the row's chip
         // draws it.
