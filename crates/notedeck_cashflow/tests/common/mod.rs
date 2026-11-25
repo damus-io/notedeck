@@ -554,6 +554,11 @@ pub fn harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, CashflowT
 pub fn snapshot_harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, CashflowTestState> {
     let mut harness = Harness::builder()
         .with_size(size)
+        // egui repaints once more for each widget it draws for the first
+        // time ("We don't know the state of the widget yet"), so a click
+        // that opens a picker and its plan takes about six frames to
+        // settle, past kittest's default of four.
+        .with_max_steps(16)
         .renderer(notedeck::software_renderer())
         .build_ui_state(render_cashflow, test_state(app));
     harness.run();
