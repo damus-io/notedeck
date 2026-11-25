@@ -4502,10 +4502,9 @@ fn review_queue_shows_the_recorded_commit_diff() {
         wait_for_label(&mut harness, icon);
     }
     wait_for_label(&mut harness, QUEUE_SESSION);
-    wait_for_label(
-        &mut harness,
-        &format!("{REVIEW_HOST}:/home/jb55/dev/notedeck"),
-    );
+    // The record's host:path is in the source label's hover since
+    // 293d50f7b1da; the label itself says where this host found the commit.
+    wait_for_label(&mut harness, "local checkout");
     wait_for_label(&mut harness, "Next card");
     wait_for_label(&mut harness, "Previous card");
     wait_for_label(&mut harness, "Headway Tester · 1h ago");
@@ -5198,8 +5197,8 @@ fn add_queue_sources_with(harness: &mut Harness<'static, HeadwayTestState>, expl
 /// sits at the top, and a fence citing a hunk the diff hasn't got puts its
 /// note there too, saying so. The fences' own text never shows. A wide pane
 /// renders the explainer source beside the commit message, over the diff
-/// and with no tabs: the front matter's title and facts as a header, the rest
-/// as Markdown.
+/// and with no tabs: the front matter's title as a header, the rest as
+/// Markdown.
 #[test]
 fn review_sources_thread_the_walk_and_render_the_explainer() {
     let fixture = review_fixture();
@@ -5259,20 +5258,25 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
 
     for shown in [
         "A queue you can walk",
-        "notedeck · src/queue.rs",
-        "2 keys",
         "Why a queue",
         "The review queue walks In Review cards one at a time.",
     ] {
         assert!(harness.query_by_label(shown).is_some(), "{shown}");
     }
+    // The wide split's explainer column heads itself with the title alone
+    // (293d50f7b1da); the src line and fact pills are the narrow pane's
+    // Explainer tab's.
+    for left_out in ["notedeck · src/queue.rs", "2 keys"] {
+        assert!(harness.query_by_label(left_out).is_none(), "{left_out}");
+    }
     assert!(harness.query_by_label("Explainer source").is_none());
     assert!(harness.query_by_label("Diff").is_none());
-    // Beside the message, the two above the walk's intro.
+    // Beside the message, the two above the walk's intro. The commit column
+    // heads itself (its label, subject and byline) before the message, so the
+    // message starts below the explainer's title rather than level with it.
     let title = rect(&harness, "A queue you can walk");
     let body = rect(&harness, QUEUE_BODY_ALL);
     assert!(title.right() < body.left(), "{title:?} {body:?}");
-    assert!(body.top() < title.bottom(), "{title:?} {body:?}");
     assert!(body.bottom() < intro.top(), "{body:?} {intro:?}");
     // It fits the peek, so there's nothing to expand.
     assert!(harness.query_by_label(SHOW_WHOLE).is_none());
