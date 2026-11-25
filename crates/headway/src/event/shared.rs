@@ -832,8 +832,12 @@ mod tests {
             build_placement("team", &b.addr, &b_id, "done", "g").created_at(1_008),
         );
 
+        // Wait for every note above, the last placement included: nostrdb
+        // ingests off this thread, so a fold (and the full walk it is checked
+        // against) read before B's placement lands both have B in Todo.
         let log = b.drain_until(&mut fold, |v| {
             v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 2
+                && v.columns[1].cards.len() == 1
                 && v.columns
                     .iter()
                     .flat_map(|c| &c.cards)
