@@ -165,11 +165,13 @@ fn two_hosts_see_whats_missing_where_and_retirements_propagate() {
     assert!(!beta.file_of(&a1).exists());
     assert_eq!(beta.json(&["journal", "status", "--json"])["in_sync"], true);
 
-    // Re-importing the same bytes asks for them back.
-    alpha.import("shop:1", "Corner");
+    // Re-importing the record asks for it back. The segment's header carries
+    // its import time in seconds, so the hash is a1's again only when this
+    // lands in the same second as the first import; check the one it got.
+    let again = alpha.import("shop:1", "Corner");
     assert!(alpha.ok(&["export"]).contains("Corner"));
     let status = beta.json(&["journal", "status", "--json"]);
-    assert_eq!(hashes(&status["missing_locally"]), [a1.as_str()]);
+    assert_eq!(hashes(&status["missing_locally"]), [again.as_str()]);
 }
 
 /// A segment imported while logged out has no manifest until `journal
