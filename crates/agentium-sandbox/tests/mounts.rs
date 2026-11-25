@@ -31,7 +31,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        let base = root.path().canonicalize().expect("canonical tempdir");
+        let base = real_path(root.path());
         let f = Fixture { _root: root, base };
         let main = f.main();
         std::fs::create_dir(&main).unwrap();
@@ -73,6 +73,17 @@ impl Fixture {
 
     fn remote(&self) -> PathBuf {
         self.base.join("remote.git")
+    }
+}
+
+/// `path` with its symlinks resolved, on Unix. Windows is left alone:
+/// `canonicalize` there gives a `\\?\` verbatim path, which git can't make
+/// a worktree under, and the temp dir has no symlink to resolve.
+fn real_path(path: &Path) -> PathBuf {
+    if cfg!(unix) {
+        path.canonicalize().expect("canonical tempdir")
+    } else {
+        path.to_path_buf()
     }
 }
 
