@@ -816,11 +816,23 @@ mod open_tests {
         assert_eq!(depth(&chrome, headway), before);
         assert_eq!(chrome.active, headway as i32);
 
-        // The next frame's retry finds the seeded session and routes it.
-        frame_at(&egui_ctx, 1.0 / 60.0, |ui| {
-            retry_pending_open(&mut chrome, &mut ctx, ui);
-        });
-        assert!(chrome.pending_open.is_none(), "the resolved open is let go");
+        // A later frame's retry finds the seeded session and routes it.
+        // Dave's session cache seeds on a worker, so the session can take a
+        // few frames to resolve: retry until it does, as chrome would, rather
+        // than for exactly one frame.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut t = 0.0;
+        while chrome.pending_open.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the open never resolved"
+            );
+            t += 1.0 / 60.0;
+            frame_at(&egui_ctx, t, |ui| {
+                retry_pending_open(&mut chrome, &mut ctx, ui);
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
         let dave = chrome
             .apps
