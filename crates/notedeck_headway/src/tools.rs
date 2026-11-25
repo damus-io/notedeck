@@ -2611,7 +2611,7 @@ impl AppTool for SaveView {
             "Save a headway list's query and layout as a named view, as `nd headway list --save-view <name>` does: the same arguments as `headway_list`, saved rather than listed (over `view` when one is applied). The view is this account's own, kept encrypted; answers it as `{name, query, display, grouping, sorting, board, slug, builtin}`.",
             args,
         )
-        .titled("Save list view")
+        .titled("Save list view by name")
         .command(&["headway", "list"])
         .filed_under(crate::TOOL_CATEGORY)
     }
