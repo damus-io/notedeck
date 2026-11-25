@@ -191,7 +191,13 @@ fn stray_files_are_ignored() {
     fs::create_dir_all(dir.join(".git/objects")).unwrap();
     fs::write(dir.join(".git/HEAD"), "ref").unwrap();
     fs::write(shard.join("notes.ledger"), "x").unwrap();
-    fs::write(shard.join(format!("{}.ledger", name.to_uppercase())), "x").unwrap();
+    // On a case-insensitive filesystem (macOS's default) the uppercase name
+    // *is* the real segment, and writing it would clobber it: only add it
+    // where it can be a file of its own.
+    let upper = shard.join(format!("{}.ledger", name.to_uppercase()));
+    if !upper.exists() {
+        fs::write(upper, "x").unwrap();
+    }
     let wrong = if &name[..2] == "00" { "01" } else { "00" };
     fs::create_dir_all(dir.join(wrong)).unwrap();
     fs::copy(
