@@ -562,7 +562,14 @@ mod tests {
     #[tokio::test]
     async fn the_fetch_client_refuses_names_that_resolve_locally() {
         let web = WebClient::new(None);
-        for url in ["http://localhost:9/", "http://127.1:9/", "http://0x7f.1:9/"] {
+        // Windows' resolver doesn't expand the shorthand IPv4 forms ("No
+        // such host is known"), so there `localhost` alone makes the point.
+        let urls: &[&str] = if cfg!(windows) {
+            &["http://localhost:9/"]
+        } else {
+            &["http://localhost:9/", "http://127.1:9/", "http://0x7f.1:9/"]
+        };
+        for &url in urls {
             let err = web
                 .public_http
                 .req_guarded(url, "*/*", &|_| Ok(()))
