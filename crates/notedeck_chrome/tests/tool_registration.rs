@@ -235,9 +235,15 @@ async fn every_registered_tool_has_a_title_and_a_category() {
         .map(|entry| (entry.spec.category(), entry.spec.title()))
         .collect();
     titles.sort();
-    let before = titles.len();
-    titles.dedup();
-    assert_eq!(titles.len(), before, "a category repeats a title");
+    let repeated: Vec<_> = titles
+        .windows(2)
+        .filter(|w| w[0] == w[1])
+        .map(|w| w[0])
+        .collect();
+    assert!(
+        repeated.is_empty(),
+        "a category repeats a title: {repeated:?}"
+    );
 }
 
 /// The foreground fake app's UI tools.
