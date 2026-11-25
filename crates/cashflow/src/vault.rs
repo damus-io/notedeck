@@ -335,7 +335,7 @@ pub fn latest<'a, T: Record<'a>>(
     id: &str,
 ) -> Option<Stored<'a, T>> {
     let d = d_tag(T::PREFIX, id).ok()?;
-    stored(newest(ndb, txn, author, T::KIND, &d)?)
+    stored(&newest(ndb, txn, author, T::KIND, &d)?)
 }
 
 /// The newest revision of every record of type `T` that `author` wrote,
@@ -349,7 +349,7 @@ pub fn latest_all<'a, T: Record<'a>>(
     let mut all: Vec<Stored<'a, T>> =
         query_replaceable(ndb, txn, &[author_filter(author, T::KIND)])
             .into_iter()
-            .filter_map(|key| stored(ndb.get_note_by_key(txn, key).ok()?))
+            .filter_map(|key| stored(&ndb.get_note_by_key(txn, key).ok()?))
             .collect();
     // query_replaceable hands its winners back in `HashMap` drain order.
     all.sort_unstable_by(|a, b| a.id.cmp(b.id));
@@ -376,8 +376,8 @@ fn newest<'a>(
 }
 
 /// `note` as a stored `T`, when its `d` has `T`'s prefix and its tags read.
-fn stored<'a, T: Record<'a>>(note: Note<'a>) -> Option<Stored<'a, T>> {
-    let id = note_d(&note)?.strip_prefix(T::PREFIX)?.strip_prefix(':')?;
+fn stored<'a, T: Record<'a>>(note: &Note<'a>) -> Option<Stored<'a, T>> {
+    let id = note_d(note)?.strip_prefix(T::PREFIX)?.strip_prefix(':')?;
     Some(Stored {
         id,
         created_at: note.created_at(),
@@ -524,7 +524,7 @@ mod tests {
             .sign(&SECRET)
             .build()
             .unwrap();
-        let read = stored::<Probe>(newer).unwrap();
+        let read = stored::<Probe>(&newer).unwrap();
         assert_eq!(read.id, "x");
         assert_eq!(read.body, probe("hi"));
 
@@ -537,7 +537,7 @@ mod tests {
             .sign(&SECRET)
             .build()
             .unwrap();
-        assert!(stored::<Probe>(missing_field).is_none());
+        assert!(stored::<Probe>(&missing_field).is_none());
 
         let other_prefix = NoteBuilder::new()
             .kind(kinds::SEGMENT)
@@ -551,7 +551,7 @@ mod tests {
             .sign(&SECRET)
             .build()
             .unwrap();
-        assert!(stored::<Probe>(other_prefix).is_none());
+        assert!(stored::<Probe>(&other_prefix).is_none());
     }
 
     /// A 64-hex field value would be stored as an id its own string read
