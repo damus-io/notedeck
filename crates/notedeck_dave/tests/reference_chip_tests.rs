@@ -481,6 +481,12 @@ fn build_title_card_harness(render: bool) -> Harness<'static, RefChipState> {
     let secret = harness.state().account.secret_key.secret_bytes();
     {
         let app_ctx = harness.state_mut().host.app_context();
+        let stored = app_ctx
+            .ndb
+            .subscribe(&[nostrdb::Filter::new()
+                .kinds([1621, AI_SESSION_STATE_KIND as u64])
+                .build()])
+            .expect("subscribe");
         for (session, card) in [
             ("claude-session-short", SHORT_CARD),
             ("claude-session-long", LONG_CARD),
@@ -489,6 +495,19 @@ fn build_title_card_harness(render: bool) -> Harness<'static, RefChipState> {
             cards.borrow_mut().push((card.card_ref.to_string(), note));
             seed_session(app_ctx.ndb, &secret, session, card.card_ref, "working");
         }
+        // Stored before the body names them: a frame that looks a card up
+        // before its note lands keeps the miss for a refresh window, longer
+        // than the deadline below gives a slow machine.
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(
+                app_ctx
+                    .ndb
+                    .wait_for_all_notes_within(stored, 4, Duration::from_secs(5)),
+            )
+            .expect("the cards and sessions are stored");
     }
     let short = agentium_core::wordid::session_ref("claude-session-short");
     let long = agentium_core::wordid::session_ref("claude-session-long");
