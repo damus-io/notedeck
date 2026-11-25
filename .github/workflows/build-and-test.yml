@@ -14,6 +14,13 @@ jobs:
   run:
     runs-on: ${{ inputs.os }}
 
+    # Each step below builds its own feature set into one target dir, and
+    # with full debug info Linux's runner ran out of disk by the dave step.
+    # Line tables keep a panic's backtrace pointing at file:line, which is
+    # all a test run reads, at a fraction of the size; codegen is unchanged.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
