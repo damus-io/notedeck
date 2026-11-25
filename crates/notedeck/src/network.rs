@@ -397,13 +397,21 @@ mod tests {
 
     /// A name is checked as it resolves, not as it is written: `127.1` and
     /// `localhost` both reach the local server through the system resolver,
-    /// and a client refusing loopback refuses both.
+    /// and a client refusing loopback refuses both. `127.1` only where the
+    /// resolver takes it: not on Windows.
     #[tokio::test]
     async fn an_address_check_refuses_names_that_resolve_to_refused_addresses() {
         let port = local_server().await;
         let open = HyperHttpClient::new();
         let checked = HyperHttpClient::with_addr_check(|ip| !ip.is_loopback());
-        for host in ["127.1", "localhost"] {
+        // Windows' resolver doesn't expand the `127.1` shorthand ("No such
+        // host is known"), so there `localhost` alone makes the point.
+        let hosts: &[&str] = if cfg!(windows) {
+            &["localhost"]
+        } else {
+            &["127.1", "localhost"]
+        };
+        for host in hosts {
             let url = format!("http://{host}:{port}/");
             let reached = open.req_accept(&url, "*/*").await.expect(&url);
             assert_eq!(reached.bytes, b"ok", "{url}");
