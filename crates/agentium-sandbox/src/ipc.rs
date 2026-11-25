@@ -150,6 +150,13 @@ impl NotedeckIpc {
 mod tests {
     use super::*;
 
+    /// An absolute host socket path on every OS. A Unix literal like
+    /// `/tmp/n.sock` has no drive, so on Windows it isn't absolute and
+    /// [`NotedeckIpc::new`] rightly refuses it.
+    fn host_socket() -> PathBuf {
+        std::env::temp_dir().join("notedeck.sock")
+    }
+
     #[test]
     fn a_relative_host_socket_is_refused() {
         let err = NotedeckIpc::new("notedeck.sock").unwrap_err();
@@ -170,7 +177,7 @@ mod tests {
     /// (nd_cli); the guest's env must spell both the way they do.
     #[test]
     fn the_guest_env_points_nd_at_the_bridge_and_never_starts_one() {
-        let ipc = NotedeckIpc::new("/run/user/1000/notedeck/notedeck.sock").unwrap();
+        let ipc = NotedeckIpc::new(host_socket()).unwrap();
         let env = ipc.guest_env();
         let get = |key: &str| env.iter().find(|e| e.key == key).map(|e| e.value.as_str());
         assert_eq!(get("NOTEDECK_SOCKET"), Some(GUEST_SOCKET));
@@ -181,7 +188,7 @@ mod tests {
     /// port the route carries.
     #[test]
     fn the_agent_serves_the_socket_the_env_names_on_the_routed_port() {
-        let ipc = NotedeckIpc::new("/tmp/n.sock").unwrap();
+        let ipc = NotedeckIpc::new(host_socket()).unwrap();
         assert_eq!(
             ipc.agent_args(),
             [
