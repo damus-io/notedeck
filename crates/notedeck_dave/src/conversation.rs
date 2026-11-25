@@ -1166,7 +1166,10 @@ mod tests {
         )
         .unwrap();
         assert!(pns_ingest(&ndb, &cli.note_json, &sk));
-        let _ = ndb.wait_for_notes(sub, 2).await.unwrap();
+        // Both notes: `wait_for_notes` returns on the first that lands.
+        ndb.wait_for_all_notes_within(sub, 2, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
 
         {
             let txn = Transaction::new(&ndb).unwrap();
