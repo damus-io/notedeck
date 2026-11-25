@@ -539,10 +539,17 @@ pub fn test_state(app: CashflowApp) -> CashflowTestState {
     }
 }
 
+/// How many frames a cashflow harness's `run` may take to settle. egui
+/// repaints once more for each widget it draws for the first time ("We
+/// don't know the state of the widget yet"), so a click that opens a picker
+/// and its plan takes about six frames, past kittest's default of four.
+const SETTLE_STEPS: u64 = 16;
+
 /// A harness of `size` running `app`, with no renderer: for behavioural tests
 /// that query and click, and run under a plain `cargo test`.
 pub fn harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, CashflowTestState> {
     let mut harness = Harness::builder()
+        .with_max_steps(SETTLE_STEPS)
         .with_size(size)
         .build_ui_state(render_cashflow, test_state(app));
     harness.run();
@@ -553,12 +560,8 @@ pub fn harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, CashflowT
 /// snapshots. Needs lavapipe: run its tests via `scripts/snapshot-test`.
 pub fn snapshot_harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, CashflowTestState> {
     let mut harness = Harness::builder()
+        .with_max_steps(SETTLE_STEPS)
         .with_size(size)
-        // egui repaints once more for each widget it draws for the first
-        // time ("We don't know the state of the widget yet"), so a click
-        // that opens a picker and its plan takes about six frames to
-        // settle, past kittest's default of four.
-        .with_max_steps(16)
         .renderer(notedeck::software_renderer())
         .build_ui_state(render_cashflow, test_state(app));
     harness.run();
@@ -574,7 +577,9 @@ pub fn journal_harness(
     size: egui::Vec2,
     snapshot: bool,
 ) -> Harness<'static, CashflowTestState> {
-    let mut builder = Harness::builder().with_size(size);
+    let mut builder = Harness::builder()
+        .with_max_steps(SETTLE_STEPS)
+        .with_size(size);
     if snapshot {
         builder = builder.renderer(notedeck::software_renderer());
     }
@@ -1125,7 +1130,9 @@ pub fn detail_harness(
         triage::apply(&vault, ndb, &link, None).expect("link");
     }
     wait_vault(&mut state, sub, 3, kinds::OVERRIDE);
-    let mut builder = Harness::builder().with_size(size);
+    let mut builder = Harness::builder()
+        .with_max_steps(SETTLE_STEPS)
+        .with_size(size);
     if snapshot {
         builder = builder.renderer(notedeck::software_renderer());
     }
