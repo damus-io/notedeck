@@ -338,8 +338,12 @@ fn recategorize_writes_an_override() {
     harness.run();
     plan_says(&mut harness, "This one: expenses:unknown → expenses:travel");
     harness.get_by_label("Apply override").click();
-    harness.run();
-    assert!(harness.query_by_label("Saving…").is_some());
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let overrides = wait_vault(harness.state_mut(), sub, 1, kinds::OVERRIDE);
     assert!(overrides.contains(&VaultNote {
@@ -402,7 +406,12 @@ fn the_split_editor_writes_its_legs() {
     );
     assert!(!disabled(&harness, "Apply split"));
     harness.get_by_label("Apply split").click();
-    harness.run();
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let splits = wait_vault(harness.state_mut(), sub, 1, kinds::SPLIT);
     assert!(splits.contains(&VaultNote {
@@ -434,7 +443,12 @@ fn all_like_this_writes_a_rule() {
         "Would move 3 transactions to expenses:food:coffee.",
     );
     harness.get_by_label("Add rule").click();
-    harness.run();
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let rules = wait_vault(harness.state_mut(), sub, 1, kinds::RULE);
     assert_eq!(rules.len(), 1);
@@ -465,7 +479,12 @@ fn an_override_clears_the_split() {
         "This one: expenses:food:groceries + expenses:household → expenses:food:groceries",
     );
     harness.get_by_label("Apply override").click();
-    harness.run();
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let overrides = wait_vault(harness.state_mut(), sub, 2, kinds::OVERRIDE);
     assert!(overrides.contains(&VaultNote {
@@ -499,7 +518,12 @@ fn a_linked_record_offers_unlink() {
     harness.run();
     plan_says(&mut harness, "applies");
     harness.get_by_label("Apply unlink").click();
-    harness.run();
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let links = wait_vault(harness.state_mut(), sub, 1, kinds::TRANSFER);
     assert_eq!(links.len(), 1);
@@ -527,8 +551,12 @@ fn a_suggested_transfer_links() {
     assert!(!disabled(&harness, "Link as transfer"));
     let sub = watch_vault(harness.state_mut());
     harness.get_by_label("Link as transfer").click();
-    harness.run();
-    assert!(harness.query_by_label("Saving…").is_some());
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let links = wait_vault(harness.state_mut(), sub, 1, kinds::TRANSFER);
     assert_eq!(links.len(), 1);
@@ -549,7 +577,12 @@ fn not_a_transfer_dismisses_it() {
     assert!(harness.query_by_label("open bank:4 →").is_some());
     let sub = watch_vault(harness.state_mut());
     harness.get_by_label("Not a transfer").click();
-    harness.run();
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let links = wait_vault(harness.state_mut(), sub, 1, kinds::TRANSFER);
     assert_eq!(links.len(), 1);
@@ -851,8 +884,12 @@ fn tagging_the_account_writes_its_project() {
     harness.run();
     assert!(harness.query_by_label("income:zaps → damus").is_some());
     harness.get_by_label("Apply tag").click();
-    harness.run();
-    assert!(harness.query_by_label("Saving…").is_some());
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let accounts = wait_vault(harness.state_mut(), sub, 1, kinds::ACCOUNT);
     let zaps = accounts
@@ -900,7 +937,12 @@ fn move_to_a_project_account_writes_an_override() {
         "This one: expenses:unknown → expenses:shopping",
     );
     harness.get_by_label("Apply override").click();
-    harness.run();
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
 
     let overrides = wait_vault(harness.state_mut(), sub, 1, kinds::OVERRIDE);
     assert!(overrides.contains(&VaultNote {
@@ -941,7 +983,12 @@ fn a_note_posts_and_marks_the_register_row() {
         .type_text("receipt in the drawer");
     harness.run();
     harness.get_by_label("Post note").click();
-    harness.run();
+    // Two frames to take the click. The write runs off the loop and the
+    // waits below follow it, where `run` would demand the busy journal go
+    // quiet first. "Saving…" isn't asserted: it clears on the first frame
+    // that sees the re-derived books, which can come before any frame
+    // draws it.
+    harness.run_steps(2);
     until_shown(&mut harness, "receipt in the drawer");
     assert!(harness.query_by_label("Notes (1)").is_some());
     assert!(harness.query_by_label("you · just now").is_some());
