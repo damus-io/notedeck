@@ -19,13 +19,20 @@ use agentium_sandbox::mounts::{GitAccess, GuestEnv, Mount, MountPlan, RepoLayout
 /// A main repository with one commit, a linked worktree beside it, and a
 /// bare remote, all in one temp dir.
 struct Fixture {
-    root: tempfile::TempDir,
+    /// Held so the dir lives as long as the fixture.
+    _root: tempfile::TempDir,
+    /// The temp dir's real path. git writes canonical paths into a linked
+    /// worktree's `.git` file, and on macOS the temp dir is under `/var`, a
+    /// symlink to `/private/var`, so paths built from the uncanonical one
+    /// would never match what the planner reads back.
+    base: PathBuf,
 }
 
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        let f = Fixture { root };
+        let base = root.path().canonicalize().expect("canonical tempdir");
+        let f = Fixture { _root: root, base };
         let main = f.main();
         std::fs::create_dir(&main).unwrap();
         git(&main, &["init", "-q", "-b", "master"]);
@@ -44,7 +51,7 @@ impl Fixture {
             ],
         );
         git(
-            f.root.path(),
+            &f.base,
             &["init", "-q", "--bare", f.remote().to_str().unwrap()],
         );
         git(
@@ -57,15 +64,15 @@ impl Fixture {
     }
 
     fn main(&self) -> PathBuf {
-        self.root.path().join("main")
+        self.base.join("main")
     }
 
     fn worktree(&self) -> PathBuf {
-        self.root.path().join("wt")
+        self.base.join("wt")
     }
 
     fn remote(&self) -> PathBuf {
-        self.root.path().join("remote.git")
+        self.base.join("remote.git")
     }
 }
 
@@ -213,7 +220,7 @@ fn the_worktree_alone_is_not_a_repository() {
     let f = Fixture::new();
     let plan = MountPlan::for_checkout(&f.worktree(), GitAccess::Commit).unwrap();
     let only_wt = &plan.mounts[..1];
-    let out = in_guest(f.root.path(), only_wt, &f.worktree(), "git status");
+    let out = in_guest(&f.base, only_wt, &f.worktree(), "git status");
     assert!(!out.status.success(), "{}", report("status", &out));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("not a git repository"),
@@ -272,7 +279,7 @@ fn review_refuses_git_writes_and_commit_allows_them() {
             // A fresh repo per op, so one op's writes can't change the next.
             let f = Fixture::new();
             let plan = MountPlan::for_checkout(&f.worktree(), access).unwrap();
-            let out = in_guest(f.root.path(), &plan.mounts, &f.worktree(), script);
+            let out = in_guest(&f.base, &plan.mounts, &f.worktree(), script);
             let want = access == GitAccess::Commit || *review_ok;
             assert_eq!(
                 out.status.success(),
@@ -301,7 +308,7 @@ fn a_guest_commit_is_visible_on_the_host() {
     let f = Fixture::new();
     let plan = MountPlan::for_checkout(&f.worktree(), GitAccess::Commit).unwrap();
     let out = in_guest(
-        f.root.path(),
+        &f.base,
         &plan.mounts,
         &f.worktree(),
         "echo two >> a.txt && git commit -qam from-guest",
@@ -325,13 +332,13 @@ fn a_main_checkout_under_review_nests_a_readonly_git_dir() {
     let plan = MountPlan::for_checkout(&f.main(), GitAccess::Review).unwrap();
     assert_eq!(plan.mounts.len(), 2);
     let ok = in_guest(
-        f.root.path(),
+        &f.base,
         &plan.mounts,
         &f.main(),
         "echo two >> a.txt && git status --porcelain",
     );
     assert!(ok.status.success(), "{}", report("status", &ok));
-    let refused = in_guest(f.root.path(), &plan.mounts, &f.main(), "git add a.txt");
+    let refused = in_guest(&f.base, &plan.mounts, &f.main(), "git add a.txt");
     assert!(!refused.status.success(), "{}", report("add", &refused));
 }
 
@@ -366,7 +373,7 @@ fn push_lands_through_a_readonly_git_dir() {
         path: f.remote(),
         readonly: false,
     });
-    let out = in_guest(f.root.path(), &mounts, &f.worktree(), "git push origin wt");
+    let out = in_guest(&f.base, &mounts, &f.worktree(), "git push origin wt");
     eprintln!("{}", report("push under Review", &out));
 
     let remote_head = git_cmd(&f.remote())
