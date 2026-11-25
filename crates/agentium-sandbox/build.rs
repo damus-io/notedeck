@@ -95,11 +95,25 @@ fn git(args: &[&str]) -> Option<String> {
     (!line.is_empty()).then_some(line)
 }
 
-/// The target dir, from OUT_DIR's shape:
-/// `<target>[/<triple>]/<profile>/build/<pkg>-<hash>/out`.
+/// The target dir. `CARGO_TARGET_DIR` wins when set; otherwise it comes from
+/// OUT_DIR's shape, `<target>[/<triple>]/<profile>/build/<pkg dir>/out`.
+///
+/// The depth under `build/` is not fixed: cargo up to 1.97 writes
+/// `build/<pkg>-<hash>/out`, while 1.100 writes `build/<pkg>/<hash>/out`. So
+/// this walks up to the nearest `build` ancestor rather than counting
+/// levels; the profile dir is its parent.
 fn target_dir() -> Option<PathBuf> {
+    println!("cargo::rerun-if-env-changed=CARGO_TARGET_DIR");
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+
     let out = PathBuf::from(std::env::var_os("OUT_DIR")?);
-    let above_profile = out.ancestors().nth(4)?;
+    let build = out
+        .ancestors()
+        .skip(1)
+        .find(|p| p.file_name().is_some_and(|n| n == "build"))?;
+    let above_profile = build.parent()?.parent()?;
     let triple = std::env::var("TARGET").unwrap_or_default();
     if above_profile
         .file_name()
