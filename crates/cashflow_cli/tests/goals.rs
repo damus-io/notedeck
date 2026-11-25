@@ -100,6 +100,15 @@ async fn seed(path: &Path, owner: &FullKeypair) {
     }
 }
 
+/// `goals <args>`, read from the headway cache [`seed`] fills (see
+/// [`Cashflow::headway_db_args`]).
+fn goals(cf: &Cashflow, args: &[&str]) -> Vec<String> {
+    let mut all = vec!["goals".to_owned()];
+    all.extend(args.iter().map(|a| a.to_string()));
+    all.extend(cf.headway_db_args());
+    all
+}
+
 /// With the signing key stored, `goals` reads the headway CLI's cache at its
 /// default path and lists the goal and the broken one with full card refs,
 /// in text and JSON; `--author` reads the same boards without a key.
@@ -109,12 +118,12 @@ async fn goals_lists_the_goal_cards_from_the_headway_cache() {
     let owner = owner();
     seed(&cf.data_home().join("headway-cli"), &owner).await;
 
-    let err = expect_failure(cf.run(&["goals"]));
+    let err = expect_failure(cf.run(&goals(&cf, &[])));
     assert!(err.contains("no signing key"), "{err}");
     assert!(err.contains("--author"), "{err}");
 
     cf.ok(&["login", NSEC]);
-    let text = cf.ok(&["goals"]);
+    let text = cf.ok(&goals(&cf, &[]));
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 4, "{text}");
     let goal_line = lines
@@ -137,7 +146,7 @@ async fn goals_lists_the_goal_cards_from_the_headway_cache() {
     );
 
     let json: Value =
-        serde_json::from_str(&cf.ok(&["goals", "--json", "--author", &owner.pubkey.hex()]))
+        serde_json::from_str(&cf.ok(&goals(&cf, &["--json", "--author", &owner.pubkey.hex()])))
             .unwrap();
     let rows = json.as_array().unwrap();
     assert_eq!(rows.len(), 2);
@@ -157,7 +166,7 @@ async fn goals_lists_the_goal_cards_from_the_headway_cache() {
     assert_eq!(typo["error"]["line"], 2);
 
     // A board with no goals on it says so on stderr and lists nothing.
-    let out = cf.run(&["goals", "--board", "elsewhere"]);
+    let out = cf.run(&goals(&cf, &["--board", "elsewhere"]));
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no goals on elsewhere"));

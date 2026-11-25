@@ -107,7 +107,29 @@ impl Cashflow {
         // developer's real `cashflow-cli` and `headway-cli` caches, and read
         // back what earlier runs wrote into them.
         command.env("HOME", self.home());
+        // Windows reads its data dir from the shell's known folders, not the
+        // environment, so every run there shared the runner's real
+        // `%APPDATA%\cashflow-cli` cache, across tests running in parallel.
+        // A later `--db` of the test's own still wins.
+        if cfg!(windows) {
+            command
+                .arg("--db")
+                .arg(self.data_home().join("cashflow-cli"));
+        }
         command
+    }
+
+    /// The args that point `goals` at the headway cache under
+    /// [`data_home`](Self::data_home): none where the default path lands
+    /// there, `--headway-db` on Windows, whose data dir no environment
+    /// variable moves.
+    #[allow(dead_code)]
+    pub fn headway_db_args(&self) -> Vec<String> {
+        if !cfg!(windows) {
+            return Vec::new();
+        }
+        let db = self.data_home().join("headway-cli");
+        vec!["--headway-db".into(), db.to_string_lossy().into_owned()]
     }
 
     /// Run `cashflow <args>`.
