@@ -107,7 +107,8 @@ fn two_hosts_sync_through_an_rsync_hub() {
     let cf = Cashflow::knowing("sync");
     let hub = cf.dir().join("hub");
     let config = format!(
-        "[[sync.transport]]\nname = \"hub\"\nkind = \"rsync\"\nremote = \"{}\"\n",
+        // A literal string, so a Windows path's backslashes stay as they are.
+        "[[sync.transport]]\nname = \"hub\"\nkind = \"rsync\"\nremote = '{}'\n",
         hub.display()
     );
     let alpha = Host {
@@ -218,7 +219,8 @@ fn two_hosts_sync_through_a_git_remote() {
         .unwrap();
     assert!(init.status.success());
     let config = format!(
-        "[[sync.transport]]\nname = \"hub\"\nkind = \"git\"\nremote = \"{}\"\n",
+        // A literal string, so a Windows path's backslashes stay as they are.
+        "[[sync.transport]]\nname = \"hub\"\nkind = \"git\"\nremote = '{}'\n",
         remote.display()
     );
     let alpha = Host {
