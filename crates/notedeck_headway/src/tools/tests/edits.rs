@@ -47,8 +47,14 @@ async fn add_answers_with_its_ref_and_every_field_round_trips() {
         added.text
     );
 
+    // Each field after the title is its own event, folding in on its own
+    // frame: wait for every one checked below, not just the first two.
     let card = live.card_until(&card_ref, "the added card", |c| {
-        c["estimate"] == json!(3) && c["description"] == "the details"
+        c["estimate"] == json!(3)
+            && c["description"] == "the details"
+            && c["priority"] == "high"
+            && c["due"] == "2026-11-02"
+            && labels(c).len() == 3
     });
     assert_eq!(card["title"], "Wire up the CLI");
     assert_eq!(card["column"], "Todo");
