@@ -3558,6 +3558,25 @@ mod tests {
         log
     }
 
+    /// Poll the active session's git read until the status bar's "checking
+    /// git..." is gone. Dave's update polls it, and a session view harness
+    /// doesn't run that: without this the read never lands and its spinner
+    /// turns with the frames stepped, so no two snapshot runs match.
+    fn land_git_status(harness: &mut Harness<'static, SessionViewState>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count_labels(harness, "checking git...") > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "git status never landed"
+            );
+            let session = harness.state_mut().session_manager.get_active_mut();
+            let git = &mut session.unwrap().agentic.as_mut().unwrap().git_status;
+            git.maybe_auto_refresh();
+            git.poll();
+            harness.step();
+        }
+    }
+
     /// Step the harness until a label containing `text` appears.
     fn step_until_label(harness: &mut Harness<'static, SessionViewState>, text: &str) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -3954,21 +3973,7 @@ mod tests {
             .inspector_view
             .open(crate::inspector::InspectorSection::Outputs);
         step_until_label(&mut harness, "dave: fill the Outputs card");
-        // Dave's update polls the status bar's git read, and this harness
-        // doesn't run it: without the poll here the read never lands and its
-        // spinner turns with the frames stepped, so no two runs match.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while count_labels(&harness, "checking git...") > 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "git status never landed"
-            );
-            let session = harness.state_mut().session_manager.get_active_mut();
-            let git = &mut session.unwrap().agentic.as_mut().unwrap().git_status;
-            git.maybe_auto_refresh();
-            git.poll();
-            harness.step();
-        }
+        land_git_status(&mut harness);
         // `open` scrolls the grid to the card once, against whatever the
         // grid held that frame, and the filled card overflows the viewport
         // by a few px where an unfilled one doesn't: the offset came out 0
@@ -4023,6 +4028,7 @@ mod tests {
             .files
             .tail_open = Some(log);
         step_until_label(&mut harness, "12 passed");
+        land_git_status(&mut harness);
         harness.run_ok();
         harness.snapshot("session_files");
         let _ = std::fs::remove_dir_all(&root);
