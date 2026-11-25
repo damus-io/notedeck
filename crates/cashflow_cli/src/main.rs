@@ -43,8 +43,31 @@ use cashflow::CashflowDir;
 use crate::args::{AccountCommand, Command, Invocation, Run};
 use crate::vault_cmd::Session;
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// The stack the CLI runs on: what a Unix main thread gets. Windows gives
+/// its main thread 1 MiB, which a debug build's `account set` or `report`
+/// overflows.
+const CLI_STACK_BYTES: usize = 8 << 20;
+
+/// Run [`cli`] on a thread with [`CLI_STACK_BYTES`] of stack, so the CLI
+/// has the same stack on every platform.
+fn main() -> ExitCode {
+    let cli = std::thread::Builder::new()
+        .name("cashflow".into())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(|| {
+            tokio::runtime::Runtime::new()
+                .expect("a tokio runtime")
+                .block_on(cli())
+        })
+        .expect("the CLI thread");
+    match cli.join() {
+        Ok(code) => code,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+/// Parse the arguments and run the command they name.
+async fn cli() -> ExitCode {
     // Terminate quietly on a closed pipe (`cashflow config show | head`)
     // instead of panicking in println! on EPIPE.
     nostrdb_net::relay::sync::reset_sigpipe();
