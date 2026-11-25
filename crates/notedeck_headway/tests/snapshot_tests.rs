@@ -9467,23 +9467,19 @@ fn snapshot_switcher_same_slug_boards() {
 
         // An own board `roadmap` the account ALSO shares (self-share): it must
         // appear once, not twice, despite being both an own and a joined board.
-        store::seed_board(
+        // Sealed from its first note, as every board is born: a self-share of
+        // a plaintext board would name a channel its definition was never
+        // sealed into, so it would never fold its title.
+        assert!(store::create_shared_board(
             ndb,
             &account.pubkey,
             &secret,
             "roadmap",
             "Roadmap",
+            &[0x30; 32],
             &mut store::NoPublish,
-        );
-        phase!("own board seeded");
-        ingest_keyshare(
-            ndb,
-            &account,
-            &account.pubkey,
-            0x30,
-            &event::board_address(&account.pubkey, "roadmap"),
-        );
-        phase!("self-share ingested");
+        ));
+        phase!("own board seeded and self-shared");
 
         // Two joined boards, same slug `notes`, different owners → two entries.
         ingest_keyshare(
