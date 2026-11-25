@@ -68,16 +68,26 @@ impl Cashflow {
         self.tmp.path()
     }
 
-    /// The `$XDG_DATA_HOME` every run gets, so the CLI's default nostrdb
-    /// (`<data-dir>/cashflow-cli`) is `xdg/cashflow-cli` under the temp dir,
-    /// shared by every run of this harness.
+    /// The data dir every run resolves (`dirs::data_dir`), so the CLI's
+    /// default nostrdb (`<data-dir>/cashflow-cli`) is under the temp dir,
+    /// shared by every run of this harness: `$XDG_DATA_HOME` on Linux, and
+    /// `$HOME/Library/Application Support` on macOS, which ignores XDG.
     pub fn data_home(&self) -> PathBuf {
-        self.tmp.path().join("xdg")
+        if cfg!(target_os = "macos") {
+            self.home().join("Library").join("Application Support")
+        } else {
+            self.tmp.path().join("xdg")
+        }
+    }
+
+    /// The `$HOME` every run gets.
+    fn home(&self) -> PathBuf {
+        self.tmp.path().join("home")
     }
 
     /// A `cashflow` command with `$CASHFLOW_DIR` set to [`dir`](Self::dir),
     /// `$CASHFLOW_RELAY` to [`DEAD_RELAY`], `$XDG_DATA_HOME` to
-    /// [`data_home`](Self::data_home), and every other `CASHFLOW_*` variable
+    /// [`data_home`](Self::data_home), `$HOME` to a temp dir, and every other `CASHFLOW_*` variable
     /// and `$AGENTIUM_SESSION` removed, ready for more `.env`s. Inside an
     /// agent session the runner's own ref would otherwise be stamped on
     /// every rule a test adds.
@@ -92,6 +102,11 @@ impl Cashflow {
         command.env("CASHFLOW_DIR", self.dir());
         command.env("CASHFLOW_RELAY", DEAD_RELAY);
         command.env("XDG_DATA_HOME", self.data_home());
+        // macOS's data dir is `$HOME/Library/Application Support`, which
+        // ignores $XDG_DATA_HOME: without this every run there used the
+        // developer's real `cashflow-cli` and `headway-cli` caches, and read
+        // back what earlier runs wrote into them.
+        command.env("HOME", self.home());
         command
     }
 
