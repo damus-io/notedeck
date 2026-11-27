@@ -388,8 +388,11 @@ async fn show_takes_all_archived_and_source() {
     assert_eq!(all[0]["id"], store::BOARD_ID);
     assert_eq!(all[0]["owner"].as_str().map(str::len), Some(64));
 
-    let card = live.cards()[0]["ref"].as_str().unwrap().to_owned();
-    let title = live.cards()[0]["title"].as_str().unwrap().to_owned();
+    // One listing for both: the order can change between two while the
+    // board is still folding, pairing one card's ref with another's title.
+    let cards = live.cards();
+    let card = cards[0]["ref"].as_str().unwrap().to_owned();
+    let title = cards[0]["title"].as_str().unwrap().to_owned();
     live.edit("headway_archive_card", json!({ "card": card }));
     live.board_until("the archive", |b| {
         !b["archived"].as_array().unwrap().is_empty()
