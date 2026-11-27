@@ -297,7 +297,12 @@ fn the_counter_sees_an_allocation_added_to_a_frame() {
 /// signal underneath.
 #[test]
 fn another_threads_allocations_do_not_reach_this_threads_tally() {
-    let handle = std::thread::spawn(|| {
+    // The other thread allocates only once the measurement has started:
+    // spawned free, it could finish before `measure` began counting.
+    let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let started = start.clone();
+    let handle = std::thread::spawn(move || {
+        started.wait();
         let mut v: Vec<u64> = Vec::new();
         for i in 0..4096 {
             v.push(i);
@@ -306,7 +311,10 @@ fn another_threads_allocations_do_not_reach_this_threads_tally() {
     });
 
     let notedeck_testing::alloc::Measured { value: len, counts } =
-        notedeck_testing::alloc::measure(|| handle.join().expect("join"));
+        notedeck_testing::alloc::measure(|| {
+            start.wait();
+            handle.join().expect("join")
+        });
 
     assert_eq!(len, 4096);
     assert_eq!(
