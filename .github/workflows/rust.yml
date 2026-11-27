@@ -131,8 +131,11 @@ jobs:
     uses: ./.github/workflows/build-and-test.yml
     with:
       os: ubuntu-22.04
+      # Update first: the image's package index goes stale, and an install
+      # from it 404s once the mirror has moved on.
       additional-setup: |
-        sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libasound2-dev
+        sudo apt-get update
+        sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libasound2-dev
 
   snapshot-test:
     name: Snapshot Tests
