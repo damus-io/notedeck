@@ -1683,6 +1683,26 @@ mod tests {
         parse(&note).expect("parse notebook event")
     }
 
+    /// A node note signed once: its id and its parsed event.
+    struct SignedNode {
+        id: NoteId,
+        event: NotebookEvent,
+    }
+
+    /// Sign `builder` once and keep both its id and its event. Building the
+    /// node twice, once for each, stamps each build with the clock's second,
+    /// so across a second boundary the two are different notes.
+    fn sign_node(kp: &FullKeypair, builder: NoteBuilder) -> SignedNode {
+        let note = builder
+            .sign(&kp.secret_key.secret_bytes())
+            .build()
+            .expect("build note");
+        SignedNode {
+            id: NoteId::new(*note.id()),
+            event: parse(&note).expect("parse notebook event"),
+        }
+    }
+
     fn node_id(kp: &FullKeypair, builder: NoteBuilder) -> NoteId {
         let note = builder
             .sign(&kp.secret_key.secret_bytes())
@@ -2035,13 +2055,19 @@ mod tests {
         let owner = FullKeypair::generate();
         let addr = canvas_address(&owner.pubkey, "c1");
 
-        let a = node_id(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("A")));
-        let b = node_id(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("B")));
+        let SignedNode {
+            id: a,
+            event: node_a,
+        } = sign_node(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("A")));
+        let SignedNode {
+            id: b,
+            event: node_b,
+        } = sign_node(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("B")));
 
         let events = vec![
             parse_signed(build_canvas("c1", "C", &[], false), &owner),
-            parse_signed(build_node(&addr, NodeKind::Text, &GEO, &text("A")), &owner),
-            parse_signed(build_node(&addr, NodeKind::Text, &GEO, &text("B")), &owner),
+            node_a,
+            node_b,
             // A ranked after B; A moved + retitled.
             parse_signed(build_transform("c1", &addr, &b, &GEO, "g", None), &owner),
             parse_signed(
@@ -2147,13 +2173,19 @@ mod tests {
     fn reduce_tombstone_drops_node_and_its_edges() {
         let owner = FullKeypair::generate();
         let addr = canvas_address(&owner.pubkey, "c1");
-        let a = node_id(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("A")));
-        let b = node_id(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("B")));
+        let SignedNode {
+            id: a,
+            event: node_a,
+        } = sign_node(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("A")));
+        let SignedNode {
+            id: b,
+            event: node_b,
+        } = sign_node(&owner, build_node(&addr, NodeKind::Text, &GEO, &text("B")));
 
         let mut events = vec![
             parse_signed(build_canvas("c1", "C", &[], false), &owner),
-            parse_signed(build_node(&addr, NodeKind::Text, &GEO, &text("A")), &owner),
-            parse_signed(build_node(&addr, NodeKind::Text, &GEO, &text("B")), &owner),
+            node_a,
+            node_b,
             parse_signed(build_transform("c1", &addr, &a, &GEO, "g", None), &owner),
             parse_signed(build_transform("c1", &addr, &b, &GEO, "m", None), &owner),
             parse_signed(
