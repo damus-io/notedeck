@@ -3,3 +3,8 @@
 # and must stay plain blobs; crates/bin_testing/tests/lfs_snapshots.rs checks
 # both.
 crates/*/tests/snapshots/**/*.png filter=lfs diff=lfs merge=lfs -text
+
+# The diff parser's fixtures are compared byte for byte: a checkout that
+# turns their line ends into CRLF (Windows' core.autocrlf) leaves a `\r` on
+# every path and header they parse.
+crates/notedeck_ui/src/diff/testdata/*.patch text eol=lf
