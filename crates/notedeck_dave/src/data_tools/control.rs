@@ -475,15 +475,34 @@ impl SpawnArgs {
     fn cwd(&self) -> Option<String> {
         let cwd = self.cwd.as_deref().filter(|c| !c.is_empty())?;
         match self.caller_cwd.as_deref() {
-            Some(base) if std::path::Path::new(cwd).is_relative() => Some(
-                std::path::Path::new(base)
-                    .join(cwd)
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
+            Some(base) if !is_absolute_on_any_host(cwd) => Some(join_dir(base, cwd)),
             _ => Some(cwd.to_owned()),
         }
     }
+}
+
+/// Whether `path` is absolute on the host it names, which need not be this
+/// one: rooted (`/home/u`, `\\server\share`) or on a drive (`C:\work`).
+///
+/// `Path::is_absolute` answers for this host only, so on Windows it would
+/// take a Unix host's `/home/u` as relative.
+fn is_absolute_on_any_host(path: &str) -> bool {
+    match path.as_bytes() {
+        [b'/' | b'\\', ..] => true,
+        [drive, b':', ..] => drive.is_ascii_alphabetic(),
+        _ => false,
+    }
+}
+
+/// `rel` under `base`, joined with the separator `base` is written in, so a
+/// Unix host's directory gets `/` even when this host is Windows.
+fn join_dir(base: &str, rel: &str) -> String {
+    let sep = if base.contains('/') || !base.contains('\\') {
+        '/'
+    } else {
+        '\\'
+    };
+    format!("{}{sep}{rel}", base.trim_end_matches(sep))
 }
 
 /// [`Spawn`]'s answer: [`Spawned`] (`{spawn_id, host, session}`).
@@ -1620,5 +1639,21 @@ mod tests {
         assert!(err.contains("`spec`"), "{err}");
         let err = overrides(json!({"spec": "butler", "max_steps": 0})).unwrap_err();
         assert!(err.contains("at least 1"), "{err}");
+    }
+
+    /// A relative cwd joins the caller's directory with that directory's
+    /// own separator, and a cwd absolute on any host is kept as given,
+    /// whichever host this is.
+    #[test]
+    fn a_spawn_cwd_is_read_as_the_target_host_writes_it() {
+        assert_eq!(join_dir("/home/u/work", "sub"), "/home/u/work/sub");
+        assert_eq!(join_dir("/home/u/work/", "sub"), "/home/u/work/sub");
+        assert_eq!(join_dir("/", "sub"), "/sub");
+        assert_eq!(join_dir(r"C:\work", "sub"), r"C:\work\sub");
+        assert!(is_absolute_on_any_host("/home/u"));
+        assert!(is_absolute_on_any_host(r"C:\work"));
+        assert!(is_absolute_on_any_host(r"\\server\share"));
+        assert!(!is_absolute_on_any_host("sub"));
+        assert!(!is_absolute_on_any_host("./sub"));
     }
 }
