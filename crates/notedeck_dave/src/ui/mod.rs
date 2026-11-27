@@ -4483,6 +4483,11 @@ mod tests {
             })));
     }
 
+    /// The input clock the composer snapshots are drawn at, in seconds: past
+    /// where a harness settles, in the square spinner's third frame (202 half
+    /// seconds, 2 of its cycle of 5).
+    const COMPOSER_SNAPSHOT_TIME: f64 = 101.0;
+
     /// The bottom of a session's chat, composer and status bar, at `size` in
     /// `visuals`.
     fn snapshot_composer(
@@ -4499,6 +4504,14 @@ mod tests {
             .renderer(notedeck::software_renderer())
             .build_ui_state(render_session_view, state);
         harness.run_ok();
+        // The spinner and the caret animate off the input clock, which
+        // advances a step_dt (a quarter second) a step, and run_ok takes as
+        // many steps as the frame needs to settle: on a slow runner one more
+        // than here, which drew the next spinner frame. Draw the snapshot at
+        // one fixed time instead, ahead of any settled clock and in the same
+        // spinner frame and caret phase the pngs were recorded in.
+        harness.input_mut().time = Some(COMPOSER_SNAPSHOT_TIME);
+        harness.step();
         harness.snapshot(name);
     }
 
