@@ -575,6 +575,12 @@ fn not_a_transfer_dismisses_it() {
     harness.state_mut().app.set_open_txn(Some("card:8"));
     harness.run();
     assert!(harness.query_by_label("open bank:4 →").is_some());
+    // The plan landing adds its lines above the buttons; clicked before
+    // then, the release lands where the button was.
+    plan_says(
+        &mut harness,
+        "Linking nets both legs: no income, no expense.",
+    );
     let sub = watch_vault(harness.state_mut());
     harness.get_by_label("Not a transfer").click();
     // Two frames to take the click. The write runs off the loop and the
