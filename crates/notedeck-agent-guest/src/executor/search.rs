@@ -179,9 +179,22 @@ mod tests {
         dir
     }
 
+    /// `line` with `dir`'s path and its separator taken off the front of
+    /// each path in it, and the rest of the path written with `/`: what
+    /// the search answers relative to the tree, on any OS.
+    fn rel(dir: &Path, line: &str) -> String {
+        let prefix = format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR);
+        let line = line.replace(&prefix, "");
+        if cfg!(windows) {
+            line.replace('\\', "/")
+        } else {
+            line
+        }
+    }
+
     fn grep_in(dir: &Path, input: GrepInput) -> Vec<String> {
-        let rel = |line: &str| line.replace(&format!("{}/", dir.display()), "");
-        grep(&input, dir).unwrap().lines().map(rel).collect()
+        let lines = grep(&input, dir).unwrap();
+        lines.lines().map(|line| rel(dir, line)).collect()
     }
 
     fn input(pattern: &str) -> GrepInput {
@@ -251,7 +264,7 @@ mod tests {
             let mut paths: Vec<String> = glob(pattern, dir.path())
                 .unwrap()
                 .lines()
-                .map(|l| l.replace(&format!("{}/", dir.path().display()), ""))
+                .map(|l| rel(dir.path(), l))
                 .collect();
             paths.sort();
             paths

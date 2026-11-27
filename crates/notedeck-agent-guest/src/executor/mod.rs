@@ -235,7 +235,8 @@ mod tests {
     }
 
     /// A Bash child gets what [`ChildEnv`] sets and loses what it
-    /// removes; the rest it inherits.
+    /// removes; the rest it inherits. Unix only: Bash runs `/bin/sh`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_bash_child_gets_its_env() {
         let dir = tempfile::tempdir().unwrap();
