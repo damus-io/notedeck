@@ -904,7 +904,11 @@ mod tests {
 
         assert_eq!(b.seal(&stranger, card()), id);
         b.seal(&stranger, placement(&id));
-        let log = b.drain_until(&mut fold, |v| v.columns[0].cards.len() == 1);
+        // Until the placement has folded too: the card's envelope can
+        // reseed the fold before the placement's lands.
+        let log = b.drain_until(&mut fold, |v| {
+            v.columns[0].cards.first().is_some_and(|c| c.rank == "g")
+        });
         assert!(
             log.iter().any(|a| a.reseeded),
             "a promote can only be seen by reseeding"
