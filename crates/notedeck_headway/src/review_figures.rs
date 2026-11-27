@@ -887,11 +887,26 @@ fn image_source(src: &str) -> ImageSource<'_> {
     if src.starts_with("https://") || src.starts_with("http://") {
         return ImageSource::Url(src);
     }
-    let path = Path::new(src.strip_prefix("file://").unwrap_or(src));
+    let path = Path::new(src.strip_prefix("file://").map_or(src, file_url_path));
     if path.is_absolute() {
         ImageSource::Path(path)
     } else {
         ImageSource::Elsewhere
+    }
+}
+
+/// The path a `file://` URL's remainder names on this host.
+///
+/// A Windows file URL spells its drive after a slash (`file:///C:/x`), so the
+/// remainder is `/C:/x`, which Windows doesn't take as absolute; the drive
+/// starts the path there. Everywhere else the remainder is the path.
+fn file_url_path(rest: &str) -> &str {
+    if !cfg!(windows) {
+        return rest;
+    }
+    match rest.as_bytes() {
+        [b'/', drive, b':', ..] if drive.is_ascii_alphabetic() => &rest[1..],
+        _ => rest,
     }
 }
 
@@ -1704,10 +1719,12 @@ It stalls.
     fn placeholder_reasons() {
         let theme = theme(true);
         assert_eq!(image_source("shot.png"), ImageSource::Elsewhere);
-        assert_eq!(
-            image_source("file:///a/b.png"),
-            ImageSource::Path(Path::new("/a/b.png"))
-        );
+        // A file URL naming an absolute path on this host.
+        #[cfg(windows)]
+        let (url, path) = ("file:///C:/a/b.png", "C:/a/b.png");
+        #[cfg(not(windows))]
+        let (url, path) = ("file:///a/b.png", "/a/b.png");
+        assert_eq!(image_source(url), ImageSource::Path(Path::new(path)));
         assert_eq!(
             load_file(
                 Path::new("/nowhere/at/all/shot.jpg"),
