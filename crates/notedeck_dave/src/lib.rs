@@ -2000,14 +2000,20 @@ mod tests {
             .insert(BackendType::Claude, Box::new(recorder));
         let session = test.session_mut(sid);
         session.input = "what is this crash?".into();
-        assert!(session.attach_path(PathBuf::from("/tmp/shot.png")));
-        assert!(session.attach_path(PathBuf::from("/var/log/app.log")));
+        let shot = crate::test_support::host_abs("/tmp/shot.png");
+        let log_file = crate::test_support::host_abs("/var/log/app.log");
+        assert!(session.attach_path(shot.clone()));
+        assert!(session.attach_path(log_file.clone()));
 
         let parts = test.parts();
         parts.dave.send_draft(&parts.host);
 
-        let expected =
-            "what is this crash?\n\nAttached files:\n- /tmp/shot.png\n- /var/log/app.log";
+        let expected = format!(
+            "what is this crash?\n\nAttached files:\n- {}\n- {}",
+            shot.display(),
+            log_file.display()
+        );
+        let expected = expected.as_str();
         let session = test.session_mut(sid);
         assert!(session.pending_paths.is_empty(), "the chips are cleared");
         assert!(session.input.is_empty());

@@ -40,6 +40,20 @@ use tempfile::TempDir;
 
 pub use ndb_testing::test_config;
 
+/// `path`, a Unix-style absolute path ("/var/log/app.log"), made absolute
+/// on the host the test runs on.
+///
+/// Windows doesn't take a path without a drive as absolute, so there it gains
+/// a `C:` ("C:/var/log/app.log"); elsewhere it is `path` as written. A test
+/// that expects the path in text formats it from this, not the literal.
+pub fn host_abs(path: &str) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(format!("C:{path}"))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 /// The account every test signs as.
 pub fn test_secret_key() -> [u8; 32] {
     let mut key = [0u8; 32];

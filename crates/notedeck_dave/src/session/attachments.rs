@@ -85,6 +85,7 @@ mod tests {
     use crate::backend::BackendType;
     use crate::config::AiMode;
     use crate::session::SessionSource;
+    use crate::test_support::host_abs;
 
     fn paths() -> Vec<PathBuf> {
         vec![
@@ -132,14 +133,15 @@ mod tests {
     #[test]
     fn attach_dedupes_and_take_draft_clears() {
         let mut session = local_session();
-        assert!(session.attach_path(PathBuf::from("/var/log/app.log")));
-        assert!(!session.attach_path(PathBuf::from("/var/log/app.log")));
+        let log = host_abs("/var/log/app.log");
+        assert!(session.attach_path(log.clone()));
+        assert!(!session.attach_path(log.clone()));
         assert!(!session.attach_path(PathBuf::from("relative.txt")));
         session.input = "look".into();
 
         assert_eq!(
             session.take_draft(),
-            "look\n\nAttached files:\n- /var/log/app.log"
+            format!("look\n\nAttached files:\n- {}", log.display())
         );
         assert!(session.input.is_empty());
         assert!(session.pending_paths.is_empty());
@@ -151,7 +153,7 @@ mod tests {
     fn a_remote_session_stages_nothing() {
         let mut session = local_session();
         session.source = SessionSource::Remote;
-        assert!(!session.attach_path(PathBuf::from("/var/log/app.log")));
+        assert!(!session.attach_path(host_abs("/var/log/app.log")));
         assert!(session.pending_paths.is_empty());
     }
 }
