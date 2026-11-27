@@ -15,7 +15,7 @@ use notedeck_dave::ui::HeaderWalltimeSource;
 use notedeck_dave::{
     AiMode, AssistantMessage, ChatSession, DaveUi, Message, SessionId, UserMessage,
 };
-use notedeck_testing::alloc::{measure, CountingAllocator};
+use notedeck_testing::alloc::{measure, AllocCounts, CountingAllocator};
 use notedeck_testing::TestHost;
 
 /// Process-wide and one per binary, so it lives in this test rather than in
@@ -26,6 +26,15 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// Frames run before measuring, so fonts, galleys, ids and the times are all
 /// warm.
 const WARM_UP: usize = 30;
+
+/// Frames measured after the warm-up; [`frame_allocs`] takes their median.
+///
+/// One frame was measured at first, and on a macOS runner the walltime frame
+/// once came out 2 allocations over the figure it holds every run here: work
+/// that lands in one frame and not the next. A cost a frame pays every frame,
+/// which is what these figures guard, is in every measured frame and so in
+/// the median too.
+const MEASURED: usize = 5;
 
 /// What drawing [`chat`]'s three headers and three footers adds to a
 /// steady-state frame, measured on the UI thread. Attributed with
@@ -167,8 +176,9 @@ fn render(ui: &mut egui::Ui, state: &mut ChatState) {
     });
 }
 
-/// Allocations on the UI thread for one steady-state frame of [`chat`],
-/// drawing what `draw` says, with a fourth turn running since 9:58.
+/// Allocations on the UI thread for a steady-state frame of [`chat`], the
+/// median of [`MEASURED`], drawing what `draw` says, with a fourth turn
+/// running since 9:58.
 fn frame_allocs(draw: Draw) -> u64 {
     let mut session = ChatSession::new(
         1 as SessionId,
@@ -195,7 +205,12 @@ fn frame_allocs(draw: Draw) -> u64 {
     for _ in 0..WARM_UP {
         harness.step();
     }
-    let counts = measure(|| harness.step()).counts;
+    let mut frames = [AllocCounts::default(); MEASURED];
+    for frame in &mut frames {
+        *frame = measure(|| harness.step()).counts;
+    }
+    frames.sort_by_key(|frame| frame.thread.allocs);
+    let counts = frames[MEASURED / 2];
     println!(
         "times {} header {} walltime {} range {} picked {}: {counts}",
         draw.times, draw.header, draw.walltime, draw.range, draw.picked
