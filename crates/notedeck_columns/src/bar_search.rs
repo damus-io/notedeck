@@ -398,7 +398,9 @@ mod tests {
             ndb.process_event_with(&frame, IngestMetadata::new().client(true))
                 .expect("ingest");
         }
-        ndb.wait_for_notes(sub, notes.len() as u32)
+        // wait_for_notes returns at the first batch, which can be the note
+        // without the profile; wait for every one.
+        ndb.wait_for_all_notes_within(sub, notes.len() as u32, Duration::from_secs(5))
             .await
             .expect("committed");
     }
