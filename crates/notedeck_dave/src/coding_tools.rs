@@ -209,6 +209,9 @@ mod tests {
     }
 
     /// A Bash call's output is the answer and shows in its row.
+    ///
+    /// Unix only, like the Bash tool, which runs `/bin/sh`.
+    #[cfg(unix)]
     #[test]
     fn bash_output_is_the_answer_and_the_rows_body() {
         let dir = tempfile::tempdir().unwrap();

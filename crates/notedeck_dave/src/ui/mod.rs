@@ -3542,8 +3542,20 @@ mod tests {
         );
         write("scratchpad/strings.txt", &"x".repeat(612), 52 * 60);
         write("scratchpad/diffs/files.patch", "", 0);
-        // The folder's own mtime, which writing into it just moved.
-        std::fs::File::open(dir.join("scratchpad/diffs"))
+        // The folder's own mtime, which writing into it just moved. Windows
+        // opens a directory only with FILE_FLAG_BACKUP_SEMANTICS, and setting
+        // its time needs write access.
+        let mut folder = std::fs::OpenOptions::new();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            folder.write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        }
+        #[cfg(not(windows))]
+        folder.read(true);
+        folder
+            .open(dir.join("scratchpad/diffs"))
             .unwrap()
             .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(now - 30))
             .unwrap();
@@ -4621,12 +4633,16 @@ mod tests {
     }
 
     /// Drop `paths` on the window for the harness's next frame, and run it.
+    /// Drop `paths` (Unix-style, made absolute on this host by
+    /// [`host_abs`](crate::test_support::host_abs)) on the window.
     fn drop_files(harness: &mut Harness<'static, SessionViewState>, paths: &[&str]) {
         for path in paths {
             harness
                 .input_mut()
                 .dropped_files
-                .push(std::sync::Arc::new(DroppedPath(PathBuf::from(path))));
+                .push(std::sync::Arc::new(DroppedPath(
+                    crate::test_support::host_abs(path),
+                )));
         }
         harness.run_ok();
     }
@@ -4650,8 +4666,8 @@ mod tests {
         assert_eq!(
             session.pending_paths,
             [
-                PathBuf::from("/var/log/notedeck.log"),
-                PathBuf::from("/home/me/crash shot.png"),
+                crate::test_support::host_abs("/var/log/notedeck.log"),
+                crate::test_support::host_abs("/home/me/crash shot.png"),
             ]
         );
         assert_eq!(count_labels(&harness, "notedeck.log"), 1, "one chip a file");

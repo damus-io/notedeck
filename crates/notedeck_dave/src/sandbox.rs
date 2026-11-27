@@ -541,7 +541,7 @@ pub(crate) mod testing {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use agentium_core::agent_spec::coding::{BashInput, EditInput, ReadInput};
+    use agentium_core::agent_spec::coding::ReadInput;
     use agentium_sandbox::fleet::fake::{FakeVms, Op};
     use agentium_sandbox::fleet::VmRecord;
     use agentium_sandbox::lifecycle::{guest_name, labels, GuestLabel};
@@ -675,8 +675,10 @@ mod tests {
         })
     }
 
+    /// A Bash call; Unix only, like the guest's Bash.
+    #[cfg(unix)]
     fn bash(command: &str) -> CodingCall {
-        CodingCall::Bash(BashInput {
+        CodingCall::Bash(agentium_core::agent_spec::coding::BashInput {
             command: command.into(),
             description: None,
             timeout: None,
@@ -686,6 +688,9 @@ mod tests {
     /// Making a session's sandbox boots nothing. Its first call boots the
     /// guest; later calls reuse it. An Edit lands in the mounted worktree,
     /// and the guest's Bash has the session's identity.
+    ///
+    /// Unix only, like the guest's Bash, which runs `/bin/sh`.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn the_first_call_boots_the_guest_and_later_ones_reuse_it() {
         let tree = tempfile::tempdir().unwrap();
@@ -696,7 +701,7 @@ mod tests {
         assert!(host.calls().is_empty(), "nothing boots until a call");
         let cancel = ToolCancel::default();
 
-        let edit = CodingCall::Edit(EditInput {
+        let edit = CodingCall::Edit(agentium_core::agent_spec::coding::EditInput {
             file_path: "a.txt".into(),
             old_string: "hello".into(),
             new_string: "bye".into(),
@@ -739,10 +744,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn dropping_the_sandbox_shuts_its_guest_down() {
         let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("a.txt"), "hello\n").unwrap();
         let host = FakeVms::default();
         let pool = pool(&host, 2);
         let sandbox = pool.session_sandbox(request("s1", tree.path())).unwrap();
-        run(&sandbox, bash("true"), &ToolCancel::default())
+        run(&sandbox, read("a.txt"), &ToolCancel::default())
             .await
             .unwrap();
         let name = guest_name("s1").unwrap();
@@ -775,14 +781,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_full_pool_is_a_boot_error() {
         let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("a.txt"), "hello\n").unwrap();
         let host = FakeVms::default();
         let pool = pool(&host, 1);
         let cancel = ToolCancel::default();
         let first = pool.session_sandbox(request("s1", tree.path())).unwrap();
-        run(&first, bash("true"), &cancel).await.unwrap();
+        run(&first, read("a.txt"), &cancel).await.unwrap();
 
         let second = pool.session_sandbox(request("s2", tree.path())).unwrap();
-        let err = run(&second, bash("true"), &cancel)
+        let err = run(&second, read("a.txt"), &cancel)
             .await
             .expect_err("no room");
         let GuestCallError::Boot(why) = &err else {
@@ -798,6 +805,9 @@ mod tests {
     }
 
     /// The round's stop cancels a running Bash in the guest, promptly.
+    ///
+    /// Unix only, like the guest's Bash, which runs `/bin/sh`.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn a_stop_cancels_a_running_call() {
         let tree = tempfile::tempdir().unwrap();
